@@ -206,15 +206,25 @@ export class PromptWidgetElement {
     if (!container) return;
     container.innerHTML = '';
     this.pendingScreenshots.forEach((blob, i) => {
+      const wrap = document.createElement('div');
+      wrap.className = 'pw-screenshot-wrap';
+
       const img = document.createElement('img');
       img.className = 'pw-screenshot-thumb';
       img.src = URL.createObjectURL(blob);
-      img.title = `Screenshot ${i + 1} - click to remove`;
-      img.addEventListener('click', () => {
+
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'pw-screenshot-remove';
+      removeBtn.textContent = '\u00d7';
+      removeBtn.title = 'Remove screenshot';
+      removeBtn.addEventListener('click', () => {
         this.pendingScreenshots.splice(i, 1);
         this.renderScreenshotThumbs();
       });
-      container.appendChild(img);
+
+      wrap.appendChild(img);
+      wrap.appendChild(removeBtn);
+      container.appendChild(wrap);
     });
   }
 

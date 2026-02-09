@@ -147,17 +147,41 @@ export const WIDGET_CSS = `
   flex-wrap: wrap;
 }
 
+.pw-screenshot-wrap {
+  position: relative;
+  width: 60px;
+  height: 60px;
+}
+
 .pw-screenshot-thumb {
   width: 60px;
   height: 60px;
   border-radius: 6px;
   object-fit: cover;
   border: 1px solid #e2e8f0;
-  cursor: pointer;
 }
 
-.pw-screenshot-thumb:hover {
-  border-color: #6366f1;
+.pw-screenshot-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #dc2626;
+  color: white;
+  border: 2px solid white;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.pw-screenshot-remove:hover {
+  background: #b91c1c;
 }
 
 .pw-actions {
