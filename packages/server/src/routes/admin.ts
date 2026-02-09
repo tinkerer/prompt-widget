@@ -1,0 +1,402 @@
+import { Hono } from 'hono';
+import { ulid } from 'ulidx';
+import { eq, desc, asc, like, and, sql } from 'drizzle-orm';
+import {
+  feedbackListSchema,
+  feedbackUpdateSchema,
+  batchOperationSchema,
+  agentEndpointSchema,
+  dispatchSchema,
+} from '@prompt-widget/shared';
+import type { FeedbackItem } from '@prompt-widget/shared';
+import { db, schema } from '../db/index.js';
+
+export const adminRoutes = new Hono();
+
+function hydrateFeedback(row: typeof schema.feedbackItems.$inferSelect, tags: string[], screenshots: (typeof schema.feedbackScreenshots.$inferSelect)[]): FeedbackItem {
+  return {
+    ...row,
+    type: row.type as FeedbackItem['type'],
+    status: row.status as FeedbackItem['status'],
+    data: row.data ? JSON.parse(row.data) : null,
+    context: row.context ? JSON.parse(row.context) : null,
+    tags,
+    screenshots,
+  };
+}
+
+adminRoutes.get('/feedback', async (c) => {
+  const query = feedbackListSchema.safeParse(c.req.query());
+  if (!query.success) {
+    return c.json({ error: 'Invalid query', details: query.error.flatten() }, 400);
+  }
+
+  const { page, limit, type, status, tag, search, sortBy, sortOrder } = query.data;
+  const offset = (page - 1) * limit;
+
+  const conditions = [];
+  if (type) conditions.push(eq(schema.feedbackItems.type, type));
+  if (status) conditions.push(eq(schema.feedbackItems.status, status));
+  if (search) conditions.push(like(schema.feedbackItems.title, `%${search}%`));
+
+  let whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+  if (tag) {
+    const taggedIds = db
+      .select({ feedbackId: schema.feedbackTags.feedbackId })
+      .from(schema.feedbackTags)
+      .where(eq(schema.feedbackTags.tag, tag))
+      .all()
+      .map((r) => r.feedbackId);
+
+    if (taggedIds.length === 0) {
+      return c.json({ items: [], total: 0, page, limit, totalPages: 0 });
+    }
+
+    const inClause = sql`${schema.feedbackItems.id} IN (${sql.join(
+      taggedIds.map((id) => sql`${id}`),
+      sql`, `
+    )})`;
+    whereClause = whereClause ? and(whereClause, inClause) : inClause;
+  }
+
+  const sortColumn =
+    sortBy === 'updatedAt'
+      ? schema.feedbackItems.updatedAt
+      : schema.feedbackItems.createdAt;
+  const orderFn = sortOrder === 'asc' ? asc : desc;
+
+  const items = db
+    .select()
+    .from(schema.feedbackItems)
+    .where(whereClause)
+    .orderBy(orderFn(sortColumn))
+    .limit(limit)
+    .offset(offset)
+    .all();
+
+  const countResult = db
+    .select({ count: sql<number>`count(*)` })
+    .from(schema.feedbackItems)
+    .where(whereClause)
+    .get();
+  const total = countResult?.count || 0;
+
+  const hydrated = items.map((item) => {
+    const tags = db
+      .select()
+      .from(schema.feedbackTags)
+      .where(eq(schema.feedbackTags.feedbackId, item.id))
+      .all()
+      .map((t) => t.tag);
+    const screenshots = db
+      .select()
+      .from(schema.feedbackScreenshots)
+      .where(eq(schema.feedbackScreenshots.feedbackId, item.id))
+      .all();
+    return hydrateFeedback(item, tags, screenshots);
+  });
+
+  return c.json({
+    items: hydrated,
+    total,
+    page,
+    limit,
+    totalPages: Math.ceil(total / limit),
+  });
+});
+
+adminRoutes.get('/feedback/:id', async (c) => {
+  const id = c.req.param('id');
+  const item = await db.query.feedbackItems.findFirst({
+    where: eq(schema.feedbackItems.id, id),
+  });
+
+  if (!item) {
+    return c.json({ error: 'Not found' }, 404);
+  }
+
+  const tags = db
+    .select()
+    .from(schema.feedbackTags)
+    .where(eq(schema.feedbackTags.feedbackId, id))
+    .all()
+    .map((t) => t.tag);
+  const screenshots = db
+    .select()
+    .from(schema.feedbackScreenshots)
+    .where(eq(schema.feedbackScreenshots.feedbackId, id))
+    .all();
+
+  return c.json(hydrateFeedback(item, tags, screenshots));
+});
+
+adminRoutes.patch('/feedback/:id', async (c) => {
+  const id = c.req.param('id');
+  const body = await c.req.json();
+  const parsed = feedbackUpdateSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: 'Validation failed', details: parsed.error.flatten() }, 400);
+  }
+
+  const existing = await db.query.feedbackItems.findFirst({
+    where: eq(schema.feedbackItems.id, id),
+  });
+  if (!existing) {
+    return c.json({ error: 'Not found' }, 404);
+  }
+
+  const now = new Date().toISOString();
+  const updates: Record<string, unknown> = { updatedAt: now };
+  if (parsed.data.status) updates.status = parsed.data.status;
+  if (parsed.data.title) updates.title = parsed.data.title;
+  if (parsed.data.description !== undefined) updates.description = parsed.data.description;
+
+  await db.update(schema.feedbackItems).set(updates).where(eq(schema.feedbackItems.id, id));
+
+  if (parsed.data.tags) {
+    await db.delete(schema.feedbackTags).where(eq(schema.feedbackTags.feedbackId, id));
+    if (parsed.data.tags.length > 0) {
+      await db.insert(schema.feedbackTags).values(
+        parsed.data.tags.map((tag) => ({ feedbackId: id, tag }))
+      );
+    }
+  }
+
+  return c.json({ id, updated: true });
+});
+
+adminRoutes.delete('/feedback/:id', async (c) => {
+  const id = c.req.param('id');
+  const existing = await db.query.feedbackItems.findFirst({
+    where: eq(schema.feedbackItems.id, id),
+  });
+  if (!existing) {
+    return c.json({ error: 'Not found' }, 404);
+  }
+
+  await db.delete(schema.feedbackItems).where(eq(schema.feedbackItems.id, id));
+  return c.json({ id, deleted: true });
+});
+
+adminRoutes.post('/feedback/batch', async (c) => {
+  const body = await c.req.json();
+  const parsed = batchOperationSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: 'Validation failed', details: parsed.error.flatten() }, 400);
+  }
+
+  const { ids, operation, value } = parsed.data;
+  const now = new Date().toISOString();
+  let affected = 0;
+
+  for (const id of ids) {
+    const existing = await db.query.feedbackItems.findFirst({
+      where: eq(schema.feedbackItems.id, id),
+    });
+    if (!existing) continue;
+
+    switch (operation) {
+      case 'updateStatus':
+        if (value) {
+          await db.update(schema.feedbackItems)
+            .set({ status: value, updatedAt: now })
+            .where(eq(schema.feedbackItems.id, id));
+          affected++;
+        }
+        break;
+      case 'addTag':
+        if (value) {
+          const existingTag = db
+            .select()
+            .from(schema.feedbackTags)
+            .where(and(eq(schema.feedbackTags.feedbackId, id), eq(schema.feedbackTags.tag, value)))
+            .get();
+          if (!existingTag) {
+            await db.insert(schema.feedbackTags).values({ feedbackId: id, tag: value });
+          }
+          affected++;
+        }
+        break;
+      case 'removeTag':
+        if (value) {
+          await db.delete(schema.feedbackTags)
+            .where(and(eq(schema.feedbackTags.feedbackId, id), eq(schema.feedbackTags.tag, value)));
+          affected++;
+        }
+        break;
+      case 'delete':
+        await db.delete(schema.feedbackItems).where(eq(schema.feedbackItems.id, id));
+        affected++;
+        break;
+    }
+  }
+
+  return c.json({ operation, affected });
+});
+
+// Agent endpoints CRUD
+adminRoutes.get('/agents', async (c) => {
+  const agents = db.select().from(schema.agentEndpoints).all();
+  return c.json(agents);
+});
+
+adminRoutes.post('/agents', async (c) => {
+  const body = await c.req.json();
+  const parsed = agentEndpointSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: 'Validation failed', details: parsed.error.flatten() }, 400);
+  }
+
+  const now = new Date().toISOString();
+  const id = ulid();
+
+  if (parsed.data.isDefault) {
+    await db.update(schema.agentEndpoints)
+      .set({ isDefault: false, updatedAt: now });
+  }
+
+  await db.insert(schema.agentEndpoints).values({
+    id,
+    name: parsed.data.name,
+    url: parsed.data.url,
+    authHeader: parsed.data.authHeader || null,
+    isDefault: parsed.data.isDefault,
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  return c.json({ id }, 201);
+});
+
+adminRoutes.patch('/agents/:id', async (c) => {
+  const id = c.req.param('id');
+  const body = await c.req.json();
+  const parsed = agentEndpointSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: 'Validation failed', details: parsed.error.flatten() }, 400);
+  }
+
+  const existing = await db.query.agentEndpoints.findFirst({
+    where: eq(schema.agentEndpoints.id, id),
+  });
+  if (!existing) {
+    return c.json({ error: 'Not found' }, 404);
+  }
+
+  const now = new Date().toISOString();
+
+  if (parsed.data.isDefault) {
+    await db.update(schema.agentEndpoints)
+      .set({ isDefault: false, updatedAt: now });
+  }
+
+  await db.update(schema.agentEndpoints).set({
+    name: parsed.data.name,
+    url: parsed.data.url,
+    authHeader: parsed.data.authHeader || null,
+    isDefault: parsed.data.isDefault,
+    updatedAt: now,
+  }).where(eq(schema.agentEndpoints.id, id));
+
+  return c.json({ id, updated: true });
+});
+
+adminRoutes.delete('/agents/:id', async (c) => {
+  const id = c.req.param('id');
+  const existing = await db.query.agentEndpoints.findFirst({
+    where: eq(schema.agentEndpoints.id, id),
+  });
+  if (!existing) {
+    return c.json({ error: 'Not found' }, 404);
+  }
+
+  await db.delete(schema.agentEndpoints).where(eq(schema.agentEndpoints.id, id));
+  return c.json({ id, deleted: true });
+});
+
+// Dispatch
+adminRoutes.post('/dispatch', async (c) => {
+  const body = await c.req.json();
+  const parsed = dispatchSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: 'Validation failed', details: parsed.error.flatten() }, 400);
+  }
+
+  const { feedbackId, agentEndpointId, instructions } = parsed.data;
+
+  const feedback = await db.query.feedbackItems.findFirst({
+    where: eq(schema.feedbackItems.id, feedbackId),
+  });
+  if (!feedback) {
+    return c.json({ error: 'Feedback not found' }, 404);
+  }
+
+  const agent = await db.query.agentEndpoints.findFirst({
+    where: eq(schema.agentEndpoints.id, agentEndpointId),
+  });
+  if (!agent) {
+    return c.json({ error: 'Agent endpoint not found' }, 404);
+  }
+
+  const tags = db
+    .select()
+    .from(schema.feedbackTags)
+    .where(eq(schema.feedbackTags.feedbackId, feedbackId))
+    .all()
+    .map((t) => t.tag);
+  const screenshots = db
+    .select()
+    .from(schema.feedbackScreenshots)
+    .where(eq(schema.feedbackScreenshots.feedbackId, feedbackId))
+    .all();
+
+  const payload = {
+    feedback: hydrateFeedback(feedback, tags, screenshots),
+    instructions,
+  };
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (agent.authHeader) {
+    headers['Authorization'] = agent.authHeader;
+  }
+
+  try {
+    const response = await fetch(agent.url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+    });
+
+    const now = new Date().toISOString();
+    const responseText = await response.text();
+
+    await db.update(schema.feedbackItems).set({
+      status: 'dispatched',
+      dispatchedTo: agent.name,
+      dispatchedAt: now,
+      dispatchStatus: response.ok ? 'success' : 'error',
+      dispatchResponse: responseText.slice(0, 5000),
+      updatedAt: now,
+    }).where(eq(schema.feedbackItems.id, feedbackId));
+
+    return c.json({
+      dispatched: true,
+      status: response.status,
+      response: responseText.slice(0, 1000),
+    });
+  } catch (err) {
+    const now = new Date().toISOString();
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+
+    await db.update(schema.feedbackItems).set({
+      dispatchedTo: agent.name,
+      dispatchedAt: now,
+      dispatchStatus: 'error',
+      dispatchResponse: errorMsg,
+      updatedAt: now,
+    }).where(eq(schema.feedbackItems.id, feedbackId));
+
+    return c.json({ dispatched: false, error: errorMsg }, 502);
+  }
+});
