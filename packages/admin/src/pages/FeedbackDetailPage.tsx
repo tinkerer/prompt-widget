@@ -7,6 +7,7 @@ const loading = signal(true);
 const error = signal('');
 const showDispatch = signal(false);
 const agents = signal<any[]>([]);
+const applications = signal<any[]>([]);
 const dispatchAgentId = signal('');
 const dispatchInstructions = signal('');
 const dispatchLoading = signal(false);
@@ -62,11 +63,50 @@ async function removeTag(tag: string) {
 }
 
 async function openDispatch() {
-  agents.value = await api.getAgents();
+  const [agentsList, appsList] = await Promise.all([
+    api.getAgents(),
+    api.getApplications(),
+  ]);
+  agents.value = agentsList;
+  applications.value = appsList;
   const def = agents.value.find((a) => a.isDefault);
   if (def) dispatchAgentId.value = def.id;
   else if (agents.value.length > 0) dispatchAgentId.value = agents.value[0].id;
   showDispatch.value = true;
+}
+
+function fillPreviewTemplate(template: string, fb: any, instructions: string): string {
+  const consoleLogs = fb.context?.consoleLogs
+    ?.map((l: any) => `[${l.level.toUpperCase()}] ${l.message}`)
+    .join('\n') || '';
+  const networkErrors = fb.context?.networkErrors
+    ?.map((e: any) => `${e.method} ${e.url} -> ${e.status} ${e.statusText}`)
+    .join('\n') || '';
+
+  const selectedAgent = agents.value.find((a) => a.id === dispatchAgentId.value);
+  const app = selectedAgent?.appId ? applications.value.find((a: any) => a.id === selectedAgent.appId) : null;
+
+  const replacements: Record<string, string> = {
+    '{{feedback.title}}': fb.title || '',
+    '{{feedback.description}}': fb.description || '',
+    '{{feedback.consoleLogs}}': consoleLogs,
+    '{{feedback.networkErrors}}': networkErrors,
+    '{{feedback.data}}': fb.data ? JSON.stringify(fb.data, null, 2) : '',
+    '{{feedback.tags}}': (fb.tags || []).join(', '),
+    '{{app.name}}': app?.name || '',
+    '{{app.projectDir}}': app?.projectDir || '',
+    '{{app.hooks}}': (app?.hooks || []).join(', '),
+    '{{app.description}}': app?.description || '',
+    '{{instructions}}': instructions,
+    '{{session.url}}': fb.sourceUrl || '',
+    '{{session.viewport}}': fb.viewport || '',
+  };
+
+  let result = template;
+  for (const [key, value] of Object.entries(replacements)) {
+    result = result.replaceAll(key, value);
+  }
+  return result;
 }
 
 async function doDispatch() {
@@ -337,58 +377,69 @@ export function FeedbackDetailPage({ id }: { id: string }) {
         </div>
       </div>
 
-      {showDispatch.value && (
-        <div class="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) showDispatch.value = false; }}>
-          <div class="modal">
-            <h3>Dispatch to Agent</h3>
-            <div class="form-group">
-              <label>Agent Endpoint</label>
-              <select
-                value={dispatchAgentId.value}
-                onChange={(e) => (dispatchAgentId.value = (e.target as HTMLSelectElement).value)}
-                style="width:100%"
-              >
-                {agents.value.map((a) => (
-                  <option value={a.id}>{a.name} {a.isDefault ? '(default)' : ''}</option>
-                ))}
-              </select>
-              {agents.value.length === 0 && (
-                <p style="color:#dc2626;font-size:13px;margin-top:4px">
-                  No agent endpoints configured. Add one in Settings first.
-                </p>
-              )}
-            </div>
-            <div class="form-group">
-              <label>Instructions (optional)</label>
-              <textarea
-                value={dispatchInstructions.value}
-                onInput={(e) => (dispatchInstructions.value = (e.target as HTMLTextAreaElement).value)}
-                placeholder="Additional instructions for the agent..."
-                style="width:100%;min-height:80px"
-              />
-            </div>
-            <div class="form-group">
-              <label>Preview Payload</label>
-              <div class="json-viewer" style="max-height:200px;font-size:11px">
-                {formatJson({
-                  feedback: { id: fb.id, type: fb.type, title: fb.title, status: fb.status },
-                  instructions: dispatchInstructions.value || undefined,
-                })}
+      {showDispatch.value && (() => {
+        const selectedAgent = agents.value.find((a) => a.id === dispatchAgentId.value);
+        const agentMode = selectedAgent?.mode || 'webhook';
+        const hasTemplate = agentMode !== 'webhook' && selectedAgent?.promptTemplate;
+
+        return (
+          <div class="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) showDispatch.value = false; }}>
+            <div class="modal">
+              <h3>Dispatch to Agent</h3>
+              <div class="form-group">
+                <label>Agent Endpoint</label>
+                <select
+                  value={dispatchAgentId.value}
+                  onChange={(e) => (dispatchAgentId.value = (e.target as HTMLSelectElement).value)}
+                  style="width:100%"
+                >
+                  {agents.value.map((a) => (
+                    <option value={a.id}>
+                      {a.name} {a.isDefault ? '(default)' : ''} [{a.mode || 'webhook'}]
+                    </option>
+                  ))}
+                </select>
+                {agents.value.length === 0 && (
+                  <p style="color:#dc2626;font-size:13px;margin-top:4px">
+                    No agent endpoints configured. Add one in Settings first.
+                  </p>
+                )}
+              </div>
+              <div class="form-group">
+                <label>Instructions (optional)</label>
+                <textarea
+                  value={dispatchInstructions.value}
+                  onInput={(e) => (dispatchInstructions.value = (e.target as HTMLTextAreaElement).value)}
+                  placeholder="Additional instructions for the agent..."
+                  style="width:100%;min-height:80px"
+                />
+              </div>
+              <div class="form-group">
+                <label>{hasTemplate ? 'Filled Prompt Preview' : 'Preview Payload'}</label>
+                <div class="json-viewer" style="max-height:250px;font-size:11px;white-space:pre-wrap">
+                  {hasTemplate
+                    ? fillPreviewTemplate(selectedAgent.promptTemplate, fb, dispatchInstructions.value)
+                    : formatJson({
+                        feedback: { id: fb.id, type: fb.type, title: fb.title, status: fb.status },
+                        instructions: dispatchInstructions.value || undefined,
+                      })
+                  }
+                </div>
+              </div>
+              <div class="modal-actions">
+                <button class="btn" onClick={() => (showDispatch.value = false)}>Cancel</button>
+                <button
+                  class="btn btn-primary"
+                  disabled={!dispatchAgentId.value || dispatchLoading.value}
+                  onClick={doDispatch}
+                >
+                  {dispatchLoading.value ? 'Dispatching...' : 'Dispatch'}
+                </button>
               </div>
             </div>
-            <div class="modal-actions">
-              <button class="btn" onClick={() => (showDispatch.value = false)}>Cancel</button>
-              <button
-                class="btn btn-primary"
-                disabled={!dispatchAgentId.value || dispatchLoading.value}
-                onClick={doDispatch}
-              >
-                {dispatchLoading.value ? 'Dispatching...' : 'Dispatch'}
-              </button>
-            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

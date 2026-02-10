@@ -4,6 +4,7 @@ import type {
   WIDGET_MODES,
   WIDGET_POSITIONS,
   COLLECTORS,
+  DISPATCH_MODES,
 } from './constants.js';
 
 export type FeedbackType = (typeof FEEDBACK_TYPES)[number];
@@ -11,6 +12,7 @@ export type FeedbackStatus = (typeof FEEDBACK_STATUSES)[number];
 export type WidgetMode = (typeof WIDGET_MODES)[number];
 export type WidgetPosition = (typeof WIDGET_POSITIONS)[number];
 export type Collector = (typeof COLLECTORS)[number];
+export type DispatchMode = (typeof DISPATCH_MODES)[number];
 
 export interface FeedbackContext {
   consoleLogs?: ConsoleEntry[];
@@ -64,6 +66,7 @@ export interface FeedbackItem {
   viewport: string | null;
   sessionId: string | null;
   userId: string | null;
+  appId: string | null;
   tags: string[];
   screenshots: FeedbackScreenshot[];
   dispatchedTo: string | null;
@@ -83,12 +86,27 @@ export interface FeedbackScreenshot {
   createdAt: string;
 }
 
+export interface Application {
+  id: string;
+  name: string;
+  apiKey: string;
+  projectDir: string;
+  serverUrl: string | null;
+  hooks: string[];
+  description: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AgentEndpoint {
   id: string;
   name: string;
   url: string;
   authHeader: string | null;
   isDefault: boolean;
+  appId: string | null;
+  promptTemplate: string | null;
+  mode: DispatchMode;
   createdAt: string;
   updatedAt: string;
 }
@@ -99,6 +117,7 @@ export interface WidgetConfig {
   position: WidgetPosition;
   shortcut: string;
   collectors: Collector[];
+  appKey?: string;
 }
 
 export interface SubmitOptions {

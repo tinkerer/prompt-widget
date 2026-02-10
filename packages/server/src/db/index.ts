@@ -65,5 +65,35 @@ export function runMigrations() {
     CREATE INDEX IF NOT EXISTS idx_screenshots_feedback ON feedback_screenshots(feedback_id);
     CREATE INDEX IF NOT EXISTS idx_tags_feedback ON feedback_tags(feedback_id);
     CREATE INDEX IF NOT EXISTS idx_tags_tag ON feedback_tags(tag);
+
+    CREATE TABLE IF NOT EXISTS applications (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      api_key TEXT NOT NULL UNIQUE,
+      project_dir TEXT NOT NULL,
+      server_url TEXT,
+      hooks TEXT NOT NULL DEFAULT '[]',
+      description TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_applications_api_key ON applications(api_key);
   `);
+
+  // Add new columns to existing tables (idempotent via try/catch)
+  const alterStatements = [
+    `ALTER TABLE feedback_items ADD COLUMN app_id TEXT REFERENCES applications(id) ON DELETE SET NULL`,
+    `ALTER TABLE agent_endpoints ADD COLUMN app_id TEXT REFERENCES applications(id) ON DELETE SET NULL`,
+    `ALTER TABLE agent_endpoints ADD COLUMN prompt_template TEXT`,
+    `ALTER TABLE agent_endpoints ADD COLUMN mode TEXT NOT NULL DEFAULT 'webhook'`,
+  ];
+
+  for (const stmt of alterStatements) {
+    try {
+      sqlite.exec(stmt);
+    } catch {
+      // Column already exists
+    }
+  }
 }

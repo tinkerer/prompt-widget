@@ -433,6 +433,140 @@ input:focus, select:focus, textarea:focus {
   color: #64748b;
 }
 
+/* Getting Started markdown */
+.getting-started-content {
+  background: white;
+  border-radius: 8px;
+  padding: 32px 40px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  line-height: 1.7;
+  max-width: 900px;
+}
+
+.getting-started-content h1 {
+  font-size: 26px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  color: #1e293b;
+}
+
+.getting-started-content h2 {
+  font-size: 20px;
+  font-weight: 600;
+  margin-top: 32px;
+  margin-bottom: 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #e2e8f0;
+  color: #1e293b;
+}
+
+.getting-started-content h3 {
+  font-size: 16px;
+  font-weight: 600;
+  margin-top: 24px;
+  margin-bottom: 8px;
+  color: #334155;
+}
+
+.getting-started-content p {
+  margin-bottom: 12px;
+  color: #334155;
+}
+
+.getting-started-content hr {
+  border: none;
+  border-top: 1px solid #e2e8f0;
+  margin: 28px 0;
+}
+
+.getting-started-content code {
+  background: #f1f5f9;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-size: 13px;
+  color: #6366f1;
+}
+
+.getting-started-content pre {
+  background: #1e293b;
+  border-radius: 8px;
+  padding: 16px 20px;
+  overflow-x: auto;
+  margin-bottom: 16px;
+}
+
+.getting-started-content pre code {
+  background: none;
+  padding: 0;
+  color: #e2e8f0;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.getting-started-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
+.getting-started-content th {
+  text-align: left;
+  padding: 8px 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  font-weight: 600;
+  color: #475569;
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.getting-started-content td {
+  padding: 8px 12px;
+  border: 1px solid #e2e8f0;
+  color: #334155;
+}
+
+.getting-started-content tr:hover td {
+  background: #fafbfd;
+}
+
+.getting-started-content ul,
+.getting-started-content ol {
+  margin-bottom: 12px;
+  padding-left: 24px;
+}
+
+.getting-started-content li {
+  margin-bottom: 4px;
+  color: #334155;
+}
+
+.getting-started-content a {
+  color: #6366f1;
+  text-decoration: none;
+}
+
+.getting-started-content a:hover {
+  text-decoration: underline;
+}
+
+.getting-started-content blockquote {
+  border-left: 3px solid #6366f1;
+  padding: 8px 16px;
+  margin: 12px 0;
+  background: #f8fafc;
+  color: #475569;
+  border-radius: 0 6px 6px 0;
+}
+
+.getting-started-content strong {
+  font-weight: 600;
+  color: #1e293b;
+}
+
 /* JSON viewer */
 .json-viewer {
   background: #1e293b;

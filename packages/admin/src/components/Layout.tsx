@@ -17,11 +17,25 @@ export function Layout({ children }: { children: ComponentChildren }) {
             Feedback
           </a>
           <a
+            href="#/applications"
+            class={route === '/applications' ? 'active' : ''}
+            onClick={() => navigate('/applications')}
+          >
+            Applications
+          </a>
+          <a
             href="#/agents"
             class={route === '/agents' ? 'active' : ''}
             onClick={() => navigate('/agents')}
           >
             Agent Endpoints
+          </a>
+          <a
+            href="#/getting-started"
+            class={route === '/getting-started' ? 'active' : ''}
+            onClick={() => navigate('/getting-started')}
+          >
+            Getting Started
           </a>
           <a
             href="#"

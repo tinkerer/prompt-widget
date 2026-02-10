@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { FEEDBACK_TYPES, FEEDBACK_STATUSES } from './constants.js';
+import { FEEDBACK_TYPES, FEEDBACK_STATUSES, DISPATCH_MODES } from './constants.js';
 
 export const feedbackSubmitSchema = z.object({
   type: z.enum(FEEDBACK_TYPES).default('manual'),
@@ -86,11 +86,22 @@ export const batchOperationSchema = z.object({
   value: z.string().optional(),
 });
 
+export const applicationSchema = z.object({
+  name: z.string().min(1).max(100),
+  projectDir: z.string().min(1).max(500),
+  serverUrl: z.string().url().optional(),
+  hooks: z.array(z.string().max(100)).max(50).default([]),
+  description: z.string().max(5000).default(''),
+});
+
 export const agentEndpointSchema = z.object({
   name: z.string().min(1).max(100),
-  url: z.string().url(),
+  url: z.string().default(''),
   authHeader: z.string().optional(),
   isDefault: z.boolean().default(false),
+  appId: z.string().optional(),
+  promptTemplate: z.string().max(10000).optional(),
+  mode: z.enum(DISPATCH_MODES).default('webhook'),
 });
 
 export const dispatchSchema = z.object({

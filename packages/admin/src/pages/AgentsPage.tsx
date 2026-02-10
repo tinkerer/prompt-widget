@@ -2,6 +2,7 @@ import { signal } from '@preact/signals';
 import { api } from '../lib/api.js';
 
 const agents = signal<any[]>([]);
+const applications = signal<any[]>([]);
 const loading = signal(true);
 const showForm = signal(false);
 const editingId = signal<string | null>(null);
@@ -9,13 +10,21 @@ const formName = signal('');
 const formUrl = signal('');
 const formAuth = signal('');
 const formDefault = signal(false);
+const formAppId = signal('');
+const formMode = signal<'webhook' | 'headless' | 'interactive'>('webhook');
+const formPromptTemplate = signal('');
 const formError = signal('');
 const formLoading = signal(false);
 
 async function loadAgents() {
   loading.value = true;
   try {
-    agents.value = await api.getAgents();
+    const [agentsList, appsList] = await Promise.all([
+      api.getAgents(),
+      api.getApplications(),
+    ]);
+    agents.value = agentsList;
+    applications.value = appsList;
   } catch (err) {
     console.error('Failed to load agents:', err);
   } finally {
@@ -31,6 +40,9 @@ function openCreate() {
   formUrl.value = '';
   formAuth.value = '';
   formDefault.value = false;
+  formAppId.value = '';
+  formMode.value = 'webhook';
+  formPromptTemplate.value = '';
   formError.value = '';
   showForm.value = true;
 }
@@ -38,9 +50,12 @@ function openCreate() {
 function openEdit(agent: any) {
   editingId.value = agent.id;
   formName.value = agent.name;
-  formUrl.value = agent.url;
+  formUrl.value = agent.url || '';
   formAuth.value = agent.authHeader || '';
   formDefault.value = agent.isDefault;
+  formAppId.value = agent.appId || '';
+  formMode.value = agent.mode || 'webhook';
+  formPromptTemplate.value = agent.promptTemplate || '';
   formError.value = '';
   showForm.value = true;
 }
@@ -50,11 +65,14 @@ async function saveAgent(e: Event) {
   formError.value = '';
   formLoading.value = true;
 
-  const data = {
+  const data: Record<string, unknown> = {
     name: formName.value,
-    url: formUrl.value,
+    url: formUrl.value || undefined,
     authHeader: formAuth.value || undefined,
     isDefault: formDefault.value,
+    appId: formAppId.value || undefined,
+    mode: formMode.value,
+    promptTemplate: formPromptTemplate.value || undefined,
   };
 
   try {
@@ -78,6 +96,18 @@ async function deleteAgent(id: string) {
   await loadAgents();
 }
 
+function getAppName(appId: string | null): string | null {
+  if (!appId) return null;
+  const app = applications.value.find((a) => a.id === appId);
+  return app?.name || null;
+}
+
+const MODE_LABELS: Record<string, string> = {
+  webhook: 'Webhook',
+  headless: 'Headless',
+  interactive: 'Interactive',
+};
+
 export function AgentsPage() {
   return (
     <div>
@@ -93,9 +123,13 @@ export function AgentsPage() {
               <h4>
                 {agent.name}
                 {agent.isDefault && <span class="badge badge-resolved" style="margin-left:8px">default</span>}
+                <span class="badge" style="margin-left:8px;background:#334155">{MODE_LABELS[agent.mode] || 'Webhook'}</span>
               </h4>
-              <p>{agent.url}</p>
+              {agent.mode === 'webhook' && <p>{agent.url}</p>}
               {agent.authHeader && <p style="font-size:12px;color:#94a3b8">Auth header configured</p>}
+              {getAppName(agent.appId) && (
+                <p style="font-size:12px;color:#94a3b8">App: {getAppName(agent.appId)}</p>
+              )}
             </div>
             <div style="display:flex;gap:8px">
               <button class="btn btn-sm" onClick={() => openEdit(agent)}>Edit</button>
@@ -127,26 +161,73 @@ export function AgentsPage() {
               />
             </div>
             <div class="form-group">
-              <label>URL</label>
-              <input
-                type="url"
-                value={formUrl.value}
-                onInput={(e) => (formUrl.value = (e.target as HTMLInputElement).value)}
-                placeholder="https://agent.example.com/webhook"
-                required
-                style="width:100%"
-              />
+              <label>Mode</label>
+              <div style="display:flex;gap:16px">
+                {(['webhook', 'headless', 'interactive'] as const).map((m) => (
+                  <label key={m} style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:13px">
+                    <input
+                      type="radio"
+                      name="mode"
+                      value={m}
+                      checked={formMode.value === m}
+                      onChange={() => (formMode.value = m)}
+                    />
+                    {MODE_LABELS[m]}
+                  </label>
+                ))}
+              </div>
             </div>
             <div class="form-group">
-              <label>Authorization Header (optional)</label>
-              <input
-                type="text"
-                value={formAuth.value}
-                onInput={(e) => (formAuth.value = (e.target as HTMLInputElement).value)}
-                placeholder="Bearer sk-..."
+              <label>Application (optional)</label>
+              <select
+                value={formAppId.value}
+                onChange={(e) => (formAppId.value = (e.target as HTMLSelectElement).value)}
                 style="width:100%"
-              />
+              >
+                <option value="">None</option>
+                {applications.value.map((app) => (
+                  <option value={app.id} key={app.id}>{app.name}</option>
+                ))}
+              </select>
             </div>
+            {formMode.value === 'webhook' && (
+              <>
+                <div class="form-group">
+                  <label>URL</label>
+                  <input
+                    type="url"
+                    value={formUrl.value}
+                    onInput={(e) => (formUrl.value = (e.target as HTMLInputElement).value)}
+                    placeholder="https://agent.example.com/webhook"
+                    style="width:100%"
+                  />
+                </div>
+                <div class="form-group">
+                  <label>Authorization Header (optional)</label>
+                  <input
+                    type="text"
+                    value={formAuth.value}
+                    onInput={(e) => (formAuth.value = (e.target as HTMLInputElement).value)}
+                    placeholder="Bearer sk-..."
+                    style="width:100%"
+                  />
+                </div>
+              </>
+            )}
+            {(formMode.value === 'headless' || formMode.value === 'interactive') && (
+              <div class="form-group">
+                <label>Prompt Template</label>
+                <textarea
+                  value={formPromptTemplate.value}
+                  onInput={(e) => (formPromptTemplate.value = (e.target as HTMLTextAreaElement).value)}
+                  placeholder={'{{feedback.title}}\n\n{{feedback.description}}\n\n{{instructions}}'}
+                  style="width:100%;min-height:120px;font-family:monospace;font-size:12px"
+                />
+                <span style="font-size:11px;color:#94a3b8">
+                  Variables: {'{{feedback.title}}'}, {'{{feedback.description}}'}, {'{{feedback.consoleLogs}}'}, {'{{feedback.networkErrors}}'}, {'{{feedback.data}}'}, {'{{feedback.tags}}'}, {'{{app.name}}'}, {'{{app.projectDir}}'}, {'{{app.hooks}}'}, {'{{app.description}}'}, {'{{instructions}}'}, {'{{session.url}}'}, {'{{session.viewport}}'}
+                </span>
+              </div>
+            )}
             <div class="form-group">
               <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
                 <input

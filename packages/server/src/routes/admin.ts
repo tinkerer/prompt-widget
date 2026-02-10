@@ -10,6 +10,14 @@ import {
 } from '@prompt-widget/shared';
 import type { FeedbackItem } from '@prompt-widget/shared';
 import { db, schema } from '../db/index.js';
+import { getSession } from '../sessions.js';
+import {
+  fillPromptTemplate,
+  dispatchWebhook,
+  dispatchHeadless,
+  dispatchInteractive,
+} from '../dispatch.js';
+import type { DispatchContext } from '../dispatch.js';
 
 export const adminRoutes = new Hono();
 
@@ -20,6 +28,7 @@ function hydrateFeedback(row: typeof schema.feedbackItems.$inferSelect, tags: st
     status: row.status as FeedbackItem['status'],
     data: row.data ? JSON.parse(row.data) : null,
     context: row.context ? JSON.parse(row.context) : null,
+    appId: row.appId || null,
     tags,
     screenshots,
   };
@@ -259,9 +268,12 @@ adminRoutes.post('/agents', async (c) => {
   await db.insert(schema.agentEndpoints).values({
     id,
     name: parsed.data.name,
-    url: parsed.data.url,
+    url: parsed.data.url || '',
     authHeader: parsed.data.authHeader || null,
     isDefault: parsed.data.isDefault,
+    appId: parsed.data.appId || null,
+    promptTemplate: parsed.data.promptTemplate || null,
+    mode: parsed.data.mode || 'webhook',
     createdAt: now,
     updatedAt: now,
   });
@@ -293,9 +305,12 @@ adminRoutes.patch('/agents/:id', async (c) => {
 
   await db.update(schema.agentEndpoints).set({
     name: parsed.data.name,
-    url: parsed.data.url,
+    url: parsed.data.url || '',
     authHeader: parsed.data.authHeader || null,
     isDefault: parsed.data.isDefault,
+    appId: parsed.data.appId || null,
+    promptTemplate: parsed.data.promptTemplate || null,
+    mode: parsed.data.mode || 'webhook',
     updatedAt: now,
   }).where(eq(schema.agentEndpoints.id, id));
 
@@ -351,38 +366,84 @@ adminRoutes.post('/dispatch', async (c) => {
     .where(eq(schema.feedbackScreenshots.feedbackId, feedbackId))
     .all();
 
-  const payload = {
-    feedback: hydrateFeedback(feedback, tags, screenshots),
-    instructions,
-  };
+  const hydratedFeedback = hydrateFeedback(feedback, tags, screenshots);
 
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (agent.authHeader) {
-    headers['Authorization'] = agent.authHeader;
+  // Look up associated application
+  let app = null;
+  if (agent.appId) {
+    const appRow = await db.query.applications.findFirst({
+      where: eq(schema.applications.id, agent.appId),
+    });
+    if (appRow) {
+      app = { ...appRow, hooks: JSON.parse(appRow.hooks) };
+    }
   }
 
+  // Find live session for prompt context
+  let sessionInfo: { url: string | null; viewport: string | null } | undefined;
+  if (feedback.sessionId) {
+    const liveSession = getSession(feedback.sessionId);
+    if (liveSession) {
+      sessionInfo = { url: liveSession.url, viewport: liveSession.viewport };
+    }
+  }
+
+  const mode = (agent.mode || 'webhook') as 'webhook' | 'headless' | 'interactive';
+
   try {
-    const response = await fetch(agent.url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(payload),
-    });
+    let status: number;
+    let responseText: string;
+
+    if (mode === 'webhook') {
+      const result = await dispatchWebhook(agent.url, agent.authHeader, {
+        feedback: hydratedFeedback,
+        instructions,
+      });
+      status = result.status;
+      responseText = result.response;
+    } else {
+      const template = agent.promptTemplate || '{{feedback.title}}\n\n{{feedback.description}}\n\n{{instructions}}';
+      const ctx: DispatchContext = {
+        feedback: hydratedFeedback,
+        agent: {
+          ...agent,
+          mode: agent.mode as 'webhook' | 'headless' | 'interactive',
+          appId: agent.appId || null,
+          promptTemplate: agent.promptTemplate || null,
+          authHeader: agent.authHeader || null,
+          isDefault: !!agent.isDefault,
+        },
+        app,
+        instructions,
+        session: sessionInfo,
+      };
+      const filledPrompt = fillPromptTemplate(template, ctx);
+      const cwd = app?.projectDir || process.cwd();
+
+      if (mode === 'headless') {
+        const result = await dispatchHeadless(filledPrompt, cwd);
+        status = result.status;
+        responseText = result.response;
+      } else {
+        const result = await dispatchInteractive(filledPrompt, cwd);
+        status = result.status;
+        responseText = result.response;
+      }
+    }
 
     const now = new Date().toISOString();
-    const responseText = await response.text();
-
     await db.update(schema.feedbackItems).set({
       status: 'dispatched',
       dispatchedTo: agent.name,
       dispatchedAt: now,
-      dispatchStatus: response.ok ? 'success' : 'error',
+      dispatchStatus: status >= 200 && status < 300 ? 'success' : 'error',
       dispatchResponse: responseText.slice(0, 5000),
       updatedAt: now,
     }).where(eq(schema.feedbackItems.id, feedbackId));
 
     return c.json({
       dispatched: true,
-      status: response.status,
+      status,
       response: responseText.slice(0, 1000),
     });
   } catch (err) {

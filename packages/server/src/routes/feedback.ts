@@ -5,6 +5,7 @@ import { writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { feedbackSubmitSchema } from '@prompt-widget/shared';
 import { db, schema } from '../db/index.js';
+import { getSession } from '../sessions.js';
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR || 'uploads';
 
@@ -47,6 +48,12 @@ feedbackRoutes.post('/', async (c) => {
   const id = ulid();
   const input = parsed.data;
 
+  let appId: string | null = null;
+  if (input.sessionId) {
+    const session = getSession(input.sessionId);
+    if (session?.appId) appId = session.appId;
+  }
+
   await db.insert(schema.feedbackItems).values({
     id,
     type: input.type,
@@ -60,6 +67,7 @@ feedbackRoutes.post('/', async (c) => {
     viewport: input.viewport || null,
     sessionId: input.sessionId || null,
     userId: input.userId || null,
+    appId,
     createdAt: now,
     updatedAt: now,
   });
@@ -102,6 +110,12 @@ feedbackRoutes.post('/programmatic', async (c) => {
   const id = ulid();
   const input = parsed.data;
 
+  let progAppId: string | null = null;
+  if (input.sessionId) {
+    const session = getSession(input.sessionId);
+    if (session?.appId) progAppId = session.appId;
+  }
+
   await db.insert(schema.feedbackItems).values({
     id,
     type: input.type,
@@ -115,6 +129,7 @@ feedbackRoutes.post('/programmatic', async (c) => {
     viewport: input.viewport || null,
     sessionId: input.sessionId || null,
     userId: input.userId || null,
+    appId: progAppId,
     createdAt: now,
     updatedAt: now,
   });

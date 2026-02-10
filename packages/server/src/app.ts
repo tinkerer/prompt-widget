@@ -7,6 +7,8 @@ import { adminRoutes } from './routes/admin.js';
 import { imageRoutes } from './routes/images.js';
 import { authRoutes } from './routes/auth.js';
 import { agentRoutes } from './routes/agent.js';
+import { applicationRoutes } from './routes/applications.js';
+import { gettingStartedMarkdown } from './getting-started.js';
 
 export const app = new Hono();
 
@@ -29,6 +31,15 @@ app.route('/api/v1/admin', adminRoutes);
 app.route('/api/v1/images', imageRoutes);
 app.route('/api/v1/auth', authRoutes);
 app.route('/api/v1/agent', agentRoutes);
+app.route('/api/v1/admin/applications', applicationRoutes);
+
+app.get('/GETTING_STARTED.md', (c) => {
+  const proto = c.req.header('x-forwarded-proto') || 'http';
+  const host = c.req.header('host') || 'localhost:3001';
+  const baseUrl = `${proto}://${host}`;
+  c.header('Content-Type', 'text/markdown; charset=utf-8');
+  return c.body(gettingStartedMarkdown(baseUrl));
+});
 
 // Serve widget JS from the widget package build output
 app.use('/widget/*', serveStatic({ root: '../widget/dist/', rewriteRequestPath: (path) => path.replace('/widget', '') }));

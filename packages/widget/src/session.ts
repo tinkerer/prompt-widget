@@ -14,19 +14,24 @@ export class SessionBridge {
   private sessionId: string;
   private endpoint: string;
   private collectors: Collector[];
+  private apiKey: string | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 1000;
 
-  constructor(endpoint: string, sessionId: string, collectors: Collector[]) {
+  constructor(endpoint: string, sessionId: string, collectors: Collector[], apiKey?: string) {
     this.endpoint = endpoint;
     this.sessionId = sessionId;
     this.collectors = collectors;
+    this.apiKey = apiKey;
   }
 
   connect() {
-    const wsUrl = this.endpoint
+    let wsUrl = this.endpoint
       .replace(/^http/, 'ws')
       .replace(/\/api\/v1\/feedback$/, `/ws?sessionId=${encodeURIComponent(this.sessionId)}`);
+    if (this.apiKey) {
+      wsUrl += `&apiKey=${encodeURIComponent(this.apiKey)}`;
+    }
 
     try {
       this.ws = new WebSocket(wsUrl);

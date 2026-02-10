@@ -47,6 +47,7 @@ export class PromptWidgetElement {
         'performance',
         'environment',
       ],
+      appKey: script?.dataset.appKey || undefined,
     };
 
     installCollectors(this.config.collectors);
@@ -54,7 +55,7 @@ export class PromptWidgetElement {
     this.bindShortcut();
 
     // Connect WebSocket session bridge for agent interaction
-    this.sessionBridge = new SessionBridge(this.config.endpoint, this.getSessionId(), this.config.collectors);
+    this.sessionBridge = new SessionBridge(this.config.endpoint, this.getSessionId(), this.config.collectors, this.config.appKey);
     this.sessionBridge.connect();
   }
 

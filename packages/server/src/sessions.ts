@@ -16,6 +16,7 @@ export interface SessionInfo {
   url: string | null;
   userId: string | null;
   viewport: string | null;
+  appId: string | null;
   pendingRequests: Map<string, PendingRequest>;
 }
 
@@ -23,7 +24,7 @@ const sessions = new Map<string, SessionInfo>();
 
 const REQUEST_TIMEOUT = 15_000;
 
-export function registerSession(sessionId: string, ws: WebSocket, meta: { userAgent?: string; url?: string; userId?: string; viewport?: string }) {
+export function registerSession(sessionId: string, ws: WebSocket, meta: { userAgent?: string; url?: string; userId?: string; viewport?: string; appId?: string }) {
   const existing = sessions.get(sessionId);
   if (existing && existing.ws.readyState === WebSocket.OPEN) {
     existing.ws.close(1000, 'replaced');
@@ -38,6 +39,7 @@ export function registerSession(sessionId: string, ws: WebSocket, meta: { userAg
     url: meta.url || null,
     userId: meta.userId || null,
     viewport: meta.viewport || null,
+    appId: meta.appId || null,
     pendingRequests: new Map(),
   };
 

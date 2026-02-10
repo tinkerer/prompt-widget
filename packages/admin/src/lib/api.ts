@@ -87,4 +87,28 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+
+  getApplications: () => request<any[]>('/admin/applications'),
+
+  getApplication: (id: string) => request<any>(`/admin/applications/${id}`),
+
+  createApplication: (data: Record<string, unknown>) =>
+    request<{ id: string; apiKey: string }>('/admin/applications', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  updateApplication: (id: string, data: Record<string, unknown>) =>
+    request(`/admin/applications/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  deleteApplication: (id: string) =>
+    request(`/admin/applications/${id}`, { method: 'DELETE' }),
+
+  regenerateApplicationKey: (id: string) =>
+    request<{ id: string; apiKey: string }>(`/admin/applications/${id}/regenerate-key`, {
+      method: 'POST',
+    }),
 };

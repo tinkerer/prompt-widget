@@ -33,4 +33,6 @@ export const COLLECTORS = [
 export const DEFAULT_POSITION = 'bottom-right' as const;
 export const DEFAULT_MODE = 'always' as const;
 export const DEFAULT_SHORTCUT = 'ctrl+shift+f';
+export const DISPATCH_MODES = ['webhook', 'headless', 'interactive'] as const;
+
 export const API_VERSION = 'v1';

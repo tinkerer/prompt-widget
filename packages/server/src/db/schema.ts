@@ -1,5 +1,17 @@
 import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core';
 
+export const applications = sqliteTable('applications', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  apiKey: text('api_key').notNull().unique(),
+  projectDir: text('project_dir').notNull(),
+  serverUrl: text('server_url'),
+  hooks: text('hooks').notNull().default('[]'),
+  description: text('description').notNull().default(''),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
 export const feedbackItems = sqliteTable('feedback_items', {
   id: text('id').primaryKey(),
   type: text('type').notNull().default('manual'),
@@ -13,6 +25,7 @@ export const feedbackItems = sqliteTable('feedback_items', {
   viewport: text('viewport'),
   sessionId: text('session_id'),
   userId: text('user_id'),
+  appId: text('app_id').references(() => applications.id, { onDelete: 'set null' }),
   dispatchedTo: text('dispatched_to'),
   dispatchedAt: text('dispatched_at'),
   dispatchStatus: text('dispatch_status'),
@@ -42,9 +55,12 @@ export const feedbackTags = sqliteTable('feedback_tags', {
 export const agentEndpoints = sqliteTable('agent_endpoints', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
-  url: text('url').notNull(),
+  url: text('url').notNull().default(''),
   authHeader: text('auth_header'),
   isDefault: integer('is_default', { mode: 'boolean' }).notNull().default(false),
+  appId: text('app_id').references(() => applications.id, { onDelete: 'set null' }),
+  promptTemplate: text('prompt_template'),
+  mode: text('mode').notNull().default('webhook'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
