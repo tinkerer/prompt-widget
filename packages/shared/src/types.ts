@@ -5,6 +5,8 @@ import type {
   WIDGET_POSITIONS,
   COLLECTORS,
   DISPATCH_MODES,
+  PERMISSION_PROFILES,
+  AGENT_SESSION_STATUSES,
 } from './constants.js';
 
 export type FeedbackType = (typeof FEEDBACK_TYPES)[number];
@@ -13,6 +15,8 @@ export type WidgetMode = (typeof WIDGET_MODES)[number];
 export type WidgetPosition = (typeof WIDGET_POSITIONS)[number];
 export type Collector = (typeof COLLECTORS)[number];
 export type DispatchMode = (typeof DISPATCH_MODES)[number];
+export type PermissionProfile = (typeof PERMISSION_PROFILES)[number];
+export type AgentSessionStatus = (typeof AGENT_SESSION_STATUSES)[number];
 
 export interface FeedbackContext {
   consoleLogs?: ConsoleEntry[];
@@ -107,8 +111,25 @@ export interface AgentEndpoint {
   appId: string | null;
   promptTemplate: string | null;
   mode: DispatchMode;
+  permissionProfile: PermissionProfile;
+  allowedTools: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AgentSession {
+  id: string;
+  feedbackId: string;
+  agentEndpointId: string;
+  permissionProfile: PermissionProfile;
+  status: AgentSessionStatus;
+  pid: number | null;
+  exitCode: number | null;
+  outputLog: string | null;
+  outputBytes: number;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
 }
 
 export interface WidgetConfig {

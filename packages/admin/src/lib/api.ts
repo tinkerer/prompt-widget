@@ -83,7 +83,7 @@ export const api = {
     request(`/admin/agents/${id}`, { method: 'DELETE' }),
 
   dispatch: (data: { feedbackId: string; agentEndpointId: string; instructions?: string }) =>
-    request('/admin/dispatch', {
+    request<{ dispatched: boolean; sessionId?: string; status: number; response: string }>('/admin/dispatch', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
@@ -109,6 +109,25 @@ export const api = {
 
   regenerateApplicationKey: (id: string) =>
     request<{ id: string; apiKey: string }>(`/admin/applications/${id}/regenerate-key`, {
+      method: 'POST',
+    }),
+
+  // Agent sessions
+  getAgentSessions: (feedbackId?: string) => {
+    const qs = feedbackId ? `?feedbackId=${feedbackId}` : '';
+    return request<any[]>(`/admin/agent-sessions${qs}`);
+  },
+
+  getAgentSession: (id: string) =>
+    request<any>(`/admin/agent-sessions/${id}`),
+
+  killAgentSession: (id: string) =>
+    request<{ id: string; killed: boolean }>(`/admin/agent-sessions/${id}/kill`, {
+      method: 'POST',
+    }),
+
+  resumeAgentSession: (id: string) =>
+    request<{ sessionId: string }>(`/admin/agent-sessions/${id}/resume`, {
       method: 'POST',
     }),
 };

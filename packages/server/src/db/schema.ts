@@ -61,6 +61,28 @@ export const agentEndpoints = sqliteTable('agent_endpoints', {
   appId: text('app_id').references(() => applications.id, { onDelete: 'set null' }),
   promptTemplate: text('prompt_template'),
   mode: text('mode').notNull().default('webhook'),
+  permissionProfile: text('permission_profile').notNull().default('interactive'),
+  allowedTools: text('allowed_tools'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
+});
+
+export const agentSessions = sqliteTable('agent_sessions', {
+  id: text('id').primaryKey(),
+  feedbackId: text('feedback_id')
+    .notNull()
+    .references(() => feedbackItems.id, { onDelete: 'cascade' }),
+  agentEndpointId: text('agent_endpoint_id')
+    .notNull()
+    .references(() => agentEndpoints.id, { onDelete: 'cascade' }),
+  permissionProfile: text('permission_profile').notNull().default('interactive'),
+  parentSessionId: text('parent_session_id'),
+  status: text('status').notNull().default('pending'),
+  pid: integer('pid'),
+  exitCode: integer('exit_code'),
+  outputLog: text('output_log'),
+  outputBytes: integer('output_bytes').notNull().default(0),
+  createdAt: text('created_at').notNull(),
+  startedAt: text('started_at'),
+  completedAt: text('completed_at'),
 });

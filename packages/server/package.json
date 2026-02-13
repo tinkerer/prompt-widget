@@ -5,8 +5,11 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "dev": "tsx watch src/index.ts",
-    "start": "node dist/index.js",
+    "dev": "concurrently --names server,sessions --prefix-colors blue,green \"tsx watch --ignore src/session-service.ts src/index.ts\" \"tsx src/session-service.ts\"",
+    "dev:server": "tsx watch src/index.ts",
+    "dev:sessions": "tsx src/session-service.ts",
+    "start": "concurrently \"node dist/index.js\" \"node dist/session-service.js\"",
+    "start:sessions": "node dist/session-service.js",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "clean": "rm -rf dist"
@@ -18,13 +21,16 @@
     "drizzle-orm": "^0.38.0",
     "hono": "^4.6.0",
     "jose": "^5.9.0",
+    "node-pty": "1.2.0-beta.11",
     "ulidx": "^2.4.0",
     "ws": "^8.19.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
+    "@types/node": "^25.2.2",
     "@types/ws": "^8.18.1",
+    "concurrently": "^9.1.0",
     "drizzle-kit": "^0.30.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"

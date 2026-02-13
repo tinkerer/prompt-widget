@@ -1,6 +1,7 @@
 import { signal, effect } from '@preact/signals';
 import { api } from '../lib/api.js';
 import { navigate } from '../lib/state.js';
+import { quickDispatch, quickDispatchState, batchQuickDispatch } from '../lib/sessions.js';
 
 const items = signal<any[]>([]);
 const total = signal(0);
@@ -34,7 +35,6 @@ async function loadFeedback() {
 }
 
 effect(() => {
-  // Re-run when filters change
   void filterType.value;
   void filterStatus.value;
   void page.value;
@@ -75,6 +75,26 @@ function formatDate(iso: string) {
   return new Date(iso).toLocaleString();
 }
 
+function DispatchButton({ id }: { id: string }) {
+  const state = quickDispatchState.value[id] || 'idle';
+  return (
+    <button
+      class="btn-dispatch-quick"
+      disabled={state === 'loading'}
+      onClick={(e) => {
+        e.stopPropagation();
+        quickDispatch(id);
+      }}
+      title="Quick dispatch to default agent"
+    >
+      {state === 'loading' && <span class="spinner-sm" />}
+      {state === 'success' && <span style="color:#22c55e">&#10003;</span>}
+      {state === 'error' && <span style="color:#ef4444">&#10005;</span>}
+      {state === 'idle' && <span>&#9654;</span>}
+    </button>
+  );
+}
+
 export function FeedbackListPage() {
   return (
     <div>
@@ -83,6 +103,12 @@ export function FeedbackListPage() {
         <div style="display:flex;gap:8px">
           {selected.value.size > 0 && (
             <>
+              <button
+                class="btn btn-sm btn-primary"
+                onClick={() => batchQuickDispatch(Array.from(selected.value))}
+              >
+                Dispatch ({selected.value.size})
+              </button>
               <select
                 class="btn btn-sm"
                 onChange={(e) => {
@@ -160,6 +186,7 @@ export function FeedbackListPage() {
               <th>Status</th>
               <th>Tags</th>
               <th>Created</th>
+              <th style="width:80px">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -199,11 +226,14 @@ export function FeedbackListPage() {
                   </div>
                 </td>
                 <td style="white-space:nowrap;color:#64748b;font-size:13px">{formatDate(item.createdAt)}</td>
+                <td>
+                  <DispatchButton id={item.id} />
+                </td>
               </tr>
             ))}
             {items.value.length === 0 && !loading.value && (
               <tr>
-                <td colSpan={6} style="text-align:center;padding:32px;color:#94a3b8">
+                <td colSpan={7} style="text-align:center;padding:32px;color:#94a3b8">
                   No feedback items found
                 </td>
               </tr>

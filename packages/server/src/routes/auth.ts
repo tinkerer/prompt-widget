@@ -1,12 +1,10 @@
 import { Hono } from 'hono';
 import { SignJWT } from 'jose';
 import { loginSchema } from '@prompt-widget/shared';
+import { JWT_SECRET } from '../auth.js';
 
 const ADMIN_USER = process.env.ADMIN_USER || 'admin';
 const ADMIN_PASS = process.env.ADMIN_PASS || 'admin';
-const JWT_SECRET = new TextEncoder().encode(
-  process.env.JWT_SECRET || 'dev-secret-change-me'
-);
 
 export const authRoutes = new Hono();
 

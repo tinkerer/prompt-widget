@@ -13,6 +13,8 @@ const formDefault = signal(false);
 const formAppId = signal('');
 const formMode = signal<'webhook' | 'headless' | 'interactive'>('webhook');
 const formPromptTemplate = signal('');
+const formPermissionProfile = signal<'interactive' | 'auto' | 'yolo'>('interactive');
+const formAllowedTools = signal('');
 const formError = signal('');
 const formLoading = signal(false);
 
@@ -43,6 +45,8 @@ function openCreate() {
   formAppId.value = '';
   formMode.value = 'webhook';
   formPromptTemplate.value = '';
+  formPermissionProfile.value = 'interactive';
+  formAllowedTools.value = '';
   formError.value = '';
   showForm.value = true;
 }
@@ -56,6 +60,8 @@ function openEdit(agent: any) {
   formAppId.value = agent.appId || '';
   formMode.value = agent.mode || 'webhook';
   formPromptTemplate.value = agent.promptTemplate || '';
+  formPermissionProfile.value = agent.permissionProfile || 'interactive';
+  formAllowedTools.value = agent.allowedTools || '';
   formError.value = '';
   showForm.value = true;
 }
@@ -73,6 +79,8 @@ async function saveAgent(e: Event) {
     appId: formAppId.value || undefined,
     mode: formMode.value,
     promptTemplate: formPromptTemplate.value || undefined,
+    permissionProfile: formPermissionProfile.value,
+    allowedTools: formAllowedTools.value || undefined,
   };
 
   try {
@@ -108,6 +116,12 @@ const MODE_LABELS: Record<string, string> = {
   interactive: 'Interactive',
 };
 
+const PROFILE_LABELS: Record<string, string> = {
+  interactive: 'Interactive',
+  auto: 'Auto',
+  yolo: 'YOLO',
+};
+
 export function AgentsPage() {
   return (
     <div>
@@ -124,6 +138,11 @@ export function AgentsPage() {
                 {agent.name}
                 {agent.isDefault && <span class="badge badge-resolved" style="margin-left:8px">default</span>}
                 <span class="badge" style="margin-left:8px;background:#334155">{MODE_LABELS[agent.mode] || 'Webhook'}</span>
+                {agent.mode !== 'webhook' && (
+                  <span class="badge" style="margin-left:4px;background:#1e1b4b;color:#a5b4fc">
+                    {PROFILE_LABELS[agent.permissionProfile] || 'Interactive'}
+                  </span>
+                )}
               </h4>
               {agent.mode === 'webhook' && <p>{agent.url}</p>}
               {agent.authHeader && <p style="font-size:12px;color:#94a3b8">Auth header configured</p>}
@@ -215,18 +234,61 @@ export function AgentsPage() {
               </>
             )}
             {(formMode.value === 'headless' || formMode.value === 'interactive') && (
-              <div class="form-group">
-                <label>Prompt Template</label>
-                <textarea
-                  value={formPromptTemplate.value}
-                  onInput={(e) => (formPromptTemplate.value = (e.target as HTMLTextAreaElement).value)}
-                  placeholder={'{{feedback.title}}\n\n{{feedback.description}}\n\n{{instructions}}'}
-                  style="width:100%;min-height:120px;font-family:monospace;font-size:12px"
-                />
-                <span style="font-size:11px;color:#94a3b8">
-                  Variables: {'{{feedback.title}}'}, {'{{feedback.description}}'}, {'{{feedback.consoleLogs}}'}, {'{{feedback.networkErrors}}'}, {'{{feedback.data}}'}, {'{{feedback.tags}}'}, {'{{app.name}}'}, {'{{app.projectDir}}'}, {'{{app.hooks}}'}, {'{{app.description}}'}, {'{{instructions}}'}, {'{{session.url}}'}, {'{{session.viewport}}'}
-                </span>
-              </div>
+              <>
+                <div class="form-group">
+                  <label>Prompt Template</label>
+                  <textarea
+                    value={formPromptTemplate.value}
+                    onInput={(e) => (formPromptTemplate.value = (e.target as HTMLTextAreaElement).value)}
+                    placeholder={'{{feedback.title}}\n\n{{feedback.description}}\n\n{{instructions}}'}
+                    style="width:100%;min-height:120px;font-family:monospace;font-size:12px"
+                  />
+                  <span style="font-size:11px;color:#94a3b8">
+                    Variables: {'{{feedback.title}}'}, {'{{feedback.description}}'}, {'{{feedback.consoleLogs}}'}, {'{{feedback.networkErrors}}'}, {'{{feedback.data}}'}, {'{{feedback.tags}}'}, {'{{app.name}}'}, {'{{app.projectDir}}'}, {'{{app.hooks}}'}, {'{{app.description}}'}, {'{{instructions}}'}, {'{{session.url}}'}, {'{{session.viewport}}'}
+                  </span>
+                </div>
+                <div class="form-group">
+                  <label>Permission Profile</label>
+                  <div style="display:flex;gap:16px">
+                    {(['interactive', 'auto', 'yolo'] as const).map((p) => (
+                      <label key={p} style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:13px">
+                        <input
+                          type="radio"
+                          name="permissionProfile"
+                          value={p}
+                          checked={formPermissionProfile.value === p}
+                          onChange={() => (formPermissionProfile.value = p)}
+                        />
+                        {PROFILE_LABELS[p]}
+                      </label>
+                    ))}
+                  </div>
+                  <span style="font-size:11px;color:#94a3b8;margin-top:4px;display:block">
+                    {formPermissionProfile.value === 'interactive' && 'Admin watches and approves all tool uses in real-time.'}
+                    {formPermissionProfile.value === 'auto' && 'Pre-approved tools run automatically; admin sees output and handles remaining prompts.'}
+                    {formPermissionProfile.value === 'yolo' && 'Fully autonomous — skips all permission checks. Use only in sandboxed environments.'}
+                  </span>
+                </div>
+                {formPermissionProfile.value === 'auto' && (
+                  <div class="form-group">
+                    <label>Allowed Tools</label>
+                    <textarea
+                      value={formAllowedTools.value}
+                      onInput={(e) => (formAllowedTools.value = (e.target as HTMLTextAreaElement).value)}
+                      placeholder={'Edit,Read,Bash(git *)'}
+                      style="width:100%;min-height:60px;font-family:monospace;font-size:12px"
+                    />
+                    <span style="font-size:11px;color:#94a3b8">
+                      Comma-separated list of tools to auto-approve. e.g. Edit,Read,Write,Bash(git *),Bash(npm run *)
+                    </span>
+                  </div>
+                )}
+                {formPermissionProfile.value === 'yolo' && (
+                  <div style="background:#7f1d1d;color:#fecaca;padding:8px 12px;border-radius:6px;font-size:12px;margin-top:-8px">
+                    Warning: YOLO mode skips ALL permission checks. The agent can execute any command, edit any file, and access any resource. Only use in sandboxed/Docker environments.
+                  </div>
+                )}
+              </>
             )}
             <div class="form-group">
               <label style="display:flex;align-items:center;gap:8px;cursor:pointer">

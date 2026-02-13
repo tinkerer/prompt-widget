@@ -8,14 +8,13 @@ import {
   agentEndpointSchema,
   dispatchSchema,
 } from '@prompt-widget/shared';
-import type { FeedbackItem } from '@prompt-widget/shared';
+import type { FeedbackItem, PermissionProfile } from '@prompt-widget/shared';
 import { db, schema } from '../db/index.js';
 import { getSession } from '../sessions.js';
 import {
   fillPromptTemplate,
   dispatchWebhook,
-  dispatchHeadless,
-  dispatchInteractive,
+  dispatchAgentSession,
 } from '../dispatch.js';
 import type { DispatchContext } from '../dispatch.js';
 
@@ -274,6 +273,8 @@ adminRoutes.post('/agents', async (c) => {
     appId: parsed.data.appId || null,
     promptTemplate: parsed.data.promptTemplate || null,
     mode: parsed.data.mode || 'webhook',
+    permissionProfile: parsed.data.permissionProfile || 'interactive',
+    allowedTools: parsed.data.allowedTools || null,
     createdAt: now,
     updatedAt: now,
   });
@@ -311,6 +312,8 @@ adminRoutes.patch('/agents/:id', async (c) => {
     appId: parsed.data.appId || null,
     promptTemplate: parsed.data.promptTemplate || null,
     mode: parsed.data.mode || 'webhook',
+    permissionProfile: parsed.data.permissionProfile || 'interactive',
+    allowedTools: parsed.data.allowedTools || null,
     updatedAt: now,
   }).where(eq(schema.agentEndpoints.id, id));
 
@@ -391,17 +394,29 @@ adminRoutes.post('/dispatch', async (c) => {
   const mode = (agent.mode || 'webhook') as 'webhook' | 'headless' | 'interactive';
 
   try {
-    let status: number;
-    let responseText: string;
-
     if (mode === 'webhook') {
       const result = await dispatchWebhook(agent.url, agent.authHeader, {
         feedback: hydratedFeedback,
         instructions,
       });
-      status = result.status;
-      responseText = result.response;
+
+      const now = new Date().toISOString();
+      await db.update(schema.feedbackItems).set({
+        status: 'dispatched',
+        dispatchedTo: agent.name,
+        dispatchedAt: now,
+        dispatchStatus: result.status >= 200 && result.status < 300 ? 'success' : 'error',
+        dispatchResponse: result.response.slice(0, 5000),
+        updatedAt: now,
+      }).where(eq(schema.feedbackItems.id, feedbackId));
+
+      return c.json({
+        dispatched: true,
+        status: result.status,
+        response: result.response.slice(0, 1000),
+      });
     } else {
+      // headless or interactive → PTY-based agent session
       const template = agent.promptTemplate || '{{feedback.title}}\n\n{{feedback.description}}\n\n{{instructions}}';
       const ctx: DispatchContext = {
         feedback: hydratedFeedback,
@@ -412,6 +427,8 @@ adminRoutes.post('/dispatch', async (c) => {
           promptTemplate: agent.promptTemplate || null,
           authHeader: agent.authHeader || null,
           isDefault: !!agent.isDefault,
+          permissionProfile: (agent.permissionProfile || 'interactive') as PermissionProfile,
+          allowedTools: agent.allowedTools || null,
         },
         app,
         instructions,
@@ -419,33 +436,34 @@ adminRoutes.post('/dispatch', async (c) => {
       };
       const filledPrompt = fillPromptTemplate(template, ctx);
       const cwd = app?.projectDir || process.cwd();
+      const permissionProfile = (agent.permissionProfile || 'interactive') as PermissionProfile;
 
-      if (mode === 'headless') {
-        const result = await dispatchHeadless(filledPrompt, cwd);
-        status = result.status;
-        responseText = result.response;
-      } else {
-        const result = await dispatchInteractive(filledPrompt, cwd);
-        status = result.status;
-        responseText = result.response;
-      }
+      const { sessionId } = await dispatchAgentSession({
+        feedbackId,
+        agentEndpointId,
+        prompt: filledPrompt,
+        cwd,
+        permissionProfile,
+        allowedTools: agent.allowedTools,
+      });
+
+      const now = new Date().toISOString();
+      await db.update(schema.feedbackItems).set({
+        status: 'dispatched',
+        dispatchedTo: agent.name,
+        dispatchedAt: now,
+        dispatchStatus: 'running',
+        dispatchResponse: `Agent session started: ${sessionId}`,
+        updatedAt: now,
+      }).where(eq(schema.feedbackItems.id, feedbackId));
+
+      return c.json({
+        dispatched: true,
+        sessionId,
+        status: 200,
+        response: `Agent session started: ${sessionId}`,
+      });
     }
-
-    const now = new Date().toISOString();
-    await db.update(schema.feedbackItems).set({
-      status: 'dispatched',
-      dispatchedTo: agent.name,
-      dispatchedAt: now,
-      dispatchStatus: status >= 200 && status < 300 ? 'success' : 'error',
-      dispatchResponse: responseText.slice(0, 5000),
-      updatedAt: now,
-    }).where(eq(schema.feedbackItems.id, feedbackId));
-
-    return c.json({
-      dispatched: true,
-      status,
-      response: responseText.slice(0, 1000),
-    });
   } catch (err) {
     const now = new Date().toISOString();
     const errorMsg = err instanceof Error ? err.message : 'Unknown error';

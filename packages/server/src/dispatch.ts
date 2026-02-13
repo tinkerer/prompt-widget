@@ -1,9 +1,8 @@
-import { execFile } from 'node:child_process';
-import { writeFile, unlink } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { randomBytes } from 'node:crypto';
-import type { FeedbackItem, Application, AgentEndpoint } from '@prompt-widget/shared';
+import { ulid } from 'ulidx';
+import { eq } from 'drizzle-orm';
+import type { FeedbackItem, Application, AgentEndpoint, PermissionProfile } from '@prompt-widget/shared';
+import { db, schema } from './db/index.js';
+import { spawnAgentSession } from './agent-sessions.js';
 
 export interface DispatchContext {
   feedback: FeedbackItem;
@@ -73,78 +72,102 @@ export async function dispatchWebhook(
   return { status: response.status, response: responseText };
 }
 
-export async function dispatchHeadless(
-  prompt: string,
-  cwd: string
-): Promise<{ status: number; response: string }> {
-  return new Promise((resolve) => {
-    execFile(
-      'claude',
-      ['-p', prompt, '--output-format', 'text'],
-      { cwd, timeout: 300_000, maxBuffer: 1024 * 1024 },
-      (err, stdout, stderr) => {
-        if (err) {
-          resolve({
-            status: 500,
-            response: `Error: ${err.message}\n${stderr}`.slice(0, 5000),
-          });
-        } else {
-          resolve({
-            status: 200,
-            response: stdout.slice(0, 5000),
-          });
-        }
-      }
-    );
+export async function dispatchAgentSession(params: {
+  feedbackId: string;
+  agentEndpointId: string;
+  prompt: string;
+  cwd: string;
+  permissionProfile: PermissionProfile;
+  allowedTools?: string | null;
+}): Promise<{ sessionId: string }> {
+  const sessionId = ulid();
+  const now = new Date().toISOString();
+
+  db.insert(schema.agentSessions)
+    .values({
+      id: sessionId,
+      feedbackId: params.feedbackId,
+      agentEndpointId: params.agentEndpointId,
+      permissionProfile: params.permissionProfile,
+      status: 'pending',
+      outputBytes: 0,
+      createdAt: now,
+    })
+    .run();
+
+  await spawnAgentSession({
+    sessionId,
+    prompt: params.prompt,
+    cwd: params.cwd,
+    permissionProfile: params.permissionProfile,
+    allowedTools: params.allowedTools,
   });
+
+  return { sessionId };
 }
 
-export async function dispatchInteractive(
-  prompt: string,
-  cwd: string,
-  sessionName?: string
-): Promise<{ status: number; response: string }> {
-  const name = sessionName || `pw-${randomBytes(4).toString('hex')}`;
-  const tmpFile = join(tmpdir(), `pw-prompt-${name}.txt`);
+export async function resumeAgentSession(parentSessionId: string): Promise<{ sessionId: string }> {
+  const parent = db
+    .select()
+    .from(schema.agentSessions)
+    .where(eq(schema.agentSessions.id, parentSessionId))
+    .get();
 
-  await writeFile(tmpFile, prompt, 'utf-8');
+  if (!parent) {
+    throw new Error('Parent session not found');
+  }
 
-  return new Promise((resolve) => {
-    execFile(
-      'tmux',
-      ['new-session', '-d', '-s', name, '-c', cwd],
-      { timeout: 10_000 },
-      (err) => {
-        if (err) {
-          resolve({
-            status: 500,
-            response: `Failed to create tmux session: ${err.message}`,
-          });
-          return;
-        }
+  if (parent.status === 'running' || parent.status === 'pending') {
+    throw new Error('Session is still active');
+  }
 
-        execFile(
-          'tmux',
-          ['send-keys', '-t', name, `claude -p "$(cat ${tmpFile})"`, 'Enter'],
-          { timeout: 10_000 },
-          (sendErr) => {
-            if (sendErr) {
-              resolve({
-                status: 500,
-                response: `Failed to send command to tmux: ${sendErr.message}`,
-              });
-              return;
-            }
+  const agent = db
+    .select()
+    .from(schema.agentEndpoints)
+    .where(eq(schema.agentEndpoints.id, parent.agentEndpointId))
+    .get();
 
-            resolve({
-              status: 200,
-              response: `Interactive session started: tmux attach -t ${name}`,
-            });
+  if (!agent) {
+    throw new Error('Agent endpoint not found');
+  }
 
-            setTimeout(() => unlink(tmpFile).catch(() => {}), 60_000);
-          }
-        );
-      }
-    );
+  let cwd = process.cwd();
+  if (agent.appId) {
+    const app = db
+      .select()
+      .from(schema.applications)
+      .where(eq(schema.applications.id, agent.appId))
+      .get();
+    if (app?.projectDir) {
+      cwd = app.projectDir;
+    }
+  }
+
+  const sessionId = ulid();
+  const now = new Date().toISOString();
+  const permissionProfile = (parent.permissionProfile || 'interactive') as PermissionProfile;
+
+  db.insert(schema.agentSessions)
+    .values({
+      id: sessionId,
+      feedbackId: parent.feedbackId,
+      agentEndpointId: parent.agentEndpointId,
+      parentSessionId,
+      permissionProfile,
+      status: 'pending',
+      outputBytes: 0,
+      createdAt: now,
+    })
+    .run();
+
+  await spawnAgentSession({
+    sessionId,
+    prompt: 'Continue working on this task.',
+    cwd,
+    permissionProfile,
+    allowedTools: agent.allowedTools,
+    resume: true,
   });
+
+  return { sessionId };
 }

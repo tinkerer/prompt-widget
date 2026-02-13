@@ -17,6 +17,8 @@ export interface SessionInfo {
   userId: string | null;
   viewport: string | null;
   appId: string | null;
+  name: string | null;
+  tags: string[];
   pendingRequests: Map<string, PendingRequest>;
 }
 

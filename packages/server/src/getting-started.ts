@@ -287,5 +287,33 @@ review/dispatch feedback. Default login: \`admin\` / \`admin\`.
 | POST | \`/api/v1/agent/sessions/:id/click\` | Click element |
 | POST | \`/api/v1/agent/sessions/:id/type\` | Type into element |
 | GET | \`/GETTING_STARTED.md\` | This document |
+
+---
+
+## Reporting bugs with prompt-widget
+
+If you encounter issues with the prompt-widget API itself (timeouts, unexpected
+responses, missing data), you can report them back through the programmatic
+feedback endpoint:
+
+\`\`\`bash
+curl -X POST ${baseUrl}/api/v1/feedback/programmatic \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "type": "bug",
+    "title": "Brief description of the issue",
+    "description": "What happened, what you expected, and any relevant context",
+    "tags": ["prompt-widget-bug"],
+    "data": {
+      "endpoint": "/api/v1/...",
+      "statusCode": 500,
+      "errorMessage": "..."
+    }
+  }'
+\`\`\`
+
+This helps the prompt-widget maintainers track and fix issues with the platform
+itself. Use the \`prompt-widget-bug\` tag so these reports are easy to filter in
+the admin UI.
 `;
 }

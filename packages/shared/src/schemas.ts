@@ -1,9 +1,9 @@
 import { z } from 'zod';
-import { FEEDBACK_TYPES, FEEDBACK_STATUSES, DISPATCH_MODES } from './constants.js';
+import { FEEDBACK_TYPES, FEEDBACK_STATUSES, DISPATCH_MODES, PERMISSION_PROFILES } from './constants.js';
 
 export const feedbackSubmitSchema = z.object({
   type: z.enum(FEEDBACK_TYPES).default('manual'),
-  title: z.string().min(1).max(500),
+  title: z.string().max(500).default(''),
   description: z.string().max(10000).default(''),
   data: z.record(z.unknown()).optional(),
   context: z
@@ -71,7 +71,7 @@ export type FeedbackUpdateInput = z.infer<typeof feedbackUpdateSchema>;
 
 export const feedbackListSchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(20),
+  limit: z.coerce.number().int().min(1).max(200).default(20),
   type: z.enum(FEEDBACK_TYPES).optional(),
   status: z.enum(FEEDBACK_STATUSES).optional(),
   tag: z.string().optional(),
@@ -102,6 +102,8 @@ export const agentEndpointSchema = z.object({
   appId: z.string().optional(),
   promptTemplate: z.string().max(10000).optional(),
   mode: z.enum(DISPATCH_MODES).default('webhook'),
+  permissionProfile: z.enum(PERMISSION_PROFILES).default('interactive'),
+  allowedTools: z.string().max(5000).optional(),
 });
 
 export const dispatchSchema = z.object({

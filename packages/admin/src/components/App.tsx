@@ -6,6 +6,7 @@ import { FeedbackDetailPage } from '../pages/FeedbackDetailPage.js';
 import { AgentsPage } from '../pages/AgentsPage.js';
 import { ApplicationsPage } from '../pages/ApplicationsPage.js';
 import { GettingStartedPage } from '../pages/GettingStartedPage.js';
+import { SessionsPage } from '../pages/SessionsPage.js';
 
 export function App() {
   if (!isAuthenticated.value) {
@@ -18,6 +19,8 @@ export function App() {
   if (route.startsWith('/feedback/')) {
     const id = route.replace('/feedback/', '');
     page = <FeedbackDetailPage id={id} />;
+  } else if (route === '/sessions') {
+    page = <SessionsPage />;
   } else if (route === '/agents') {
     page = <AgentsPage />;
   } else if (route === '/applications') {

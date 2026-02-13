@@ -81,12 +81,35 @@ export function runMigrations() {
     CREATE INDEX IF NOT EXISTS idx_applications_api_key ON applications(api_key);
   `);
 
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS agent_sessions (
+      id TEXT PRIMARY KEY,
+      feedback_id TEXT NOT NULL REFERENCES feedback_items(id) ON DELETE CASCADE,
+      agent_endpoint_id TEXT NOT NULL REFERENCES agent_endpoints(id) ON DELETE CASCADE,
+      permission_profile TEXT NOT NULL DEFAULT 'interactive',
+      status TEXT NOT NULL DEFAULT 'pending',
+      pid INTEGER,
+      exit_code INTEGER,
+      output_log TEXT,
+      output_bytes INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      completed_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_sessions_feedback ON agent_sessions(feedback_id);
+    CREATE INDEX IF NOT EXISTS idx_agent_sessions_status ON agent_sessions(status);
+  `);
+
   // Add new columns to existing tables (idempotent via try/catch)
   const alterStatements = [
     `ALTER TABLE feedback_items ADD COLUMN app_id TEXT REFERENCES applications(id) ON DELETE SET NULL`,
     `ALTER TABLE agent_endpoints ADD COLUMN app_id TEXT REFERENCES applications(id) ON DELETE SET NULL`,
     `ALTER TABLE agent_endpoints ADD COLUMN prompt_template TEXT`,
     `ALTER TABLE agent_endpoints ADD COLUMN mode TEXT NOT NULL DEFAULT 'webhook'`,
+    `ALTER TABLE agent_endpoints ADD COLUMN permission_profile TEXT NOT NULL DEFAULT 'interactive'`,
+    `ALTER TABLE agent_endpoints ADD COLUMN allowed_tools TEXT`,
+    `ALTER TABLE agent_sessions ADD COLUMN parent_session_id TEXT`,
   ];
 
   for (const stmt of alterStatements) {

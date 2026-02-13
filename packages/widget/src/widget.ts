@@ -5,13 +5,11 @@ import type {
   Collector,
   SubmitOptions,
   UserIdentity,
-  FeedbackType,
 } from '@prompt-widget/shared';
 import {
   DEFAULT_POSITION,
   DEFAULT_MODE,
   DEFAULT_SHORTCUT,
-  FEEDBACK_TYPES,
 } from '@prompt-widget/shared';
 import { WIDGET_CSS } from './styles.js';
 import { installCollectors, collectContext } from './collectors.js';
@@ -19,6 +17,9 @@ import { captureScreenshot } from './screenshot.js';
 import { SessionBridge } from './session.js';
 
 type EventHandler = (data: unknown) => void;
+
+const HISTORY_KEY = 'pw-history';
+const MAX_HISTORY = 50;
 
 export class PromptWidgetElement {
   private shadow: ShadowRoot;
@@ -29,6 +30,9 @@ export class PromptWidgetElement {
   private pendingScreenshots: Blob[] = [];
   private eventHandlers: Map<string, Set<EventHandler>> = new Map();
   private sessionBridge: SessionBridge;
+  private history: string[] = [];
+  private historyIndex = -1;
+  private currentDraft = '';
 
   constructor() {
     this.host = document.createElement('prompt-widget-host');
@@ -50,13 +54,26 @@ export class PromptWidgetElement {
       appKey: script?.dataset.appKey || undefined,
     };
 
+    this.loadHistory();
     installCollectors(this.config.collectors);
     this.render();
     this.bindShortcut();
 
-    // Connect WebSocket session bridge for agent interaction
     this.sessionBridge = new SessionBridge(this.config.endpoint, this.getSessionId(), this.config.collectors, this.config.appKey);
     this.sessionBridge.connect();
+  }
+
+  private loadHistory() {
+    try {
+      const stored = localStorage.getItem(HISTORY_KEY);
+      if (stored) this.history = JSON.parse(stored);
+    } catch { /* ignore */ }
+  }
+
+  private saveHistory() {
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(this.history.slice(-MAX_HISTORY)));
+    } catch { /* ignore */ }
   }
 
   private render() {
@@ -83,55 +100,55 @@ export class PromptWidgetElement {
 
     const panel = document.createElement('div');
     panel.className = `pw-panel ${this.config.position}`;
+    panel.style.position = 'fixed';
     panel.innerHTML = `
-      <div class="pw-header">
-        <h3>Send Feedback</h3>
-        <button class="pw-close">&times;</button>
+      <button class="pw-close">&times;</button>
+      <div class="pw-screenshots pw-hidden" id="pw-screenshots"></div>
+      <div class="pw-input-bar">
+        <button class="pw-camera-btn" id="pw-capture-btn" title="Capture screenshot">
+          <svg viewBox="0 0 24 24"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z"/><path d="M9 2 7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9zm3 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"/></svg>
+        </button>
+        <input type="text" class="pw-chat-input" id="pw-chat-input" placeholder="Type your feedback..." autocomplete="off" />
       </div>
-      <div class="pw-body">
-        <div class="pw-field">
-          <label>Type</label>
-          <select id="pw-type">
-            ${FEEDBACK_TYPES.map((t) => `<option value="${t}">${t.replace(/_/g, ' ')}</option>`).join('')}
-          </select>
-        </div>
-        <div class="pw-field">
-          <label>Title</label>
-          <input type="text" id="pw-title" placeholder="Brief summary..." />
-        </div>
-        <div class="pw-field">
-          <label>Description</label>
-          <textarea id="pw-description" placeholder="Details, steps to reproduce, etc..."></textarea>
-        </div>
-        <div class="pw-field">
-          <label>Screenshots</label>
-          <div class="pw-actions">
-            <button class="pw-btn" id="pw-capture-btn">
-              <svg viewBox="0 0 24 24"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
-              Capture
-            </button>
-            <button class="pw-btn" id="pw-paste-btn">
-              <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 2h-4.18C14.4.84 13.3 0 12 0c-1.3 0-2.4.84-2.82 2H5c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-7 0c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1z"/></svg>
-              Paste
-            </button>
-          </div>
-          <div class="pw-screenshots" id="pw-screenshots"></div>
-        </div>
-        <div id="pw-error" class="pw-error pw-hidden"></div>
-      </div>
-      <div class="pw-footer">
-        <button class="pw-submit" id="pw-submit-btn">Submit Feedback</button>
-      </div>
+      <div id="pw-error" class="pw-error pw-hidden"></div>
     `;
 
     this.shadow.appendChild(panel);
 
-    panel.querySelector('.pw-close')!.addEventListener('click', () => this.close());
-    panel.querySelector('#pw-capture-btn')!.addEventListener('click', () => this.captureScreen());
-    panel.querySelector('#pw-paste-btn')!.addEventListener('click', () => this.pasteFromClipboard());
-    panel.querySelector('#pw-submit-btn')!.addEventListener('click', () => this.handleSubmit());
+    const input = panel.querySelector('#pw-chat-input') as HTMLInputElement;
+    const closeBtn = panel.querySelector('.pw-close') as HTMLButtonElement;
+    const captureBtn = panel.querySelector('#pw-capture-btn') as HTMLButtonElement;
 
-    // Paste via keyboard into panel
+    closeBtn.addEventListener('click', () => this.close());
+    captureBtn.addEventListener('click', () => this.captureScreen());
+
+    input.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        this.handleSubmit();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (this.history.length === 0) return;
+        if (this.historyIndex === -1) {
+          this.currentDraft = input.value;
+          this.historyIndex = this.history.length - 1;
+        } else if (this.historyIndex > 0) {
+          this.historyIndex--;
+        }
+        input.value = this.history[this.historyIndex];
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (this.historyIndex === -1) return;
+        if (this.historyIndex < this.history.length - 1) {
+          this.historyIndex++;
+          input.value = this.history[this.historyIndex];
+        } else {
+          this.historyIndex = -1;
+          input.value = this.currentDraft;
+        }
+      }
+    });
+
     panel.addEventListener('paste', (e: Event) => {
       const ce = e as ClipboardEvent;
       const items = ce.clipboardData?.items;
@@ -144,33 +161,12 @@ export class PromptWidgetElement {
         }
       }
     });
-  }
 
-  private renderSuccess() {
-    const existing = this.shadow.querySelector('.pw-panel');
-    if (existing) existing.remove();
-
-    const panel = document.createElement('div');
-    panel.className = `pw-panel ${this.config.position}`;
-    panel.innerHTML = `
-      <div class="pw-header">
-        <h3>Send Feedback</h3>
-        <button class="pw-close">&times;</button>
-      </div>
-      <div class="pw-success">
-        <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
-        <p>Feedback submitted!</p>
-      </div>
-    `;
-    this.shadow.appendChild(panel);
-    panel.querySelector('.pw-close')!.addEventListener('click', () => this.close());
-
-    setTimeout(() => this.close(), 2000);
+    setTimeout(() => input.focus(), 50);
   }
 
   private async captureScreen() {
     const btn = this.shadow.querySelector('#pw-capture-btn') as HTMLButtonElement;
-    btn.textContent = 'Capturing...';
     btn.disabled = true;
 
     const blob = await captureScreenshot();
@@ -178,23 +174,7 @@ export class PromptWidgetElement {
       this.addScreenshot(blob);
     }
 
-    btn.innerHTML = `<svg viewBox="0 0 24 24"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg> Capture`;
     btn.disabled = false;
-  }
-
-  private async pasteFromClipboard() {
-    try {
-      const items = await navigator.clipboard.read();
-      for (const item of items) {
-        const imageType = item.types.find((t) => t.startsWith('image/'));
-        if (imageType) {
-          const blob = await item.getType(imageType);
-          this.addScreenshot(blob);
-        }
-      }
-    } catch {
-      // Clipboard API not available or denied
-    }
   }
 
   private addScreenshot(blob: Blob) {
@@ -206,6 +186,13 @@ export class PromptWidgetElement {
     const container = this.shadow.querySelector('#pw-screenshots');
     if (!container) return;
     container.innerHTML = '';
+
+    if (this.pendingScreenshots.length === 0) {
+      container.classList.add('pw-hidden');
+      return;
+    }
+
+    container.classList.remove('pw-hidden');
     this.pendingScreenshots.forEach((blob, i) => {
       const wrap = document.createElement('div');
       wrap.className = 'pw-screenshot-wrap';
@@ -230,36 +217,51 @@ export class PromptWidgetElement {
   }
 
   private async handleSubmit() {
-    const title = (this.shadow.querySelector('#pw-title') as HTMLInputElement)?.value.trim();
-    const description = (this.shadow.querySelector('#pw-description') as HTMLTextAreaElement)?.value.trim();
-    const type = (this.shadow.querySelector('#pw-type') as HTMLSelectElement)?.value as FeedbackType;
+    const input = this.shadow.querySelector('#pw-chat-input') as HTMLInputElement;
     const errorEl = this.shadow.querySelector('#pw-error') as HTMLElement;
-    const submitBtn = this.shadow.querySelector('#pw-submit-btn') as HTMLButtonElement;
+    const description = input.value.trim();
 
-    if (!title) {
-      errorEl.textContent = 'Title is required';
-      errorEl.classList.remove('pw-hidden');
+    if (!description && this.pendingScreenshots.length === 0) {
       return;
     }
 
     errorEl.classList.add('pw-hidden');
-    submitBtn.disabled = true;
-    submitBtn.textContent = 'Submitting...';
+    input.disabled = true;
 
     try {
-      await this.submitFeedback({ type, title, description });
+      await this.submitFeedback({ type: 'manual', title: '', description });
+
+      if (description) {
+        this.history.push(description);
+        this.saveHistory();
+      }
+      this.historyIndex = -1;
+      this.currentDraft = '';
       this.pendingScreenshots = [];
-      this.emit('submit', { type, title, description });
-      this.renderSuccess();
+
+      this.emit('submit', { type: 'manual', title: '', description });
+      this.showFlash();
     } catch (err) {
       errorEl.textContent = err instanceof Error ? err.message : 'Submission failed';
       errorEl.classList.remove('pw-hidden');
-      submitBtn.disabled = false;
-      submitBtn.textContent = 'Submit Feedback';
+      input.disabled = false;
+      input.focus();
     }
   }
 
-  private async submitFeedback(opts: { type: FeedbackType; title: string; description: string }) {
+  private showFlash() {
+    const panel = this.shadow.querySelector('.pw-panel');
+    if (!panel) return;
+
+    const flash = document.createElement('div');
+    flash.className = 'pw-flash';
+    flash.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>`;
+    panel.appendChild(flash);
+
+    setTimeout(() => this.close(), 1000);
+  }
+
+  private async submitFeedback(opts: { type: string; title: string; description: string }) {
     const context = collectContext(this.config.collectors);
 
     const feedbackPayload = {
@@ -341,6 +343,8 @@ export class PromptWidgetElement {
     if (this.isOpen) return;
     this.isOpen = true;
     this.pendingScreenshots = [];
+    this.historyIndex = -1;
+    this.currentDraft = '';
     this.renderPanel();
   }
 
@@ -367,7 +371,7 @@ export class PromptWidgetElement {
 
     const payload = {
       type: opts.type || 'programmatic',
-      title: opts.title || 'Programmatic submission',
+      title: opts.title || '',
       description: opts.description || '',
       data: opts.data,
       context,

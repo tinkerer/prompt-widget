@@ -47,6 +47,7 @@ feedbackRoutes.post('/', async (c) => {
   const now = new Date().toISOString();
   const id = ulid();
   const input = parsed.data;
+  const title = input.title || input.description.slice(0, 80) || 'Untitled';
 
   let appId: string | null = null;
   if (input.sessionId) {
@@ -58,7 +59,7 @@ feedbackRoutes.post('/', async (c) => {
     id,
     type: input.type,
     status: 'new',
-    title: input.title,
+    title,
     description: input.description,
     data: input.data ? JSON.stringify(input.data) : null,
     context: input.context ? JSON.stringify(input.context) : null,
@@ -109,6 +110,7 @@ feedbackRoutes.post('/programmatic', async (c) => {
   const now = new Date().toISOString();
   const id = ulid();
   const input = parsed.data;
+  const progTitle = input.title || input.description.slice(0, 80) || 'Untitled';
 
   let progAppId: string | null = null;
   if (input.sessionId) {
@@ -120,7 +122,7 @@ feedbackRoutes.post('/programmatic', async (c) => {
     id,
     type: input.type,
     status: 'new',
-    title: input.title,
+    title: progTitle,
     description: input.description,
     data: input.data ? JSON.stringify(input.data) : null,
     context: input.context ? JSON.stringify(input.context) : null,
