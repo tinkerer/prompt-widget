@@ -353,11 +353,14 @@ export function AgentTerminal({ sessionId, isActive, onExit }: AgentTerminalProp
       }
     }
 
+    safeFitAndResizeRef.current = safeFitAndResize;
+
     const observer = new ResizeObserver(() => safeFitAndResize());
     observer.observe(containerRef.current);
 
     return () => {
       cleanedUp.current = true;
+      safeFitAndResizeRef.current = () => {};
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (waitingDots) clearInterval(waitingDots);
       if (xtermScreen) {
@@ -375,20 +378,18 @@ export function AgentTerminal({ sessionId, isActive, onExit }: AgentTerminalProp
 
   useEffect(() => {
     if (!isActive || !fitRef.current || !termRef.current || !containerRef.current) return;
-    // Stagger fit attempts — layout may not settle immediately after tab switch
+    // Stagger fit+resize — sends dimensions to server so tmux knows the real size
     const timers: ReturnType<typeof setTimeout>[] = [];
     for (const delay of [0, 50, 150, 300]) {
-      timers.push(setTimeout(() => {
-        if (!fitRef.current || !termRef.current || !containerRef.current) return;
-        if (containerRef.current.offsetWidth === 0) return;
-        fitRef.current.fit();
-      }, delay));
+      timers.push(setTimeout(() => safeFitAndResizeRef.current(), delay));
     }
-    // Focus after first paint
-    timers.push(setTimeout(() => {
-      termRef.current?.focus();
-    }, 50));
-    return () => timers.forEach(clearTimeout);
+    timers.push(setTimeout(() => termRef.current?.focus(), 50));
+    // Periodic resize nudge to fix tmux sizing weirdness
+    const nudge = setInterval(() => safeFitAndResizeRef.current(), 15_000);
+    return () => {
+      timers.forEach(clearTimeout);
+      clearInterval(nudge);
+    };
   }, [isActive]);
 
   return <div ref={containerRef} style={{ width: '100%', height: '100%' }} onClick={() => termRef.current?.focus()} />;
