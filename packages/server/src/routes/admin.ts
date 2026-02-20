@@ -1,6 +1,9 @@
+import { readFileSync, writeFileSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Hono } from 'hono';
 import { ulid } from 'ulidx';
-import { eq, desc, asc, like, and, sql } from 'drizzle-orm';
+import { eq, desc, asc, like, and, or, isNull, sql } from 'drizzle-orm';
 import {
   feedbackListSchema,
   feedbackUpdateSchema,
@@ -17,6 +20,8 @@ import {
 } from '../dispatch.js';
 import { feedbackEvents } from '../events.js';
 import { verifyAdminToken } from '../auth.js';
+
+const PW_TMUX_CONF = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'tmux-pw.conf');
 
 export const adminRoutes = new Hono();
 
@@ -160,9 +165,16 @@ adminRoutes.get('/feedback', async (c) => {
 
 adminRoutes.get('/feedback/:id', async (c) => {
   const id = c.req.param('id');
-  const item = await db.query.feedbackItems.findFirst({
+  let item = await db.query.feedbackItems.findFirst({
     where: eq(schema.feedbackItems.id, id),
   });
+
+  // Fall back to short ID suffix match (last 6+ chars)
+  if (!item && id.length >= 4 && id.length < 26) {
+    item = await db.query.feedbackItems.findFirst({
+      where: like(schema.feedbackItems.id, `%${id}`),
+    });
+  }
 
   if (!item) {
     return c.json({ error: 'Not found' }, 404);
@@ -368,7 +380,15 @@ adminRoutes.post('/feedback/batch', async (c) => {
 
 // Agent endpoints CRUD
 adminRoutes.get('/agents', async (c) => {
-  const agents = db.select().from(schema.agentEndpoints).all();
+  const appId = c.req.query('appId');
+  let agents;
+  if (appId) {
+    agents = db.select().from(schema.agentEndpoints)
+      .where(or(eq(schema.agentEndpoints.appId, appId), isNull(schema.agentEndpoints.appId)))
+      .all();
+  } else {
+    agents = db.select().from(schema.agentEndpoints).all();
+  }
   return c.json(agents);
 });
 
@@ -382,10 +402,13 @@ adminRoutes.post('/agents', async (c) => {
   const now = new Date().toISOString();
   const id = ulid();
 
-  if (parsed.data.isDefault && parsed.data.appId) {
+  if (parsed.data.isDefault) {
+    const condition = parsed.data.appId
+      ? eq(schema.agentEndpoints.appId, parsed.data.appId)
+      : isNull(schema.agentEndpoints.appId);
     await db.update(schema.agentEndpoints)
       .set({ isDefault: false, updatedAt: now })
-      .where(eq(schema.agentEndpoints.appId, parsed.data.appId));
+      .where(condition);
   }
 
   await db.insert(schema.agentEndpoints).values({
@@ -424,10 +447,13 @@ adminRoutes.patch('/agents/:id', async (c) => {
 
   const now = new Date().toISOString();
 
-  if (parsed.data.isDefault && parsed.data.appId) {
+  if (parsed.data.isDefault) {
+    const condition = parsed.data.appId
+      ? eq(schema.agentEndpoints.appId, parsed.data.appId)
+      : isNull(schema.agentEndpoints.appId);
     await db.update(schema.agentEndpoints)
       .set({ isDefault: false, updatedAt: now })
-      .where(eq(schema.agentEndpoints.appId, parsed.data.appId));
+      .where(condition);
   }
 
   await db.update(schema.agentEndpoints).set({
@@ -615,6 +641,21 @@ adminRoutes.post('/dispatch', async (c) => {
 
       const prompt = buildDispatchPrompt(hydratedFeedback, app, instructions);
 
+      // Resolve tmux config: app-specific > global default
+      let tmuxConfigContent: string | undefined;
+      const appRow = appIdForCwd ? db.select().from(schema.applications)
+        .where(eq(schema.applications.id, appIdForCwd)).get() : null;
+      if (appRow?.tmuxConfigId) {
+        const config = db.select().from(schema.tmuxConfigs)
+          .where(eq(schema.tmuxConfigs.id, appRow.tmuxConfigId)).get();
+        if (config) tmuxConfigContent = config.content;
+      }
+      if (tmuxConfigContent === undefined) {
+        const defaultConfig = db.select().from(schema.tmuxConfigs)
+          .where(eq(schema.tmuxConfigs.isDefault, true)).get();
+        if (defaultConfig) tmuxConfigContent = defaultConfig.content;
+      }
+
       const { sessionId } = await dispatchAgentSession({
         feedbackId,
         agentEndpointId,
@@ -622,6 +663,7 @@ adminRoutes.post('/dispatch', async (c) => {
         cwd,
         permissionProfile,
         allowedTools: agent.allowedTools,
+        tmuxConfigContent,
       });
 
       // Update feedback status in the background — don't block the response
@@ -656,6 +698,85 @@ adminRoutes.post('/dispatch', async (c) => {
 
     return c.json({ dispatched: false, error: errorMsg }, 502);
   }
+});
+
+// Tmux configs CRUD
+adminRoutes.get('/tmux-configs', (c) => {
+  const configs = db.select().from(schema.tmuxConfigs).all();
+  return c.json(configs);
+});
+
+adminRoutes.post('/tmux-configs', async (c) => {
+  const body = await c.req.json() as { name: string; content?: string };
+  if (!body.name) return c.json({ error: 'Name required' }, 400);
+
+  const now = new Date().toISOString();
+  const id = ulid();
+  db.insert(schema.tmuxConfigs).values({
+    id,
+    name: body.name,
+    content: body.content || '',
+    isDefault: false,
+    createdAt: now,
+    updatedAt: now,
+  }).run();
+  return c.json({ id }, 201);
+});
+
+adminRoutes.patch('/tmux-configs/:id', async (c) => {
+  const id = c.req.param('id');
+  const existing = db.select().from(schema.tmuxConfigs).where(eq(schema.tmuxConfigs.id, id)).get();
+  if (!existing) return c.json({ error: 'Not found' }, 404);
+
+  const body = await c.req.json() as { name?: string; content?: string; isDefault?: boolean };
+  const now = new Date().toISOString();
+  const updates: Record<string, unknown> = { updatedAt: now };
+  if (body.name !== undefined) updates.name = body.name;
+  if (body.content !== undefined) updates.content = body.content;
+  if (body.isDefault) {
+    db.update(schema.tmuxConfigs).set({ isDefault: false, updatedAt: now }).run();
+    updates.isDefault = true;
+  }
+
+  db.update(schema.tmuxConfigs).set(updates).where(eq(schema.tmuxConfigs.id, id)).run();
+  return c.json({ id, updated: true });
+});
+
+adminRoutes.delete('/tmux-configs/:id', async (c) => {
+  const id = c.req.param('id');
+  const existing = db.select().from(schema.tmuxConfigs).where(eq(schema.tmuxConfigs.id, id)).get();
+  if (!existing) return c.json({ error: 'Not found' }, 404);
+  if (existing.isDefault) return c.json({ error: 'Cannot delete the default config' }, 400);
+
+  db.delete(schema.tmuxConfigs).where(eq(schema.tmuxConfigs.id, id)).run();
+  return c.json({ id, deleted: true });
+});
+
+// Legacy tmux config endpoints — delegate to default config row
+adminRoutes.get('/tmux-conf', (c) => {
+  const defaultConfig = db.select().from(schema.tmuxConfigs)
+    .where(eq(schema.tmuxConfigs.isDefault, true)).get();
+  if (defaultConfig) return c.json({ content: defaultConfig.content });
+  try {
+    const content = readFileSync(PW_TMUX_CONF, 'utf-8');
+    return c.json({ content });
+  } catch {
+    return c.json({ content: '' });
+  }
+});
+
+adminRoutes.put('/tmux-conf', async (c) => {
+  const { content } = await c.req.json() as { content: string };
+  const defaultConfig = db.select().from(schema.tmuxConfigs)
+    .where(eq(schema.tmuxConfigs.isDefault, true)).get();
+  if (defaultConfig) {
+    db.update(schema.tmuxConfigs)
+      .set({ content, updatedAt: new Date().toISOString() })
+      .where(eq(schema.tmuxConfigs.id, defaultConfig.id)).run();
+    return c.json({ saved: true });
+  }
+  writeFileSync(PW_TMUX_CONF, content, 'utf-8');
+  return c.json({ saved: true });
 });
 
 // Plain terminal session (no agent, no feedback)

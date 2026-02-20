@@ -13,6 +13,7 @@ const dispatchLoading = signal(false);
 const newTag = signal('');
 const agentSessions = signal<any[]>([]);
 const lastLoadedId = signal<string | null>(null);
+const lightboxSrc = signal<string | null>(null);
 
 const STATUSES = ['new', 'reviewed', 'dispatched', 'resolved', 'archived'];
 
@@ -26,13 +27,14 @@ async function load(id: string, appId: string | null) {
   lastLoadedId.value = id;
   currentDetailAppId = appId;
   try {
-    const [fb, agentsList] = await Promise.all([
-      api.getFeedbackById(id),
-      api.getAgents(),
-    ]);
+    const fb = await api.getFeedbackById(id);
     feedback.value = fb;
+    const agentsList = await api.getAgents(fb.appId || undefined);
     agents.value = agentsList;
-    const def = agentsList.find((a: any) => a.isDefault);
+    // Prefer per-app default, then global default, then first agent
+    const appDefault = agentsList.find((a: any) => a.isDefault && a.appId === fb.appId);
+    const globalDefault = agentsList.find((a: any) => a.isDefault && !a.appId);
+    const def = appDefault || globalDefault;
     if (def) dispatchAgentId.value = def.id;
     else if (agentsList.length > 0) dispatchAgentId.value = agentsList[0].id;
     loadSessions(id);
@@ -158,6 +160,7 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
             <code style="font-size:14px;color:var(--pw-text-faint);background:var(--pw-code-block-bg);padding:2px 6px;border-radius:4px;margin-right:8px;cursor:pointer" title={`Click to copy: ${fb.id}`} onClick={() => navigator.clipboard.writeText(fb.id)}>{fb.id.slice(-6)}</code>
             {fb.title}
           </h2>
+          <div style="font-size:11px;color:var(--pw-text-faint);font-family:monospace;margin-top:2px">{fb.id}</div>
         </div>
         <div style="display:flex;gap:8px">
           <button class="btn btn-danger" onClick={deleteFeedback}>Delete</button>
@@ -173,7 +176,7 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
           >
             {agents.value.map((a) => (
               <option value={a.id}>
-                {a.name}{a.isDefault ? ' (default)' : ''}
+                {a.name}{a.isDefault && a.appId ? ' (app default)' : a.isDefault ? ' (default)' : ''}{!a.appId ? '' : ''}
               </option>
             ))}
           </select>
@@ -225,7 +228,7 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
             </div>
             <div class="field-row">
               <span class="field-label">Source URL</span>
-              <span class="field-value">{fb.sourceUrl || '—'}</span>
+              <span class="field-value" style="word-break:break-all">{fb.sourceUrl ? <a href={fb.sourceUrl} target="_blank" rel="noopener" style="color:var(--pw-accent)">{fb.sourceUrl}</a> : '—'}</span>
             </div>
             <div class="field-row">
               <span class="field-label">Viewport</span>
@@ -349,9 +352,13 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
               <h3>Screenshots ({fb.screenshots.length})</h3>
               <div class="screenshots-grid">
                 {fb.screenshots.map((s: any) => (
-                  <a href={`/api/v1/images/${s.id}`} target="_blank" key={s.id}>
-                    <img class="screenshot-img" src={`/api/v1/images/${s.id}`} alt={s.filename} />
-                  </a>
+                  <img
+                    class="screenshot-img"
+                    src={`/api/v1/images/${s.id}`}
+                    alt={s.filename}
+                    key={s.id}
+                    onClick={() => (lightboxSrc.value = `/api/v1/images/${s.id}`)}
+                  />
                 ))}
               </div>
             </div>
@@ -442,6 +449,15 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
           )}
         </div>
       </div>
+
+      {lightboxSrc.value && (
+        <div class="sm-lightbox" onClick={() => (lightboxSrc.value = null)}>
+          <div class="sm-lightbox-content" onClick={(e) => e.stopPropagation()}>
+            <img src={lightboxSrc.value} alt="Screenshot (full)" />
+            <button class="sm-lightbox-close" onClick={() => (lightboxSrc.value = null)}>&times;</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

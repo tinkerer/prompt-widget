@@ -213,6 +213,8 @@ export class PromptWidgetElement {
       const img = document.createElement('img');
       img.className = 'pw-screenshot-thumb';
       img.src = URL.createObjectURL(blob);
+      img.title = 'Click to annotate';
+      img.addEventListener('click', () => this.openAnnotator(i));
 
       const removeBtn = document.createElement('button');
       removeBtn.className = 'pw-screenshot-remove';
@@ -226,6 +228,161 @@ export class PromptWidgetElement {
       wrap.appendChild(img);
       wrap.appendChild(removeBtn);
       container.appendChild(wrap);
+    });
+  }
+
+  private openAnnotator(index: number) {
+    const blob = this.pendingScreenshots[index];
+    if (!blob) return;
+
+    const overlay = document.createElement('div');
+    overlay.className = 'pw-annotator';
+
+    const toolbar = document.createElement('div');
+    toolbar.className = 'pw-annotator-toolbar';
+
+    const highlightBtn = document.createElement('button');
+    highlightBtn.textContent = 'Highlight';
+    highlightBtn.className = 'active';
+
+    const undoBtn = document.createElement('button');
+    undoBtn.textContent = 'Undo';
+
+    const saveBtn = document.createElement('button');
+    saveBtn.textContent = 'Done';
+    saveBtn.className = 'pw-annotator-save';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+
+    toolbar.append(highlightBtn, undoBtn, saveBtn, cancelBtn);
+
+    const canvasWrap = document.createElement('div');
+    canvasWrap.className = 'pw-annotator-canvas-wrap';
+
+    const img = new Image();
+    img.src = URL.createObjectURL(blob);
+
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d')!;
+
+    const hint = document.createElement('div');
+    hint.className = 'pw-annotator-hint';
+    hint.textContent = 'Click and drag to highlight areas';
+
+    overlay.append(toolbar, canvasWrap, hint);
+    canvasWrap.append(img, canvas);
+    this.shadow.appendChild(overlay);
+
+    type Rect = { x: number; y: number; w: number; h: number };
+    const rects: Rect[] = [];
+    let drawing = false;
+    let startX = 0;
+    let startY = 0;
+
+    img.onload = () => {
+      const displayW = img.clientWidth;
+      const displayH = img.clientHeight;
+      canvas.width = displayW;
+      canvas.height = displayH;
+      canvas.style.width = displayW + 'px';
+      canvas.style.height = displayH + 'px';
+    };
+
+    const redraw = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      for (const r of rects) {
+        ctx.fillStyle = 'rgba(255, 220, 40, 0.3)';
+        ctx.fillRect(r.x, r.y, r.w, r.h);
+        ctx.strokeStyle = 'rgba(255, 200, 0, 0.8)';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(r.x, r.y, r.w, r.h);
+      }
+    };
+
+    canvas.addEventListener('mousedown', (e) => {
+      drawing = true;
+      const rect = canvas.getBoundingClientRect();
+      startX = e.clientX - rect.left;
+      startY = e.clientY - rect.top;
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+      if (!drawing) return;
+      const rect = canvas.getBoundingClientRect();
+      const curX = e.clientX - rect.left;
+      const curY = e.clientY - rect.top;
+      redraw();
+      ctx.fillStyle = 'rgba(255, 220, 40, 0.3)';
+      ctx.fillRect(startX, startY, curX - startX, curY - startY);
+      ctx.strokeStyle = 'rgba(255, 200, 0, 0.8)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(startX, startY, curX - startX, curY - startY);
+    });
+
+    canvas.addEventListener('mouseup', (e) => {
+      if (!drawing) return;
+      drawing = false;
+      const rect = canvas.getBoundingClientRect();
+      const endX = e.clientX - rect.left;
+      const endY = e.clientY - rect.top;
+      const w = endX - startX;
+      const h = endY - startY;
+      if (Math.abs(w) > 4 && Math.abs(h) > 4) {
+        rects.push({ x: startX, y: startY, w, h });
+      }
+      redraw();
+    });
+
+    undoBtn.addEventListener('click', () => {
+      rects.pop();
+      redraw();
+    });
+
+    cancelBtn.addEventListener('click', () => {
+      overlay.remove();
+    });
+
+    const escHandler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        overlay.remove();
+        document.removeEventListener('keydown', escHandler);
+      }
+    };
+    document.addEventListener('keydown', escHandler);
+
+    saveBtn.addEventListener('click', () => {
+      if (rects.length === 0) {
+        overlay.remove();
+        document.removeEventListener('keydown', escHandler);
+        return;
+      }
+
+      // Burn annotations into the image at full resolution
+      const fullCanvas = document.createElement('canvas');
+      fullCanvas.width = img.naturalWidth;
+      fullCanvas.height = img.naturalHeight;
+      const fctx = fullCanvas.getContext('2d')!;
+      fctx.drawImage(img, 0, 0);
+
+      const scaleX = img.naturalWidth / canvas.width;
+      const scaleY = img.naturalHeight / canvas.height;
+      for (const r of rects) {
+        fctx.fillStyle = 'rgba(255, 220, 40, 0.3)';
+        fctx.fillRect(r.x * scaleX, r.y * scaleY, r.w * scaleX, r.h * scaleY);
+        fctx.strokeStyle = 'rgba(255, 200, 0, 0.8)';
+        fctx.lineWidth = 3 * scaleX;
+        fctx.strokeRect(r.x * scaleX, r.y * scaleY, r.w * scaleX, r.h * scaleY);
+      }
+
+      fullCanvas.toBlob((newBlob) => {
+        if (newBlob) {
+          this.pendingScreenshots[index] = newBlob;
+          this.renderScreenshotThumbs();
+        }
+        overlay.remove();
+        document.removeEventListener('keydown', escHandler);
+      }, 'image/png');
     });
   }
 

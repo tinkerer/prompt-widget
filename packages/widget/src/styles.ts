@@ -106,6 +106,11 @@ export const WIDGET_CSS = `
   border-radius: 4px;
   object-fit: cover;
   border: 1px solid #334155;
+  cursor: pointer;
+}
+
+.pw-screenshot-thumb:hover {
+  border-color: #6366f1;
 }
 
 .pw-screenshot-remove {
@@ -305,5 +310,84 @@ export const WIDGET_CSS = `
 
 .pw-hidden {
   display: none !important;
+}
+
+.pw-annotator {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  animation: pw-slide-in 0.15s ease-out;
+}
+
+.pw-annotator-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.pw-annotator-toolbar button {
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 6px;
+  border: 1px solid #475569;
+  background: #1e293b;
+  color: #e2e8f0;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.pw-annotator-toolbar button:hover {
+  background: #334155;
+  border-color: #6366f1;
+}
+
+.pw-annotator-toolbar button.active {
+  background: #6366f1;
+  border-color: #6366f1;
+}
+
+.pw-annotator-toolbar button.pw-annotator-save {
+  background: #6366f1;
+  border-color: #6366f1;
+}
+
+.pw-annotator-toolbar button.pw-annotator-save:hover {
+  background: #4f46e5;
+}
+
+.pw-annotator-canvas-wrap {
+  position: relative;
+  max-width: 90vw;
+  max-height: calc(100vh - 100px);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.pw-annotator-canvas-wrap img {
+  display: block;
+  max-width: 90vw;
+  max-height: calc(100vh - 100px);
+  object-fit: contain;
+}
+
+.pw-annotator-canvas-wrap canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  cursor: crosshair;
+}
+
+.pw-annotator-hint {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #64748b;
 }
 `;
