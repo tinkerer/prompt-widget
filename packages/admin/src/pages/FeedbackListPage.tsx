@@ -130,7 +130,7 @@ export function FeedbackListPage({ appId }: { appId: string }) {
             <>
               <button
                 class="btn btn-sm btn-primary"
-                onClick={() => batchQuickDispatch(Array.from(selected.value))}
+                onClick={() => batchQuickDispatch(Array.from(selected.value), appId)}
               >
                 Dispatch ({selected.value.size})
               </button>

@@ -46,6 +46,7 @@ const loading = signal(false);
 const minCount = signal(1);
 const filterType = signal('');
 const filterStatus = signal('');
+const includeClosed = signal(false);
 const currentAppId = signal<string | null>(null);
 const agents = signal<any[]>([]);
 
@@ -59,6 +60,7 @@ async function loadClusters() {
     if (currentAppId.value) params.appId = currentAppId.value;
     if (filterType.value) params.type = filterType.value;
     if (filterStatus.value) params.status = filterStatus.value;
+    if (includeClosed.value) params.includeClosed = 1;
     if (minCount.value > 1) params.minCount = minCount.value;
     const result = await api.getAggregate(params);
     clusters.value = result.clusters;
@@ -81,6 +83,7 @@ effect(() => {
   void currentAppId.value;
   void filterType.value;
   void filterStatus.value;
+  void includeClosed.value;
   void minCount.value;
   loadClusters();
 });
@@ -461,6 +464,14 @@ export function AggregatePage({ appId }: { appId: string }) {
             <option value={s}>{s}</option>
           ))}
         </select>
+        <label style="font-size:13px;display:flex;align-items:center;gap:4px">
+          <input
+            type="checkbox"
+            checked={includeClosed.value}
+            onChange={(e) => (includeClosed.value = (e.target as HTMLInputElement).checked)}
+          />
+          Include closed
+        </label>
       </div>
 
       {loading.value && (

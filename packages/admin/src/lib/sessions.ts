@@ -195,12 +195,24 @@ export async function quickDispatch(feedbackId: string, appId?: string | null) {
   quickDispatchState.value = { ...quickDispatchState.value, [feedbackId]: 'loading' };
   try {
     const agents = await ensureAgentsLoaded();
-    // Find default agent matching the app, falling back to any default
-    const appAgents = appId && appId !== '__unlinked__'
-      ? agents.filter((a: any) => a.appId === appId)
-      : agents;
+
+    // Resolve appId: use the feedback item's own appId if the caller didn't provide one
+    let effectiveAppId = appId;
+    if (!effectiveAppId || effectiveAppId === '__unlinked__') {
+      try {
+        const fb = await api.getFeedbackById(feedbackId);
+        effectiveAppId = fb.appId;
+      } catch { /* fall through */ }
+    }
+
+    // Find default agent for the feedback's app
+    const appAgents = effectiveAppId
+      ? agents.filter((a: any) => a.appId === effectiveAppId)
+      : [];
     const defaultAgent = appAgents.find((a: any) => a.isDefault)
-      || appAgents[0];
+      || appAgents[0]
+      || agents.find((a: any) => a.isDefault)
+      || agents[0];
     if (!defaultAgent) {
       quickDispatchState.value = { ...quickDispatchState.value, [feedbackId]: 'error' };
       setTimeout(() => {
@@ -221,8 +233,7 @@ export async function quickDispatch(feedbackId: string, appId?: string | null) {
   }, 2000);
 }
 
-export async function batchQuickDispatch(feedbackIds: string[]) {
-  // Pre-load agents once, then dispatch all in parallel
+export async function batchQuickDispatch(feedbackIds: string[], appId?: string | null) {
   await ensureAgentsLoaded();
-  await Promise.all(feedbackIds.map((id) => quickDispatch(id)));
+  await Promise.all(feedbackIds.map((id) => quickDispatch(id, appId)));
 }
