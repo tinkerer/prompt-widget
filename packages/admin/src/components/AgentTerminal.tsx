@@ -18,6 +18,7 @@ export function AgentTerminal({ sessionId, isActive, onExit }: AgentTerminalProp
   const fitRef = useRef<FitAddon | null>(null);
   const cleanedUp = useRef(false);
   const hasExited = useRef(false);
+  const safeFitAndResizeRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -56,11 +57,7 @@ export function AgentTerminal({ sessionId, isActive, onExit }: AgentTerminalProp
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(containerRef.current);
-    // Suppress browser context menu but let xterm process right-click first for tmux menus
-    const xtermScreen = containerRef.current.querySelector('.xterm-screen');
-    if (xtermScreen) {
-      xtermScreen.addEventListener('contextmenu', (e) => e.preventDefault());
-    }
+
     // Only fit if container is visible (non-zero size); hidden tabs fit on activation
     if (containerRef.current.offsetWidth > 0) {
       fit.fit();
@@ -80,6 +77,88 @@ export function AgentTerminal({ sessionId, isActive, onExit }: AgentTerminalProp
     let lastOutputSeq = 0;
     let inputSeq = 0;
     const pendingInputs = new Map<number, string>();
+
+    // --- Mouse mode tracking & manual mousemove injection ---
+    // xterm.js doesn't reliably send mousemove in DECSET 1003 (any-event mode)
+    // when no button is held. We track the mode from terminal output and inject
+    // SGR mouse sequences ourselves so tmux popup menus get hover highlights.
+    let mouseMode = 0;   // 0=off, 9/1000/1002/1003
+    let sgrEncoding = false; // DECSET 1006
+
+    function trackMouseModes(data: string) {
+      const re = /\x1b\[\?(\d+)([hl])/g;
+      let m;
+      while ((m = re.exec(data)) !== null) {
+        const mode = parseInt(m[1], 10);
+        const enable = m[2] === 'h';
+        switch (mode) {
+          case 9: case 1000: case 1002: case 1003:
+            mouseMode = enable ? mode : 0;
+            break;
+          case 1006:
+            sgrEncoding = enable;
+            break;
+        }
+      }
+    }
+
+    function sendRawInput(data: string) {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        inputSeq++;
+        const msg = JSON.stringify({
+          type: 'sequenced_input',
+          sessionId,
+          seq: inputSeq,
+          content: { kind: 'input', data },
+          timestamp: new Date().toISOString(),
+        });
+        pendingInputs.set(inputSeq, msg);
+        ws.send(msg);
+      }
+    }
+
+    function injectMouseEvent(e: MouseEvent, cb: number, press: boolean) {
+      const screen = containerRef.current?.querySelector('.xterm-screen');
+      if (!screen) return;
+      const rect = screen.getBoundingClientRect();
+      const col = Math.min(term.cols, Math.max(1, Math.floor((e.clientX - rect.left) / (rect.width / term.cols)) + 1));
+      const row = Math.min(term.rows, Math.max(1, Math.floor((e.clientY - rect.top) / (rect.height / term.rows)) + 1));
+      if (sgrEncoding) {
+        sendRawInput(`\x1b[<${cb};${col};${row}${press ? 'M' : 'm'}`);
+      } else {
+        sendRawInput(`\x1b[M${String.fromCharCode(cb + 32, col + 32, row + 32)}`);
+      }
+    }
+
+    let lastMoveCol = -1;
+    let lastMoveRow = -1;
+
+    function onMouseMove(e: MouseEvent) {
+      if (mouseMode !== 1003) return;
+      // Only inject no-button moves; xterm.js handles button-held moves via onData
+      if (e.buttons !== 0) return;
+      const screen = containerRef.current?.querySelector('.xterm-screen');
+      if (!screen) return;
+      const rect = screen.getBoundingClientRect();
+      const col = Math.min(term.cols, Math.max(1, Math.floor((e.clientX - rect.left) / (rect.width / term.cols)) + 1));
+      const row = Math.min(term.rows, Math.max(1, Math.floor((e.clientY - rect.top) / (rect.height / term.rows)) + 1));
+      if (col === lastMoveCol && row === lastMoveRow) return;
+      lastMoveCol = col;
+      lastMoveRow = row;
+      // cb=35: motion (32) + no button (3)
+      injectMouseEvent(e, 35, true);
+    }
+
+    function onContextMenu(e: Event) {
+      e.preventDefault();
+    }
+
+    const xtermScreen = containerRef.current.querySelector('.xterm-screen');
+    if (xtermScreen) {
+      xtermScreen.addEventListener('contextmenu', onContextMenu);
+      xtermScreen.addEventListener('mousemove', onMouseMove as EventListener);
+    }
 
     function sendOutputAck(seq: number) {
       const ws = wsRef.current;
@@ -104,6 +183,7 @@ export function AgentTerminal({ sessionId, isActive, onExit }: AgentTerminalProp
     }
 
     function handleOutput(data: string) {
+      trackMouseModes(data);
       if (!gotFirstOutput) {
         gotFirstOutput = true;
         if (waitingDots) { clearInterval(waitingDots); waitingDots = null; }
@@ -230,7 +310,15 @@ export function AgentTerminal({ sessionId, isActive, onExit }: AgentTerminalProp
 
     connect();
 
+    // Terminal auto-response sequences (DA1, DA2, DSR cursor position report).
+    // xterm.js generates these in response to queries from tmux/shell. On reconnect
+    // they arrive after tmux has timed out, causing visible junk in the PTY input.
+    // tmux infers capabilities from TERM=xterm-256color so these are unnecessary.
+    const TERMINAL_RESPONSE_RE = /\x1b\[\?[\d;]*c|\x1b\[>[\d;]*c|\x1b\[\d+;\d+R/g;
+
     term.onData((data: string) => {
+      const filtered = data.replace(TERMINAL_RESPONSE_RE, '');
+      if (!filtered) return;
       const ws = wsRef.current;
       if (ws && ws.readyState === WebSocket.OPEN) {
         inputSeq++;
@@ -238,7 +326,7 @@ export function AgentTerminal({ sessionId, isActive, onExit }: AgentTerminalProp
           type: 'sequenced_input',
           sessionId,
           seq: inputSeq,
-          content: { kind: 'input', data },
+          content: { kind: 'input', data: filtered },
           timestamp: new Date().toISOString(),
         });
         pendingInputs.set(inputSeq, msg);
@@ -272,6 +360,10 @@ export function AgentTerminal({ sessionId, isActive, onExit }: AgentTerminalProp
       cleanedUp.current = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (waitingDots) clearInterval(waitingDots);
+      if (xtermScreen) {
+        xtermScreen.removeEventListener('contextmenu', onContextMenu);
+        xtermScreen.removeEventListener('mousemove', onMouseMove as EventListener);
+      }
       observer.disconnect();
       wsRef.current?.close();
       term.dispose();
@@ -299,5 +391,5 @@ export function AgentTerminal({ sessionId, isActive, onExit }: AgentTerminalProp
     return () => timers.forEach(clearTimeout);
   }, [isActive]);
 
-  return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />;
+  return <div ref={containerRef} style={{ width: '100%', height: '100%' }} onClick={() => termRef.current?.focus()} />;
 }
