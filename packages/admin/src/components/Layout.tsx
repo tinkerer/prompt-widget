@@ -7,7 +7,7 @@ import { GlobalTerminalPanel } from './GlobalTerminalPanel.js';
 import { Tooltip } from './Tooltip.js';
 import { ShortcutHelpModal } from './ShortcutHelpModal.js';
 import { registerShortcut } from '../lib/shortcuts.js';
-import { toggleTheme } from '../lib/settings.js';
+import { toggleTheme, showTabs } from '../lib/settings.js';
 import {
   openTabs,
   panelHeight,
@@ -49,7 +49,8 @@ async function pollLiveConnections() {
 export function Layout({ children }: { children: ComponentChildren }) {
   const route = currentRoute.value;
   const hasTabs = openTabs.value.length > 0;
-  const bottomPad = hasTabs ? (panelMinimized.value ? 36 : panelHeight.value) : 0;
+  const minimizedHeight = showTabs.value ? 66 : 32;
+  const bottomPad = hasTabs ? (panelMinimized.value ? minimizedHeight : panelHeight.value) : 0;
   const collapsed = sidebarCollapsed.value;
   const width = sidebarWidth.value;
   const [showShortcutHelp, setShowShortcutHelp] = useState(false);

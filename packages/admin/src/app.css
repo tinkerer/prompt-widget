@@ -1308,6 +1308,22 @@ input:focus, select:focus, textarea:focus {
   color: #bbf7d0;
 }
 
+.terminal-collapse-btn {
+  background: none;
+  border: 1px solid #334155;
+  color: #94a3b8;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  margin-left: 4px;
+}
+
+.terminal-collapse-btn:hover {
+  background: #334155;
+  color: #e2e8f0;
+}
+
 .terminal-body {
   flex: 1;
   overflow: hidden;
