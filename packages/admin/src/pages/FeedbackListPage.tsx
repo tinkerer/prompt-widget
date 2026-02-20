@@ -1,4 +1,5 @@
 import { signal, effect } from '@preact/signals';
+import { useEffect } from 'preact/hooks';
 import { api } from '../lib/api.js';
 import { navigate } from '../lib/state.js';
 import { quickDispatch, quickDispatchState, batchQuickDispatch } from '../lib/sessions.js';
@@ -12,6 +13,7 @@ const filterType = signal('');
 const filterStatus = signal('');
 const searchQuery = signal('');
 const selected = signal<Set<string>>(new Set());
+const currentAppId = signal<string | null>(null);
 
 const TYPES = ['', 'manual', 'ab_test', 'analytics', 'error_report', 'programmatic'];
 const STATUSES = ['', 'new', 'reviewed', 'dispatched', 'resolved', 'archived'];
@@ -23,6 +25,7 @@ async function loadFeedback() {
     if (filterType.value) params.type = filterType.value;
     if (filterStatus.value) params.status = filterStatus.value;
     if (searchQuery.value) params.search = searchQuery.value;
+    if (currentAppId.value) params.appId = currentAppId.value;
     const result = await api.getFeedback(params);
     items.value = result.items;
     total.value = result.total;
@@ -38,6 +41,7 @@ effect(() => {
   void filterType.value;
   void filterStatus.value;
   void page.value;
+  void currentAppId.value;
   loadFeedback();
 });
 
@@ -75,7 +79,7 @@ function formatDate(iso: string) {
   return new Date(iso).toLocaleString();
 }
 
-function DispatchButton({ id }: { id: string }) {
+function DispatchButton({ id, appId }: { id: string; appId: string | null }) {
   const state = quickDispatchState.value[id] || 'idle';
   return (
     <button
@@ -83,7 +87,7 @@ function DispatchButton({ id }: { id: string }) {
       disabled={state === 'loading'}
       onClick={(e) => {
         e.stopPropagation();
-        quickDispatch(id);
+        quickDispatch(id, appId);
       }}
       title="Quick dispatch to default agent"
     >
@@ -95,7 +99,28 @@ function DispatchButton({ id }: { id: string }) {
   );
 }
 
-export function FeedbackListPage() {
+export function FeedbackListPage({ appId }: { appId: string }) {
+  if (currentAppId.value !== appId) {
+    currentAppId.value = appId;
+    page.value = 1;
+    selected.value = new Set();
+  }
+
+  useEffect(() => {
+    const token = localStorage.getItem('pw-admin-token');
+    if (!token) return;
+    const es = new EventSource(`/api/v1/admin/feedback/events?token=${encodeURIComponent(token)}`);
+    es.addEventListener('new-feedback', (e) => {
+      const data = JSON.parse(e.data);
+      if (!currentAppId.value || data.appId === currentAppId.value) {
+        loadFeedback();
+      }
+    });
+    return () => es.close();
+  }, [appId]);
+
+  const basePath = `/app/${appId}/feedback`;
+
   return (
     <div>
       <div class="page-header">
@@ -202,10 +227,10 @@ export function FeedbackListPage() {
                 </td>
                 <td>
                   <a
-                    href={`#/feedback/${item.id}`}
+                    href={`#${basePath}/${item.id}`}
                     onClick={(e) => {
                       e.preventDefault();
-                      navigate(`/feedback/${item.id}`);
+                      navigate(`${basePath}/${item.id}`);
                     }}
                     style="color:#6366f1;text-decoration:none;font-weight:500"
                   >
@@ -227,7 +252,7 @@ export function FeedbackListPage() {
                 </td>
                 <td style="white-space:nowrap;color:#64748b;font-size:13px">{formatDate(item.createdAt)}</td>
                 <td>
-                  <DispatchButton id={item.id} />
+                  <DispatchButton id={item.id} appId={appId} />
                 </td>
               </tr>
             ))}

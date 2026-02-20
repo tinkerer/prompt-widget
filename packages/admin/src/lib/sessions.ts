@@ -1,11 +1,32 @@
 import { signal, computed } from '@preact/signals';
 import { api } from './api.js';
 
-export const openTabs = signal<string[]>([]);
-export const activeTabId = signal<string | null>(null);
-export const panelMinimized = signal(false);
-export const panelHeight = signal(400);
-export const exitedSessions = signal<Set<string>>(new Set());
+function loadJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export const openTabs = signal<string[]>(loadJson('pw-open-tabs', []));
+export const activeTabId = signal<string | null>(loadJson('pw-active-tab', null));
+export const panelMinimized = signal(loadJson('pw-panel-minimized', false));
+export const panelHeight = signal(loadJson('pw-panel-height', 400));
+export const exitedSessions = signal<Set<string>>(new Set(loadJson<string[]>('pw-exited-sessions', [])));
+
+function persistTabs() {
+  localStorage.setItem('pw-open-tabs', JSON.stringify(openTabs.value));
+  localStorage.setItem('pw-active-tab', JSON.stringify(activeTabId.value));
+  localStorage.setItem('pw-panel-minimized', JSON.stringify(panelMinimized.value));
+  localStorage.setItem('pw-exited-sessions', JSON.stringify([...exitedSessions.value]));
+}
+
+export function persistPanelState() {
+  localStorage.setItem('pw-panel-height', JSON.stringify(panelHeight.value));
+  localStorage.setItem('pw-panel-minimized', JSON.stringify(panelMinimized.value));
+}
 export const quickDispatchState = signal<Record<string, 'idle' | 'loading' | 'success' | 'error'>>({});
 export const cachedAgents = signal<any[]>([]);
 
@@ -19,16 +40,31 @@ export const sidebarWidth = computed(() =>
 
 export const allSessions = signal<any[]>([]);
 export const sessionsLoading = signal(false);
+export const sessionsDrawerOpen = signal(localStorage.getItem('pw-sessions-drawer') !== 'false');
+export const sessionSearchQuery = signal('');
+export const sessionsHeight = signal(loadJson('pw-sessions-height', 300));
 
 export function toggleSidebar() {
   sidebarCollapsed.value = !sidebarCollapsed.value;
   localStorage.setItem('pw-sidebar-collapsed', String(sidebarCollapsed.value));
 }
 
-export async function loadAllSessions() {
+export function toggleSessionsDrawer() {
+  sessionsDrawerOpen.value = !sessionsDrawerOpen.value;
+  localStorage.setItem('pw-sessions-drawer', String(sessionsDrawerOpen.value));
+}
+
+export function setSessionsHeight(h: number) {
+  const clamped = Math.max(80, Math.min(h, window.innerHeight - 200));
+  sessionsHeight.value = clamped;
+  localStorage.setItem('pw-sessions-height', JSON.stringify(clamped));
+}
+
+export async function loadAllSessions(includeDeleted = false) {
   sessionsLoading.value = true;
   try {
-    allSessions.value = await api.getAgentSessions();
+    const tabs = openTabs.value;
+    allSessions.value = await api.getAgentSessions(undefined, tabs.length > 0 ? tabs : undefined, includeDeleted);
   } catch {
     // ignore
   } finally {
@@ -48,6 +84,7 @@ export function openSession(sessionId: string) {
   }
   activeTabId.value = sessionId;
   panelMinimized.value = false;
+  persistTabs();
 }
 
 export function closeTab(sessionId: string) {
@@ -55,6 +92,29 @@ export function closeTab(sessionId: string) {
   openTabs.value = tabs;
   if (activeTabId.value === sessionId) {
     activeTabId.value = tabs.length > 0 ? tabs[tabs.length - 1] : null;
+  }
+  persistTabs();
+}
+
+export async function deleteSession(sessionId: string) {
+  try {
+    await api.archiveAgentSession(sessionId);
+    allSessions.value = allSessions.value.map((s) =>
+      s.id === sessionId ? { ...s, status: 'deleted' } : s
+    );
+    closeTab(sessionId);
+  } catch (err: any) {
+    console.error('Archive session failed:', err.message);
+  }
+}
+
+export async function permanentlyDeleteSession(sessionId: string) {
+  try {
+    await api.deleteAgentSession(sessionId);
+    allSessions.value = allSessions.value.filter((s) => s.id !== sessionId);
+    closeTab(sessionId);
+  } catch (err: any) {
+    console.error('Delete session failed:', err.message);
   }
 }
 
@@ -71,6 +131,7 @@ export function markSessionExited(sessionId: string) {
   const next = new Set(exitedSessions.value);
   next.add(sessionId);
   exitedSessions.value = next;
+  persistTabs();
 }
 
 export async function resumeSession(sessionId: string): Promise<string | null> {
@@ -84,6 +145,7 @@ export async function resumeSession(sessionId: string): Promise<string | null> {
     const next = new Set(exitedSessions.value);
     next.delete(sessionId);
     exitedSessions.value = next;
+    persistTabs();
     return newId;
   } catch (err: any) {
     console.error('Resume failed:', err.message);
@@ -104,11 +166,16 @@ export async function ensureAgentsLoaded(): Promise<any[]> {
   return agentsLoading;
 }
 
-export async function quickDispatch(feedbackId: string) {
+export async function quickDispatch(feedbackId: string, appId?: string | null) {
   quickDispatchState.value = { ...quickDispatchState.value, [feedbackId]: 'loading' };
   try {
     const agents = await ensureAgentsLoaded();
-    const defaultAgent = agents.find((a: any) => a.isDefault);
+    // Find default agent matching the app, falling back to any default
+    const appAgents = appId && appId !== '__unlinked__'
+      ? agents.filter((a: any) => a.appId === appId)
+      : agents;
+    const defaultAgent = appAgents.find((a: any) => a.isDefault)
+      || appAgents[0];
     if (!defaultAgent) {
       quickDispatchState.value = { ...quickDispatchState.value, [feedbackId]: 'error' };
       setTimeout(() => {
@@ -130,7 +197,7 @@ export async function quickDispatch(feedbackId: string) {
 }
 
 export async function batchQuickDispatch(feedbackIds: string[]) {
-  for (const id of feedbackIds) {
-    await quickDispatch(id);
-  }
+  // Pre-load agents once, then dispatch all in parallel
+  await ensureAgentsLoaded();
+  await Promise.all(feedbackIds.map((id) => quickDispatch(id)));
 }

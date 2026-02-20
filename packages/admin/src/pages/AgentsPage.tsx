@@ -15,17 +15,23 @@ const formMode = signal<'webhook' | 'headless' | 'interactive'>('webhook');
 const formPromptTemplate = signal('');
 const formPermissionProfile = signal<'interactive' | 'auto' | 'yolo'>('interactive');
 const formAllowedTools = signal('');
+const formAutoPlan = signal(false);
 const formError = signal('');
 const formLoading = signal(false);
 
-async function loadAgents() {
+let currentAppId: string | null = null;
+
+async function loadAgents(appId: string | null) {
   loading.value = true;
+  currentAppId = appId;
   try {
     const [agentsList, appsList] = await Promise.all([
       api.getAgents(),
       api.getApplications(),
     ]);
-    agents.value = agentsList;
+    agents.value = appId
+      ? agentsList.filter((a: any) => a.appId === appId)
+      : agentsList;
     applications.value = appsList;
   } catch (err) {
     console.error('Failed to load agents:', err);
@@ -34,19 +40,18 @@ async function loadAgents() {
   }
 }
 
-loadAgents();
-
 function openCreate() {
   editingId.value = null;
   formName.value = '';
   formUrl.value = '';
   formAuth.value = '';
   formDefault.value = false;
-  formAppId.value = '';
+  formAppId.value = currentAppId || '';
   formMode.value = 'webhook';
   formPromptTemplate.value = '';
   formPermissionProfile.value = 'interactive';
   formAllowedTools.value = '';
+  formAutoPlan.value = false;
   formError.value = '';
   showForm.value = true;
 }
@@ -62,6 +67,7 @@ function openEdit(agent: any) {
   formPromptTemplate.value = agent.promptTemplate || '';
   formPermissionProfile.value = agent.permissionProfile || 'interactive';
   formAllowedTools.value = agent.allowedTools || '';
+  formAutoPlan.value = agent.autoPlan || false;
   formError.value = '';
   showForm.value = true;
 }
@@ -81,6 +87,7 @@ async function saveAgent(e: Event) {
     promptTemplate: formPromptTemplate.value || undefined,
     permissionProfile: formPermissionProfile.value,
     allowedTools: formAllowedTools.value || undefined,
+    autoPlan: formAutoPlan.value,
   };
 
   try {
@@ -90,7 +97,7 @@ async function saveAgent(e: Event) {
       await api.createAgent(data);
     }
     showForm.value = false;
-    await loadAgents();
+    await loadAgents(currentAppId);
   } catch (err: any) {
     formError.value = err.message;
   } finally {
@@ -101,7 +108,7 @@ async function saveAgent(e: Event) {
 async function deleteAgent(id: string) {
   if (!confirm('Delete this agent endpoint?')) return;
   await api.deleteAgent(id);
-  await loadAgents();
+  await loadAgents(currentAppId);
 }
 
 function getAppName(appId: string | null): string | null {
@@ -122,7 +129,10 @@ const PROFILE_LABELS: Record<string, string> = {
   yolo: 'YOLO',
 };
 
-export function AgentsPage() {
+export function AgentsPage({ appId }: { appId: string | null }) {
+  if (currentAppId !== appId) {
+    loadAgents(appId);
+  }
   return (
     <div>
       <div class="page-header">
@@ -141,6 +151,11 @@ export function AgentsPage() {
                 {agent.mode !== 'webhook' && (
                   <span class="badge" style="margin-left:4px;background:#1e1b4b;color:#a5b4fc">
                     {PROFILE_LABELS[agent.permissionProfile] || 'Interactive'}
+                  </span>
+                )}
+                {agent.autoPlan && (
+                  <span class="badge" style="margin-left:4px;background:#064e3b;color:#6ee7b7">
+                    Auto-plan
                   </span>
                 )}
               </h4>
@@ -196,19 +211,21 @@ export function AgentsPage() {
                 ))}
               </div>
             </div>
-            <div class="form-group">
-              <label>Application (optional)</label>
-              <select
-                value={formAppId.value}
-                onChange={(e) => (formAppId.value = (e.target as HTMLSelectElement).value)}
-                style="width:100%"
-              >
-                <option value="">None</option>
-                {applications.value.map((app) => (
-                  <option value={app.id} key={app.id}>{app.name}</option>
-                ))}
-              </select>
-            </div>
+            {!currentAppId && (
+              <div class="form-group">
+                <label>Application (optional)</label>
+                <select
+                  value={formAppId.value}
+                  onChange={(e) => (formAppId.value = (e.target as HTMLSelectElement).value)}
+                  style="width:100%"
+                >
+                  <option value="">None</option>
+                  {applications.value.map((app) => (
+                    <option value={app.id} key={app.id}>{app.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
             {formMode.value === 'webhook' && (
               <>
                 <div class="form-group">
@@ -288,6 +305,19 @@ export function AgentsPage() {
                     Warning: YOLO mode skips ALL permission checks. The agent can execute any command, edit any file, and access any resource. Only use in sandboxed/Docker environments.
                   </div>
                 )}
+                <div class="form-group">
+                  <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                    <input
+                      type="checkbox"
+                      checked={formAutoPlan.value}
+                      onChange={(e) => (formAutoPlan.value = (e.target as HTMLInputElement).checked)}
+                    />
+                    Auto-plan
+                  </label>
+                  <span style="font-size:11px;color:#94a3b8;margin-top:4px;display:block">
+                    Agent creates a plan and waits for approval before implementing. Resumed sessions continue with the plan context.
+                  </span>
+                </div>
               </>
             )}
             <div class="form-group">

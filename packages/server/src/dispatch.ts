@@ -1,8 +1,9 @@
 import { ulid } from 'ulidx';
 import { eq } from 'drizzle-orm';
-import type { FeedbackItem, Application, AgentEndpoint, PermissionProfile } from '@prompt-widget/shared';
+import type { FeedbackItem, Application, AgentEndpoint, PermissionProfile, LaunchSession } from '@prompt-widget/shared';
 import { db, schema } from './db/index.js';
 import { spawnAgentSession } from './agent-sessions.js';
+import { getLauncher, addSessionToLauncher } from './launcher-registry.js';
 
 export interface DispatchContext {
   feedback: FeedbackItem;
@@ -79,9 +80,25 @@ export async function dispatchAgentSession(params: {
   cwd: string;
   permissionProfile: PermissionProfile;
   allowedTools?: string | null;
+  launcherId?: string | null;
 }): Promise<{ sessionId: string }> {
   const sessionId = ulid();
   const now = new Date().toISOString();
+
+  // Resolve launcher: explicit param > agent endpoint preference > local
+  let targetLauncherId = params.launcherId || null;
+  if (!targetLauncherId) {
+    const agent = db
+      .select()
+      .from(schema.agentEndpoints)
+      .where(eq(schema.agentEndpoints.id, params.agentEndpointId))
+      .get();
+    if (agent?.preferredLauncherId) {
+      targetLauncherId = agent.preferredLauncherId;
+    }
+  }
+
+  const launcher = targetLauncherId ? getLauncher(targetLauncherId) : undefined;
 
   db.insert(schema.agentSessions)
     .values({
@@ -91,19 +108,58 @@ export async function dispatchAgentSession(params: {
       permissionProfile: params.permissionProfile,
       status: 'pending',
       outputBytes: 0,
+      launcherId: launcher ? launcher.id : null,
       createdAt: now,
     })
     .run();
 
-  await spawnAgentSession({
+  if (launcher && launcher.ws.readyState === 1) {
+    // Route to remote launcher
+    const msg: LaunchSession = {
+      type: 'launch_session',
+      sessionId,
+      prompt: params.prompt,
+      cwd: params.cwd,
+      permissionProfile: params.permissionProfile,
+      allowedTools: params.allowedTools,
+      cols: 120,
+      rows: 40,
+    };
+    try {
+      launcher.ws.send(JSON.stringify(msg));
+      addSessionToLauncher(launcher.id, sessionId);
+      console.log(`[dispatch] Sent session ${sessionId} to launcher ${launcher.id}`);
+    } catch (err) {
+      console.error(`[dispatch] Failed to send to launcher, falling back to local:`, err);
+      spawnLocal(sessionId, params);
+    }
+  } else {
+    // Local spawn
+    spawnLocal(sessionId, params);
+  }
+
+  return { sessionId };
+}
+
+function spawnLocal(sessionId: string, params: {
+  prompt: string;
+  cwd: string;
+  permissionProfile: PermissionProfile;
+  allowedTools?: string | null;
+}): void {
+  spawnAgentSession({
     sessionId,
     prompt: params.prompt,
     cwd: params.cwd,
     permissionProfile: params.permissionProfile,
     allowedTools: params.allowedTools,
+  }).catch((err) => {
+    console.error(`Failed to spawn session ${sessionId}:`, err);
+    db.update(schema.agentSessions)
+      .set({ status: 'failed', completedAt: new Date().toISOString() })
+      .where(eq(schema.agentSessions.id, sessionId))
+      .run();
   });
-
-  return { sessionId };
 }
 
 export async function resumeAgentSession(parentSessionId: string): Promise<{ sessionId: string }> {
@@ -131,21 +187,98 @@ export async function resumeAgentSession(parentSessionId: string): Promise<{ ses
     throw new Error('Agent endpoint not found');
   }
 
+  // Look up the original feedback to rebuild the prompt with full context
+  const feedbackRow = db
+    .select()
+    .from(schema.feedbackItems)
+    .where(eq(schema.feedbackItems.id, parent.feedbackId))
+    .get();
+
+  if (!feedbackRow) {
+    throw new Error('Original feedback not found');
+  }
+
+  const tags = db
+    .select()
+    .from(schema.feedbackTags)
+    .where(eq(schema.feedbackTags.feedbackId, feedbackRow.id))
+    .all()
+    .map((t) => t.tag);
+
+  const feedback: FeedbackItem = {
+    ...feedbackRow,
+    type: feedbackRow.type as FeedbackItem['type'],
+    status: feedbackRow.status as FeedbackItem['status'],
+    data: feedbackRow.data ? JSON.parse(feedbackRow.data) : null,
+    context: feedbackRow.context ? JSON.parse(feedbackRow.context) : null,
+    appId: feedbackRow.appId || null,
+    tags,
+    screenshots: [],
+  };
+
   let cwd = process.cwd();
-  if (agent.appId) {
-    const app = db
+  let app: Application | null = null;
+  const resumeAppId = agent.appId || feedbackRow.appId;
+  if (resumeAppId) {
+    const appRow = db
       .select()
       .from(schema.applications)
-      .where(eq(schema.applications.id, agent.appId))
+      .where(eq(schema.applications.id, resumeAppId))
       .get();
-    if (app?.projectDir) {
-      cwd = app.projectDir;
+    if (appRow) {
+      app = {
+        ...appRow,
+        hooks: JSON.parse(appRow.hooks || '[]'),
+        serverUrl: appRow.serverUrl || null,
+      };
+      if (appRow.projectDir) cwd = appRow.projectDir;
     }
   }
 
+  // Rebuild the original prompt template with feedback context
+  const baseTemplate = agent.promptTemplate || '{{feedback.title}}\n\n{{feedback.description}}\n\n{{instructions}}';
+  const template = agent.autoPlan
+    ? baseTemplate + '\n\nIMPORTANT: Before making any changes, create a detailed plan first. Present the plan and wait for approval before implementing.'
+    : baseTemplate;
+
+  const agentTyped: AgentEndpoint = {
+    ...agent,
+    mode: agent.mode as AgentEndpoint['mode'],
+    appId: agent.appId || null,
+    promptTemplate: agent.promptTemplate || null,
+    authHeader: agent.authHeader || null,
+    isDefault: !!agent.isDefault,
+    permissionProfile: (agent.permissionProfile || 'interactive') as PermissionProfile,
+    allowedTools: agent.allowedTools || null,
+    autoPlan: !!agent.autoPlan,
+  };
+
+  const ctx: DispatchContext = { feedback, agent: agentTyped, app };
+  const originalPrompt = fillPromptTemplate(template, ctx);
+
+  // Include a tail of the parent session's output so the agent knows what was already done
+  const parentOutput = parent.outputLog || '';
+  const outputTail = parentOutput.length > 4000
+    ? '...(truncated)\n' + parentOutput.slice(-4000)
+    : parentOutput;
+
+  const resumePrompt = `You are resuming a task that a previous agent session worked on but did not fully complete. The user wants you to continue making progress.
+
+Previous session output:
+---
+${outputTail}
+---
+
+Original task:
+${originalPrompt}
+
+IMPORTANT: The previous session may have made partial progress. Check the current state (git status, git diff, etc.) then continue working on anything that is still incomplete or broken. Do NOT just summarize what was done — actually do more work. If everything appears complete, verify by running tests or checking the build, and fix any issues you find.`;
+
   const sessionId = ulid();
   const now = new Date().toISOString();
-  const permissionProfile = (parent.permissionProfile || 'interactive') as PermissionProfile;
+
+  // Always resume in interactive mode so the user gets an immediate terminal
+  const permissionProfile: PermissionProfile = 'interactive';
 
   db.insert(schema.agentSessions)
     .values({
@@ -160,13 +293,17 @@ export async function resumeAgentSession(parentSessionId: string): Promise<{ ses
     })
     .run();
 
-  await spawnAgentSession({
+  spawnAgentSession({
     sessionId,
-    prompt: 'Continue working on this task.',
+    prompt: resumePrompt,
     cwd,
     permissionProfile,
-    allowedTools: agent.allowedTools,
-    resume: true,
+  }).catch((err) => {
+    console.error(`Failed to resume session ${sessionId}:`, err);
+    db.update(schema.agentSessions)
+      .set({ status: 'failed', completedAt: new Date().toISOString() })
+      .where(eq(schema.agentSessions.id, sessionId))
+      .run();
   });
 
   return { sessionId };

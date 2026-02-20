@@ -42,6 +42,8 @@ export function registerSession(sessionId: string, ws: WebSocket, meta: { userAg
     userId: meta.userId || null,
     viewport: meta.viewport || null,
     appId: meta.appId || null,
+    name: null,
+    tags: [],
     pendingRequests: new Map(),
   };
 

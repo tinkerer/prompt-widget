@@ -63,6 +63,20 @@ export const agentEndpoints = sqliteTable('agent_endpoints', {
   mode: text('mode').notNull().default('webhook'),
   permissionProfile: text('permission_profile').notNull().default('interactive'),
   allowedTools: text('allowed_tools'),
+  autoPlan: integer('auto_plan', { mode: 'boolean' }).notNull().default(false),
+  preferredLauncherId: text('preferred_launcher_id'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const plans = sqliteTable('plans', {
+  id: text('id').primaryKey(),
+  groupKey: text('group_key').notNull(),
+  title: text('title').notNull(),
+  body: text('body').notNull().default(''),
+  status: text('status').notNull().default('draft'),
+  linkedFeedbackIds: text('linked_feedback_ids').notNull().default('[]'),
+  appId: text('app_id').references(() => applications.id, { onDelete: 'set null' }),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
@@ -82,7 +96,20 @@ export const agentSessions = sqliteTable('agent_sessions', {
   exitCode: integer('exit_code'),
   outputLog: text('output_log'),
   outputBytes: integer('output_bytes').notNull().default(0),
+  lastOutputSeq: integer('last_output_seq').notNull().default(0),
+  lastInputSeq: integer('last_input_seq').notNull().default(0),
+  tmuxSessionName: text('tmux_session_name'),
+  launcherId: text('launcher_id'),
   createdAt: text('created_at').notNull(),
   startedAt: text('started_at'),
   completedAt: text('completed_at'),
+});
+
+export const pendingMessages = sqliteTable('pending_messages', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  sessionId: text('session_id').notNull(),
+  direction: text('direction').notNull(), // 'output' | 'input'
+  seqNum: integer('seq_num').notNull(),
+  content: text('content').notNull(),
+  createdAt: text('created_at').notNull(),
 });

@@ -1,5 +1,6 @@
 import { signal } from '@preact/signals';
 import { api } from '../lib/api.js';
+import { loadApplications as refreshSidebarApps } from '../lib/state.js';
 
 const apps = signal<any[]>([]);
 const loading = signal(true);
@@ -75,6 +76,7 @@ async function saveApp(e: Event) {
     }
     showForm.value = false;
     await loadApps();
+    refreshSidebarApps();
   } catch (err: any) {
     formError.value = err.message;
   } finally {
@@ -86,6 +88,7 @@ async function deleteApp(id: string) {
   if (!confirm('Delete this application? Agent endpoints linked to it will be unlinked.')) return;
   await api.deleteApplication(id);
   await loadApps();
+  refreshSidebarApps();
 }
 
 async function regenerateKey(id: string) {

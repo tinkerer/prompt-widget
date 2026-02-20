@@ -1,14 +1,34 @@
 import { WebSocket as WsWebSocket } from 'ws';
 import { eq } from 'drizzle-orm';
 import { db, schema } from './db/index.js';
-import type { PermissionProfile } from '@prompt-widget/shared';
+import type { PermissionProfile, InputToSession } from '@prompt-widget/shared';
 import {
   spawnSessionRemote,
   killSessionRemote,
   getSessionServiceWsUrl,
+  getSessionServiceActiveSessions,
 } from './session-service-client.js';
+import { getLauncher, listLaunchers } from './launcher-registry.js';
+import { tmuxSessionExists, isTmuxAvailable } from './tmux-pty.js';
 
-const adminBridges = new Map<WsWebSocket, WsWebSocket>();
+// Maps admin WS → upstream target (either session-service WS or launcher info)
+interface LocalBridge {
+  kind: 'local';
+  serviceWs: WsWebSocket;
+}
+
+interface LauncherBridge {
+  kind: 'launcher';
+  launcherId: string;
+  sessionId: string;
+}
+
+type Bridge = LocalBridge | LauncherBridge;
+
+const adminBridges = new Map<WsWebSocket, Bridge>();
+
+// Track admin sockets per launcher session so we can push output to them
+const launcherSessionAdmins = new Map<string, Set<WsWebSocket>>();
 
 export async function spawnAgentSession(params: {
   sessionId: string;
@@ -16,12 +36,41 @@ export async function spawnAgentSession(params: {
   cwd: string;
   permissionProfile: PermissionProfile;
   allowedTools?: string | null;
-  resume?: boolean;
 }): Promise<void> {
   await spawnSessionRemote(params);
 }
 
 export function attachAdmin(sessionId: string, ws: WsWebSocket): boolean {
+  const session = db
+    .select()
+    .from(schema.agentSessions)
+    .where(eq(schema.agentSessions.id, sessionId))
+    .get();
+
+  if (session?.launcherId) {
+    const launcher = getLauncher(session.launcherId);
+    if (launcher && launcher.ws.readyState === 1) {
+      adminBridges.set(ws, { kind: 'launcher', launcherId: session.launcherId, sessionId });
+      if (!launcherSessionAdmins.has(sessionId)) {
+        launcherSessionAdmins.set(sessionId, new Set());
+      }
+      launcherSessionAdmins.get(sessionId)!.add(ws);
+
+      // Send stored output history
+      if (session.outputLog) {
+        ws.send(JSON.stringify({ type: 'history', data: session.outputLog }));
+      } else {
+        ws.send(JSON.stringify({ type: 'history', data: '' }));
+      }
+      if (session.status !== 'pending' && session.status !== 'running') {
+        ws.send(JSON.stringify({ type: 'exit', exitCode: session.exitCode, status: session.status }));
+      }
+      return true;
+    }
+    // Launcher offline — fall through to DB-only path below
+  }
+
+  // Local session: bridge to session-service
   const serviceWsUrl = getSessionServiceWsUrl(sessionId);
   const serviceWs = new WsWebSocket(serviceWsUrl);
 
@@ -29,7 +78,7 @@ export function attachAdmin(sessionId: string, ws: WsWebSocket): boolean {
 
   serviceWs.on('open', () => {
     connected = true;
-    adminBridges.set(ws, serviceWs);
+    adminBridges.set(ws, { kind: 'local', serviceWs });
   });
 
   serviceWs.on('message', (raw) => {
@@ -42,32 +91,24 @@ export function attachAdmin(sessionId: string, ws: WsWebSocket): boolean {
 
   serviceWs.on('close', () => {
     adminBridges.delete(ws);
+    // Close the browser WS so it reconnects and re-establishes the bridge
+    if (connected) {
+      try { ws.close(4010, 'Session service disconnected'); } catch {}
+    }
   });
 
   serviceWs.on('error', () => {
     adminBridges.delete(ws);
     if (!connected) {
-      // Session service unreachable — fall back to DB for completed sessions
-      const session = db
+      const s = db
         .select()
         .from(schema.agentSessions)
         .where(eq(schema.agentSessions.id, sessionId))
         .get();
-      if (session) {
-        ws.send(
-          JSON.stringify({
-            type: 'history',
-            data: session.outputLog || '',
-          })
-        );
-        if (session.status !== 'pending' && session.status !== 'running') {
-          ws.send(
-            JSON.stringify({
-              type: 'exit',
-              exitCode: session.exitCode,
-              status: session.status,
-            })
-          );
+      if (s) {
+        ws.send(JSON.stringify({ type: 'history', data: s.outputLog || '' }));
+        if (s.status !== 'pending' && s.status !== 'running') {
+          ws.send(JSON.stringify({ type: 'exit', exitCode: s.exitCode, status: s.status }));
         }
       } else {
         ws.close(4004, 'Session not found');
@@ -75,35 +116,65 @@ export function attachAdmin(sessionId: string, ws: WsWebSocket): boolean {
     }
   });
 
-  // Always return true — the bridge is async; if the session service rejects
-  // it, the serviceWs close/error handlers will notify the admin WS.
   return true;
 }
 
-export function detachAdmin(_sessionId: string, ws: WsWebSocket): void {
-  const serviceWs = adminBridges.get(ws);
-  if (serviceWs) {
-    serviceWs.close();
-    adminBridges.delete(ws);
+export function detachAdmin(sessionId: string, ws: WsWebSocket): void {
+  const bridge = adminBridges.get(ws);
+  if (!bridge) return;
+
+  if (bridge.kind === 'local') {
+    bridge.serviceWs.close();
+  } else {
+    const admins = launcherSessionAdmins.get(sessionId);
+    if (admins) {
+      admins.delete(ws);
+      if (admins.size === 0) launcherSessionAdmins.delete(sessionId);
+    }
   }
+  adminBridges.delete(ws);
 }
 
 export function forwardToService(ws: WsWebSocket, data: string): void {
-  const serviceWs = adminBridges.get(ws);
-  if (serviceWs && serviceWs.readyState === WsWebSocket.OPEN) {
-    serviceWs.send(data);
+  const bridge = adminBridges.get(ws);
+  if (!bridge) return;
+
+  if (bridge.kind === 'local') {
+    if (bridge.serviceWs.readyState === WsWebSocket.OPEN) {
+      bridge.serviceWs.send(data);
+    }
+  } else {
+    // Forward to launcher, wrapping in InputToSession
+    const launcher = getLauncher(bridge.launcherId);
+    if (launcher && launcher.ws.readyState === 1) {
+      try {
+        const parsed = JSON.parse(data);
+        const msg: InputToSession = {
+          type: 'input_to_session',
+          sessionId: bridge.sessionId,
+          input: parsed,
+        };
+        launcher.ws.send(JSON.stringify(msg));
+      } catch {
+        // malformed, ignore
+      }
+    }
+  }
+}
+
+export function broadcastToLauncherSessionAdmins(sessionId: string, data: string): void {
+  const admins = launcherSessionAdmins.get(sessionId);
+  if (!admins) return;
+  for (const ws of admins) {
+    try {
+      ws.send(data);
+    } catch {
+      admins.delete(ws);
+    }
   }
 }
 
 export async function killSession(sessionId: string): Promise<boolean> {
-  try {
-    const killed = await killSessionRemote(sessionId);
-    if (killed) return true;
-  } catch {
-    // Session service unreachable — fall through to local DB update
-  }
-
-  // Fallback: mark killed directly in DB (session process may be orphaned/dead)
   const session = db
     .select()
     .from(schema.agentSessions)
@@ -114,22 +185,73 @@ export async function killSession(sessionId: string): Promise<boolean> {
     return false;
   }
 
+  // If session is on a launcher, send kill to launcher
+  if (session.launcherId) {
+    const launcher = getLauncher(session.launcherId);
+    if (launcher && launcher.ws.readyState === 1) {
+      launcher.ws.send(JSON.stringify({ type: 'kill_session', sessionId }));
+      return true;
+    }
+  }
+
+  // Local session — try session-service, fall back to DB
+  try {
+    const killed = await killSessionRemote(sessionId);
+    if (killed) return true;
+  } catch {
+    // Session service unreachable
+  }
+
   db.update(schema.agentSessions)
-    .set({
-      status: 'killed',
-      completedAt: new Date().toISOString(),
-    })
+    .set({ status: 'killed', completedAt: new Date().toISOString() })
     .where(eq(schema.agentSessions.id, sessionId))
     .run();
 
   return true;
 }
 
-export function cleanupOrphanedSessions(): void {
-  db.update(schema.agentSessions)
-    .set({ status: 'failed', completedAt: new Date().toISOString() })
+export async function cleanupOrphanedSessions(): Promise<void> {
+  const runningSessions = db
+    .select({ id: schema.agentSessions.id, launcherId: schema.agentSessions.launcherId })
+    .from(schema.agentSessions)
     .where(eq(schema.agentSessions.status, 'running'))
-    .run();
+    .all();
+
+  if (runningSessions.length === 0) return;
+
+  // Check which sessions are still alive in the session-service
+  // Returns null if the service is unreachable
+  const activeSvcResult = await getSessionServiceActiveSessions();
+
+  // Check which sessions are on connected launchers
+  const launcherSessions = new Set<string>();
+  for (const launcher of listLaunchers()) {
+    if (launcher.ws.readyState === 1) {
+      for (const sid of launcher.activeSessions) {
+        launcherSessions.add(sid);
+      }
+    }
+  }
+
+  const hasTmux = isTmuxAvailable();
+  const activeSvcSessions = activeSvcResult ? new Set(activeSvcResult) : null;
+
+  const now = new Date().toISOString();
+  for (const session of runningSessions) {
+    // Session-service confirms it's alive
+    if (activeSvcSessions?.has(session.id)) continue;
+    // Launcher confirms it's alive
+    if (session.launcherId && launcherSessions.has(session.id)) continue;
+    // Tmux session still exists — don't mark as failed
+    if (hasTmux && tmuxSessionExists(session.id)) continue;
+    // Session-service was unreachable — can't confirm liveness, skip
+    if (!activeSvcSessions) continue;
+
+    db.update(schema.agentSessions)
+      .set({ status: 'failed', completedAt: now })
+      .where(eq(schema.agentSessions.id, session.id))
+      .run();
+  }
 }
 
 export function getSessionStatus(sessionId: string): string | null {

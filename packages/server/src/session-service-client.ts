@@ -8,7 +8,6 @@ export interface SpawnParams {
   cwd: string;
   permissionProfile: PermissionProfile;
   allowedTools?: string | null;
-  resume?: boolean;
 }
 
 async function post(path: string, body?: unknown): Promise<Response> {
@@ -46,6 +45,17 @@ export async function getSessionServiceHealth(): Promise<boolean> {
     return res.ok;
   } catch {
     return false;
+  }
+}
+
+export async function getSessionServiceActiveSessions(): Promise<string[] | null> {
+  try {
+    const res = await fetch(`${SESSION_SERVICE_URL}/health`);
+    if (!res.ok) return null;
+    const data = await res.json() as { sessions?: string[] };
+    return data.sessions || [];
+  } catch {
+    return null;
   }
 }
 

@@ -1,5 +1,5 @@
 import { useRef, useCallback } from 'preact/hooks';
-import { AgentTerminal } from './AgentTerminal.js';
+import { SessionViewToggle } from './SessionViewToggle.js';
 import {
   openTabs,
   activeTabId,
@@ -12,7 +12,10 @@ import {
   resumeSession,
   markSessionExited,
   sidebarWidth,
+  allSessions,
+  persistPanelState,
 } from '../lib/sessions.js';
+import { navigate, selectedAppId } from '../lib/state.js';
 
 export function GlobalTerminalPanel() {
   const tabs = openTabs.value;
@@ -22,6 +25,8 @@ export function GlobalTerminalPanel() {
   const minimized = panelMinimized.value;
   const height = panelHeight.value;
   const exited = exitedSessions.value;
+  const sessions = allSessions.value;
+  const sessionMap = new Map(sessions.map((s: any) => [s.id, s]));
 
   const dragging = useRef(false);
 
@@ -37,6 +42,7 @@ export function GlobalTerminalPanel() {
       dragging.current = false;
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
+      persistPanelState();
     };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
@@ -53,41 +59,65 @@ export function GlobalTerminalPanel() {
           {tabs.map((sid) => {
             const isExited = exited.has(sid);
             const isActive = sid === activeId;
+            const sess = sessionMap.get(sid);
+            const raw = sess?.feedbackTitle || sess?.agentName || `Session ${sid.slice(-6)}`;
+            const tabLabel = raw.length > 24 ? raw.slice(0, 24) + '\u2026' : raw;
             return (
               <button
                 key={sid}
                 class={`terminal-tab ${isActive ? 'active' : ''}`}
                 onClick={() => openSession(sid)}
+                title={sess?.feedbackTitle || sess?.agentName || sid}
               >
                 <span class={`status-dot ${isExited ? 'exited' : ''}`} />
-                <span>{sid.slice(-8)}</span>
+                <span>{tabLabel}</span>
                 <span class="tab-close" onClick={(e) => { e.stopPropagation(); closeTab(sid); }}>&times;</span>
               </button>
             );
           })}
         </div>
         <div class="terminal-tab-actions">
-          <button onClick={() => (panelMinimized.value = !panelMinimized.value)}>
+          <button onClick={() => { panelMinimized.value = !panelMinimized.value; persistPanelState(); }}>
             {minimized ? '▲' : '▼'}
           </button>
         </div>
       </div>
       {!minimized && (
         <>
-          {activeId && (
-            <div class="terminal-active-header">
-              {exited.has(activeId) ? (
-                <button class="resume-btn" onClick={() => resumeSession(activeId)}>Resume</button>
-              ) : (
-                <button class="kill-btn" onClick={() => killSession(activeId)}>Kill</button>
-              )}
-            </div>
-          )}
+          {activeId && (() => {
+            const sess = sessionMap.get(activeId);
+            const appId = selectedAppId.value;
+            const feedbackPath = sess?.feedbackId
+              ? appId ? `/app/${appId}/feedback/${sess.feedbackId}` : `/feedback/${sess.feedbackId}`
+              : null;
+            return (
+              <div class="terminal-active-header">
+                <span style="color:#64748b;font-size:12px;font-family:monospace;margin-right:8px">{activeId.slice(-8)}</span>
+                {feedbackPath && (
+                  <a
+                    href={`#${feedbackPath}`}
+                    onClick={(e) => { e.preventDefault(); navigate(feedbackPath); }}
+                    style="color:#818cf8;font-size:12px;text-decoration:none;margin-right:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                    title={sess?.feedbackTitle || 'View feedback'}
+                  >
+                    {sess?.feedbackTitle ? (sess.feedbackTitle.length > 50 ? sess.feedbackTitle.slice(0, 50) + '\u2026' : sess.feedbackTitle) : 'View feedback'}
+                  </a>
+                )}
+                {!feedbackPath && <span style="margin-right:auto" />}
+                {exited.has(activeId) ? (
+                  <button class="resume-btn" onClick={() => resumeSession(activeId)}>Resume</button>
+                ) : (
+                  <button class="kill-btn" onClick={() => killSession(activeId)}>Kill</button>
+                )}
+              </div>
+            );
+          })()}
           <div class="terminal-body">
             {tabs.map((sid) => (
-              <div key={sid} style={{ display: sid === activeId ? 'block' : 'none', width: '100%', height: '100%' }}>
-                <AgentTerminal
+              <div key={sid} style={{ display: sid === activeId ? 'flex' : 'none', width: '100%', height: '100%' }}>
+                <SessionViewToggle
                   sessionId={sid}
+                  isActive={sid === activeId}
                   onExit={() => markSessionExited(sid)}
                 />
               </div>

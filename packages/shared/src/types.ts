@@ -113,6 +113,7 @@ export interface AgentEndpoint {
   mode: DispatchMode;
   permissionProfile: PermissionProfile;
   allowedTools: string | null;
+  autoPlan: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -182,6 +183,49 @@ export interface DispatchPayload {
     feedback: FeedbackItem;
     instructions?: string;
   };
+}
+
+export type PlanStatus = 'draft' | 'active' | 'completed';
+
+export interface Plan {
+  id: string;
+  groupKey: string;
+  title: string;
+  body: string;
+  status: PlanStatus;
+  linkedFeedbackIds: string[];
+  appId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ClusterItem {
+  id: string;
+  title: string;
+  description: string;
+  type: string;
+  status: string;
+  createdAt: string;
+}
+
+export interface FeedbackCluster {
+  groupKey: string;
+  title: string;
+  count: number;
+  feedbackIds: string[];
+  items: ClusterItem[];
+  tags: string[];
+  types: string[];
+  statuses: string[];
+  oldestAt: string;
+  newestAt: string;
+  plan: Plan | null;
+}
+
+export interface AggregateResponse {
+  clusters: FeedbackCluster[];
+  totalGroups: number;
+  totalItems: number;
 }
 
 export interface LoginRequest {

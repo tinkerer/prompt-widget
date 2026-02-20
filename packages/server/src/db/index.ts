@@ -1,15 +1,16 @@
-import Database from 'better-sqlite3';
+import Database, { type Database as DatabaseType } from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import * as schema from './schema.js';
 
 const DB_PATH = process.env.DB_PATH || 'prompt-widget.db';
 
-const sqlite = new Database(DB_PATH);
+const sqlite: DatabaseType = new Database(DB_PATH);
 sqlite.pragma('journal_mode = WAL');
+sqlite.pragma('busy_timeout = 5000');
 sqlite.pragma('foreign_keys = ON');
 
 export const db = drizzle(sqlite, { schema });
-export { schema };
+export { schema, sqlite };
 
 export function runMigrations() {
   sqlite.exec(`
@@ -101,6 +102,24 @@ export function runMigrations() {
     CREATE INDEX IF NOT EXISTS idx_agent_sessions_status ON agent_sessions(status);
   `);
 
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS plans (
+      id TEXT PRIMARY KEY,
+      group_key TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'draft',
+      linked_feedback_ids TEXT NOT NULL DEFAULT '[]',
+      app_id TEXT REFERENCES applications(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_plans_group_key ON plans(group_key);
+    CREATE INDEX IF NOT EXISTS idx_plans_app_id ON plans(app_id);
+    CREATE INDEX IF NOT EXISTS idx_plans_status ON plans(status);
+  `);
+
   // Add new columns to existing tables (idempotent via try/catch)
   const alterStatements = [
     `ALTER TABLE feedback_items ADD COLUMN app_id TEXT REFERENCES applications(id) ON DELETE SET NULL`,
@@ -110,6 +129,12 @@ export function runMigrations() {
     `ALTER TABLE agent_endpoints ADD COLUMN permission_profile TEXT NOT NULL DEFAULT 'interactive'`,
     `ALTER TABLE agent_endpoints ADD COLUMN allowed_tools TEXT`,
     `ALTER TABLE agent_sessions ADD COLUMN parent_session_id TEXT`,
+    `ALTER TABLE agent_endpoints ADD COLUMN auto_plan INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE agent_sessions ADD COLUMN last_output_seq INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE agent_sessions ADD COLUMN last_input_seq INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE agent_sessions ADD COLUMN tmux_session_name TEXT`,
+    `ALTER TABLE agent_sessions ADD COLUMN launcher_id TEXT`,
+    `ALTER TABLE agent_endpoints ADD COLUMN preferred_launcher_id TEXT`,
   ];
 
   for (const stmt of alterStatements) {
@@ -119,4 +144,18 @@ export function runMigrations() {
       // Column already exists
     }
   }
+
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS pending_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      seq_num INTEGER NOT NULL,
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_pending_session_dir_seq
+      ON pending_messages(session_id, direction, seq_num);
+  `);
 }

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { feedbackSubmitSchema } from '@prompt-widget/shared';
 import { db, schema } from '../db/index.js';
 import { getSession } from '../sessions.js';
+import { feedbackEvents } from '../events.js';
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR || 'uploads';
 
@@ -97,6 +98,7 @@ feedbackRoutes.post('/', async (c) => {
     }
   }
 
+  feedbackEvents.emit('new', { id, appId });
   return c.json({ id, status: 'new', createdAt: now }, 201);
 });
 
@@ -142,5 +144,6 @@ feedbackRoutes.post('/programmatic', async (c) => {
     );
   }
 
+  feedbackEvents.emit('new', { id, appId: progAppId });
   return c.json({ id, status: 'new', createdAt: now }, 201);
 });

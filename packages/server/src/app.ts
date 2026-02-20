@@ -9,6 +9,8 @@ import { authRoutes } from './routes/auth.js';
 import { agentRoutes } from './routes/agent.js';
 import { applicationRoutes } from './routes/applications.js';
 import { agentSessionRoutes } from './routes/agent-sessions.js';
+import { aggregateRoutes } from './routes/aggregate.js';
+import launcherRoutes from './routes/launchers.js';
 import { gettingStartedMarkdown } from './getting-started.js';
 
 export const app = new Hono();
@@ -34,6 +36,8 @@ app.route('/api/v1/auth', authRoutes);
 app.route('/api/v1/agent', agentRoutes);
 app.route('/api/v1/admin/applications', applicationRoutes);
 app.route('/api/v1/admin/agent-sessions', agentSessionRoutes);
+app.route('/api/v1/admin/aggregate', aggregateRoutes);
+app.route('/api/v1/admin/launchers', launcherRoutes);
 
 app.get('/GETTING_STARTED.md', (c) => {
   const proto = c.req.header('x-forwarded-proto') || 'http';

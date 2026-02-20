@@ -139,3 +139,127 @@ agentRoutes.get('/sessions/:id/performance', async (c) => {
     return c.json({ error: err.message }, 504);
   }
 });
+
+// --- Mouse commands ---
+
+agentRoutes.post('/sessions/:id/mouse/move', async (c) => {
+  const { x, y } = await c.req.json();
+  if (typeof x !== 'number' || typeof y !== 'number') {
+    return c.json({ error: 'x and y are required numbers' }, 400);
+  }
+  try {
+    return c.json(await sendCommand(c.req.param('id'), 'moveMouse', { x, y }));
+  } catch (err: any) {
+    return c.json({ error: err.message }, 504);
+  }
+});
+
+agentRoutes.post('/sessions/:id/mouse/click', async (c) => {
+  const { x, y, button } = await c.req.json();
+  if (typeof x !== 'number' || typeof y !== 'number') {
+    return c.json({ error: 'x and y are required numbers' }, 400);
+  }
+  try {
+    return c.json(await sendCommand(c.req.param('id'), 'clickAt', { x, y, button }));
+  } catch (err: any) {
+    return c.json({ error: err.message }, 504);
+  }
+});
+
+agentRoutes.post('/sessions/:id/mouse/hover', async (c) => {
+  const { selector, x, y } = await c.req.json();
+  if (!selector && typeof x !== 'number') {
+    return c.json({ error: 'selector or x/y coordinates required' }, 400);
+  }
+  try {
+    return c.json(await sendCommand(c.req.param('id'), 'hover', { selector, x, y }));
+  } catch (err: any) {
+    return c.json({ error: err.message }, 504);
+  }
+});
+
+agentRoutes.post('/sessions/:id/mouse/drag', async (c) => {
+  const { from, to, steps, stepDelayMs } = await c.req.json();
+  if (from?.x == null || from?.y == null || to?.x == null || to?.y == null) {
+    return c.json({ error: 'from {x,y} and to {x,y} are required' }, 400);
+  }
+  try {
+    return c.json(await sendCommand(c.req.param('id'), 'drag', { from, to, steps, stepDelayMs }));
+  } catch (err: any) {
+    return c.json({ error: err.message }, 504);
+  }
+});
+
+agentRoutes.post('/sessions/:id/mouse/down', async (c) => {
+  const { x, y, button } = await c.req.json();
+  if (typeof x !== 'number' || typeof y !== 'number') {
+    return c.json({ error: 'x and y are required numbers' }, 400);
+  }
+  try {
+    return c.json(await sendCommand(c.req.param('id'), 'mouseDown', { x, y, button }));
+  } catch (err: any) {
+    return c.json({ error: err.message }, 504);
+  }
+});
+
+agentRoutes.post('/sessions/:id/mouse/up', async (c) => {
+  const { x, y, button } = await c.req.json();
+  if (typeof x !== 'number' || typeof y !== 'number') {
+    return c.json({ error: 'x and y are required numbers' }, 400);
+  }
+  try {
+    return c.json(await sendCommand(c.req.param('id'), 'mouseUp', { x, y, button }));
+  } catch (err: any) {
+    return c.json({ error: err.message }, 504);
+  }
+});
+
+// --- Keyboard commands ---
+
+agentRoutes.post('/sessions/:id/keyboard/press', async (c) => {
+  const { key, modifiers } = await c.req.json();
+  if (!key || typeof key !== 'string') {
+    return c.json({ error: 'key is required' }, 400);
+  }
+  try {
+    return c.json(await sendCommand(c.req.param('id'), 'pressKey', { key, modifiers }));
+  } catch (err: any) {
+    return c.json({ error: err.message }, 504);
+  }
+});
+
+agentRoutes.post('/sessions/:id/keyboard/down', async (c) => {
+  const { key, modifiers } = await c.req.json();
+  if (!key || typeof key !== 'string') {
+    return c.json({ error: 'key is required' }, 400);
+  }
+  try {
+    return c.json(await sendCommand(c.req.param('id'), 'keyDown', { key, modifiers }));
+  } catch (err: any) {
+    return c.json({ error: err.message }, 504);
+  }
+});
+
+agentRoutes.post('/sessions/:id/keyboard/up', async (c) => {
+  const { key, modifiers } = await c.req.json();
+  if (!key || typeof key !== 'string') {
+    return c.json({ error: 'key is required' }, 400);
+  }
+  try {
+    return c.json(await sendCommand(c.req.param('id'), 'keyUp', { key, modifiers }));
+  } catch (err: any) {
+    return c.json({ error: err.message }, 504);
+  }
+});
+
+agentRoutes.post('/sessions/:id/keyboard/type', async (c) => {
+  const { text, selector, charDelayMs } = await c.req.json();
+  if (!text || typeof text !== 'string') {
+    return c.json({ error: 'text is required' }, 400);
+  }
+  try {
+    return c.json(await sendCommand(c.req.param('id'), 'typeText', { text, selector, charDelayMs }));
+  } catch (err: any) {
+    return c.json({ error: err.message }, 504);
+  }
+});

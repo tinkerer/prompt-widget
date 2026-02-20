@@ -76,6 +76,7 @@ export const feedbackListSchema = z.object({
   status: z.enum(FEEDBACK_STATUSES).optional(),
   tag: z.string().optional(),
   search: z.string().optional(),
+  appId: z.string().optional(),
   sortBy: z.enum(['createdAt', 'updatedAt']).default('createdAt'),
   sortOrder: z.enum(['asc', 'desc']).default('desc'),
 });
@@ -104,12 +105,50 @@ export const agentEndpointSchema = z.object({
   mode: z.enum(DISPATCH_MODES).default('webhook'),
   permissionProfile: z.enum(PERMISSION_PROFILES).default('interactive'),
   allowedTools: z.string().max(5000).optional(),
+  autoPlan: z.boolean().default(false),
 });
 
 export const dispatchSchema = z.object({
   feedbackId: z.string(),
   agentEndpointId: z.string(),
   instructions: z.string().max(5000).optional(),
+});
+
+export const PLAN_STATUSES = ['draft', 'active', 'completed'] as const;
+
+export const aggregateQuerySchema = z.object({
+  appId: z.string().optional(),
+  type: z.enum(FEEDBACK_TYPES).optional(),
+  status: z.enum(FEEDBACK_STATUSES).optional(),
+  minCount: z.coerce.number().int().min(1).default(1),
+});
+
+export const planCreateSchema = z.object({
+  groupKey: z.string().min(1),
+  title: z.string().min(1).max(500),
+  body: z.string().max(50000).default(''),
+  status: z.enum(PLAN_STATUSES).default('draft'),
+  linkedFeedbackIds: z.array(z.string()).default([]),
+  appId: z.string().optional(),
+});
+
+export const planUpdateSchema = z.object({
+  title: z.string().min(1).max(500).optional(),
+  body: z.string().max(50000).optional(),
+  status: z.enum(PLAN_STATUSES).optional(),
+  linkedFeedbackIds: z.array(z.string()).optional(),
+});
+
+export const analyzeSchema = z.object({
+  appId: z.string(),
+  agentEndpointId: z.string(),
+});
+
+export const analyzeClusterSchema = z.object({
+  appId: z.string(),
+  agentEndpointId: z.string(),
+  feedbackIds: z.array(z.string()).min(1),
+  clusterTitle: z.string(),
 });
 
 export const loginSchema = z.object({

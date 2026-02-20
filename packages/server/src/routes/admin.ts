@@ -17,8 +17,47 @@ import {
   dispatchAgentSession,
 } from '../dispatch.js';
 import type { DispatchContext } from '../dispatch.js';
+import { feedbackEvents } from '../events.js';
+import { verifyAdminToken } from '../auth.js';
 
 export const adminRoutes = new Hono();
+
+adminRoutes.get('/feedback/events', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '') || c.req.query('token');
+  if (!token || !(await verifyAdminToken(token))) return c.json({ error: 'Unauthorized' }, 401);
+
+  return c.body(
+    new ReadableStream({
+      start(controller) {
+        const encoder = new TextEncoder();
+        const send = (event: string, data: unknown) => {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        };
+
+        send('connected', { ts: Date.now() });
+
+        const onNew = (item: { id: string; appId: string | null }) => send('new-feedback', item);
+        feedbackEvents.on('new', onNew);
+
+        const keepalive = setInterval(() => {
+          try { controller.enqueue(encoder.encode(': keepalive\n\n')); } catch { /* closed */ }
+        }, 30_000);
+
+        c.req.raw.signal.addEventListener('abort', () => {
+          feedbackEvents.off('new', onNew);
+          clearInterval(keepalive);
+        });
+      },
+    }),
+    {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      },
+    }
+  );
+});
 
 function hydrateFeedback(row: typeof schema.feedbackItems.$inferSelect, tags: string[], screenshots: (typeof schema.feedbackScreenshots.$inferSelect)[]): FeedbackItem {
   return {
@@ -39,13 +78,20 @@ adminRoutes.get('/feedback', async (c) => {
     return c.json({ error: 'Invalid query', details: query.error.flatten() }, 400);
   }
 
-  const { page, limit, type, status, tag, search, sortBy, sortOrder } = query.data;
+  const { page, limit, type, status, tag, search, appId, sortBy, sortOrder } = query.data;
   const offset = (page - 1) * limit;
 
   const conditions = [];
   if (type) conditions.push(eq(schema.feedbackItems.type, type));
   if (status) conditions.push(eq(schema.feedbackItems.status, status));
   if (search) conditions.push(like(schema.feedbackItems.title, `%${search}%`));
+  if (appId) {
+    if (appId === '__unlinked__') {
+      conditions.push(sql`${schema.feedbackItems.appId} IS NULL`);
+    } else {
+      conditions.push(eq(schema.feedbackItems.appId, appId));
+    }
+  }
 
   let whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
@@ -259,9 +305,10 @@ adminRoutes.post('/agents', async (c) => {
   const now = new Date().toISOString();
   const id = ulid();
 
-  if (parsed.data.isDefault) {
+  if (parsed.data.isDefault && parsed.data.appId) {
     await db.update(schema.agentEndpoints)
-      .set({ isDefault: false, updatedAt: now });
+      .set({ isDefault: false, updatedAt: now })
+      .where(eq(schema.agentEndpoints.appId, parsed.data.appId));
   }
 
   await db.insert(schema.agentEndpoints).values({
@@ -275,6 +322,7 @@ adminRoutes.post('/agents', async (c) => {
     mode: parsed.data.mode || 'webhook',
     permissionProfile: parsed.data.permissionProfile || 'interactive',
     allowedTools: parsed.data.allowedTools || null,
+    autoPlan: parsed.data.autoPlan || false,
     createdAt: now,
     updatedAt: now,
   });
@@ -299,9 +347,10 @@ adminRoutes.patch('/agents/:id', async (c) => {
 
   const now = new Date().toISOString();
 
-  if (parsed.data.isDefault) {
+  if (parsed.data.isDefault && parsed.data.appId) {
     await db.update(schema.agentEndpoints)
-      .set({ isDefault: false, updatedAt: now });
+      .set({ isDefault: false, updatedAt: now })
+      .where(eq(schema.agentEndpoints.appId, parsed.data.appId));
   }
 
   await db.update(schema.agentEndpoints).set({
@@ -314,6 +363,7 @@ adminRoutes.patch('/agents/:id', async (c) => {
     mode: parsed.data.mode || 'webhook',
     permissionProfile: parsed.data.permissionProfile || 'interactive',
     allowedTools: parsed.data.allowedTools || null,
+    autoPlan: parsed.data.autoPlan || false,
     updatedAt: now,
   }).where(eq(schema.agentEndpoints.id, id));
 
@@ -343,16 +393,17 @@ adminRoutes.post('/dispatch', async (c) => {
 
   const { feedbackId, agentEndpointId, instructions } = parsed.data;
 
-  const feedback = await db.query.feedbackItems.findFirst({
-    where: eq(schema.feedbackItems.id, feedbackId),
-  });
+  const [feedback, agent] = await Promise.all([
+    db.query.feedbackItems.findFirst({
+      where: eq(schema.feedbackItems.id, feedbackId),
+    }),
+    db.query.agentEndpoints.findFirst({
+      where: eq(schema.agentEndpoints.id, agentEndpointId),
+    }),
+  ]);
   if (!feedback) {
     return c.json({ error: 'Feedback not found' }, 404);
   }
-
-  const agent = await db.query.agentEndpoints.findFirst({
-    where: eq(schema.agentEndpoints.id, agentEndpointId),
-  });
   if (!agent) {
     return c.json({ error: 'Agent endpoint not found' }, 404);
   }
@@ -371,11 +422,12 @@ adminRoutes.post('/dispatch', async (c) => {
 
   const hydratedFeedback = hydrateFeedback(feedback, tags, screenshots);
 
-  // Look up associated application
+  // Look up associated application (agent's app takes priority, then feedback's app)
   let app = null;
-  if (agent.appId) {
+  const appIdForCwd = agent.appId || feedback.appId;
+  if (appIdForCwd) {
     const appRow = await db.query.applications.findFirst({
-      where: eq(schema.applications.id, agent.appId),
+      where: eq(schema.applications.id, appIdForCwd),
     });
     if (appRow) {
       app = { ...appRow, hooks: JSON.parse(appRow.hooks) };
@@ -417,7 +469,10 @@ adminRoutes.post('/dispatch', async (c) => {
       });
     } else {
       // headless or interactive → PTY-based agent session
-      const template = agent.promptTemplate || '{{feedback.title}}\n\n{{feedback.description}}\n\n{{instructions}}';
+      const baseTemplate = agent.promptTemplate || '{{feedback.title}}\n\n{{feedback.description}}\n\n{{instructions}}';
+      const template = agent.autoPlan
+        ? baseTemplate + '\n\nIMPORTANT: Before making any changes, create a detailed plan first. Present the plan and wait for approval before implementing.'
+        : baseTemplate;
       const ctx: DispatchContext = {
         feedback: hydratedFeedback,
         agent: {
@@ -429,6 +484,7 @@ adminRoutes.post('/dispatch', async (c) => {
           isDefault: !!agent.isDefault,
           permissionProfile: (agent.permissionProfile || 'interactive') as PermissionProfile,
           allowedTools: agent.allowedTools || null,
+          autoPlan: !!agent.autoPlan,
         },
         app,
         instructions,
@@ -447,15 +503,16 @@ adminRoutes.post('/dispatch', async (c) => {
         allowedTools: agent.allowedTools,
       });
 
+      // Update feedback status in the background — don't block the response
       const now = new Date().toISOString();
-      await db.update(schema.feedbackItems).set({
+      db.update(schema.feedbackItems).set({
         status: 'dispatched',
         dispatchedTo: agent.name,
         dispatchedAt: now,
         dispatchStatus: 'running',
         dispatchResponse: `Agent session started: ${sessionId}`,
         updatedAt: now,
-      }).where(eq(schema.feedbackItems.id, feedbackId));
+      }).where(eq(schema.feedbackItems.id, feedbackId)).run();
 
       return c.json({
         dispatched: true,

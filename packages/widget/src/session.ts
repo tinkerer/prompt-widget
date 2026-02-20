@@ -1,5 +1,10 @@
 import { collectContext, getEnvironment, getPerformanceTiming } from './collectors.js';
 import { captureScreenshot } from './screenshot.js';
+import {
+  dispatchMouseMove, dispatchClickAt, dispatchHover, dispatchDrag,
+  dispatchMouseDown, dispatchMouseUp, dispatchPressKey, dispatchKeyDown,
+  dispatchKeyUp, dispatchTypeText,
+} from './input-events.js';
 import type { Collector } from '@prompt-widget/shared';
 
 interface CommandMessage {
@@ -211,6 +216,72 @@ export class SessionBridge {
           el.dispatchEvent(new Event('input', { bubbles: true }));
           el.dispatchEvent(new Event('change', { bubbles: true }));
           this.respond(requestId, { typed: true, selector, length: text.length });
+          break;
+        }
+
+        case 'moveMouse': {
+          const result = dispatchMouseMove(params.x as number, params.y as number);
+          this.respond(requestId, result);
+          break;
+        }
+
+        case 'clickAt': {
+          const result = dispatchClickAt(params.x as number, params.y as number, params.button as number | undefined);
+          this.respond(requestId, result);
+          break;
+        }
+
+        case 'hover': {
+          const result = dispatchHover({
+            selector: params.selector as string | undefined,
+            x: params.x as number | undefined,
+            y: params.y as number | undefined,
+          });
+          this.respond(requestId, result);
+          break;
+        }
+
+        case 'drag': {
+          const from = params.from as { x: number; y: number };
+          const to = params.to as { x: number; y: number };
+          const result = await dispatchDrag(from, to, params.steps as number | undefined, params.stepDelayMs as number | undefined);
+          this.respond(requestId, result);
+          break;
+        }
+
+        case 'mouseDown': {
+          const result = dispatchMouseDown(params.x as number, params.y as number, params.button as number | undefined);
+          this.respond(requestId, result);
+          break;
+        }
+
+        case 'mouseUp': {
+          const result = dispatchMouseUp(params.x as number, params.y as number, params.button as number | undefined);
+          this.respond(requestId, result);
+          break;
+        }
+
+        case 'pressKey': {
+          const result = dispatchPressKey(params.key as string, params.modifiers as any);
+          this.respond(requestId, result);
+          break;
+        }
+
+        case 'keyDown': {
+          const result = dispatchKeyDown(params.key as string, params.modifiers as any);
+          this.respond(requestId, result);
+          break;
+        }
+
+        case 'keyUp': {
+          const result = dispatchKeyUp(params.key as string, params.modifiers as any);
+          this.respond(requestId, result);
+          break;
+        }
+
+        case 'typeText': {
+          const result = await dispatchTypeText(params.text as string, params.selector as string | undefined, params.charDelayMs as number | undefined);
+          this.respond(requestId, result);
           break;
         }
 

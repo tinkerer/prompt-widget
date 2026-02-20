@@ -10,13 +10,31 @@ import {
   attachAdmin,
   detachAdmin,
   forwardToService,
+  broadcastToLauncherSessionAdmins,
   cleanupOrphanedSessions,
 } from './agent-sessions.js';
+import {
+  registerLauncher,
+  unregisterLauncher,
+  updateHeartbeat,
+  removeSessionFromLauncher,
+  startPruneTimer,
+  stopPruneTimer,
+} from './launcher-registry.js';
+import type { LauncherToServerMessage, LauncherRegistered } from '@prompt-widget/shared';
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
+const LAUNCHER_AUTH_TOKEN = process.env.LAUNCHER_AUTH_TOKEN || '';
 
 runMigrations();
-cleanupOrphanedSessions();
+startPruneTimer();
+
+// Delay orphan cleanup so the session-service has time to recover tmux sessions
+setTimeout(() => {
+  cleanupOrphanedSessions().catch(err => {
+    console.error('Failed to cleanup orphaned sessions:', err);
+  });
+}, 10_000);
 
 const server = serve({ fetch: app.fetch, port: PORT }, (info) => {
   const url = `http://localhost:${info.port}`;
@@ -103,6 +121,129 @@ agentWss.on('connection', async (ws, req) => {
   });
 });
 
+// Launcher WebSocket — launcher daemons connect here
+const launcherWss = new WebSocketServer({ noServer: true });
+
+launcherWss.on('connection', (ws, req) => {
+  let launcherId: string | null = null;
+
+  ws.on('message', (raw) => {
+    try {
+      const msg: LauncherToServerMessage = JSON.parse(raw.toString());
+
+      switch (msg.type) {
+        case 'launcher_register': {
+          if (LAUNCHER_AUTH_TOKEN && msg.authToken !== LAUNCHER_AUTH_TOKEN) {
+            const reply: LauncherRegistered = { type: 'launcher_registered', ok: false, error: 'Invalid auth token' };
+            ws.send(JSON.stringify(reply));
+            ws.close(4003, 'Invalid auth token');
+            return;
+          }
+          launcherId = msg.id;
+          registerLauncher({
+            id: msg.id,
+            name: msg.name,
+            hostname: msg.hostname,
+            ws,
+            connectedAt: new Date().toISOString(),
+            lastHeartbeat: new Date().toISOString(),
+            activeSessions: new Set(),
+            capabilities: msg.capabilities,
+          });
+          const reply: LauncherRegistered = { type: 'launcher_registered', ok: true };
+          ws.send(JSON.stringify(reply));
+          break;
+        }
+
+        case 'launcher_heartbeat':
+          if (launcherId) {
+            updateHeartbeat(launcherId, msg.activeSessions);
+          }
+          break;
+
+        case 'launcher_session_started': {
+          const now = new Date().toISOString();
+          db.update(schema.agentSessions)
+            .set({
+              status: 'running',
+              pid: msg.pid,
+              startedAt: now,
+              ...(msg.tmuxSessionName ? { tmuxSessionName: msg.tmuxSessionName } : {}),
+            })
+            .where(eq(schema.agentSessions.id, msg.sessionId))
+            .run();
+          break;
+        }
+
+        case 'launcher_session_output': {
+          const output = msg.output;
+          broadcastToLauncherSessionAdmins(msg.sessionId, JSON.stringify(output));
+
+          // Also accumulate in DB
+          if (output.content?.data) {
+            const session = db
+              .select()
+              .from(schema.agentSessions)
+              .where(eq(schema.agentSessions.id, msg.sessionId))
+              .get();
+            if (session) {
+              const existing = session.outputLog || '';
+              const updated = (existing + output.content.data).slice(-500 * 1024);
+              db.update(schema.agentSessions)
+                .set({
+                  outputLog: updated,
+                  outputBytes: (session.outputBytes || 0) + Buffer.byteLength(output.content.data),
+                  lastOutputSeq: output.seq,
+                })
+                .where(eq(schema.agentSessions.id, msg.sessionId))
+                .run();
+            }
+          }
+          break;
+        }
+
+        case 'launcher_session_ended': {
+          const completedAt = new Date().toISOString();
+          db.update(schema.agentSessions)
+            .set({
+              status: msg.status,
+              exitCode: msg.exitCode,
+              outputLog: msg.outputLog.slice(-500 * 1024),
+              completedAt,
+            })
+            .where(eq(schema.agentSessions.id, msg.sessionId))
+            .run();
+
+          if (launcherId) {
+            removeSessionFromLauncher(launcherId, msg.sessionId);
+          }
+
+          broadcastToLauncherSessionAdmins(msg.sessionId, JSON.stringify({
+            type: 'exit',
+            exitCode: msg.exitCode,
+            status: msg.status,
+          }));
+          break;
+        }
+      }
+    } catch {
+      // ignore malformed messages
+    }
+  });
+
+  ws.on('close', () => {
+    if (launcherId) {
+      unregisterLauncher(launcherId);
+    }
+  });
+
+  ws.on('error', () => {
+    if (launcherId) {
+      unregisterLauncher(launcherId);
+    }
+  });
+});
+
 // Route upgrades to appropriate WebSocket server
 (server as unknown as Server).on('upgrade', (req, socket, head) => {
   const url = new URL(req.url || '/', `http://localhost:${PORT}`);
@@ -110,6 +251,10 @@ agentWss.on('connection', async (ws, req) => {
   if (url.pathname === '/ws/agent-session') {
     agentWss.handleUpgrade(req, socket, head, (ws) => {
       agentWss.emit('connection', ws, req);
+    });
+  } else if (url.pathname === '/ws/launcher') {
+    launcherWss.handleUpgrade(req, socket, head, (ws) => {
+      launcherWss.emit('connection', ws, req);
     });
   } else if (url.pathname === '/ws') {
     wss.handleUpgrade(req, socket, head, (ws) => {
@@ -119,3 +264,6 @@ agentWss.on('connection', async (ws, req) => {
     socket.destroy();
   }
 });
+
+process.on('SIGTERM', () => { stopPruneTimer(); process.exit(0); });
+process.on('SIGINT', () => { stopPruneTimer(); process.exit(0); });

@@ -1,6 +1,8 @@
 import { ComponentChildren } from 'preact';
-import { useEffect } from 'preact/hooks';
-import { currentRoute, clearToken, navigate } from '../lib/state.js';
+import { useEffect, useRef, useCallback } from 'preact/hooks';
+import { signal } from '@preact/signals';
+import { currentRoute, clearToken, navigate, selectedAppId, applications, unlinkedCount, appFeedbackCounts } from '../lib/state.js';
+import { api } from '../lib/api.js';
 import { GlobalTerminalPanel } from './GlobalTerminalPanel.js';
 import {
   openTabs,
@@ -12,7 +14,31 @@ import {
   allSessions,
   startSessionPolling,
   openSession,
+  deleteSession,
+  sessionsDrawerOpen,
+  sessionSearchQuery,
+  toggleSessionsDrawer,
+  sessionsHeight,
+  setSessionsHeight,
 } from '../lib/sessions.js';
+
+const liveConnectionCounts = signal<Record<string, number>>({});
+const totalLiveConnections = signal(0);
+
+async function pollLiveConnections() {
+  try {
+    const conns = await api.getLiveConnections();
+    totalLiveConnections.value = conns.length;
+    const counts: Record<string, number> = {};
+    for (const c of conns) {
+      const key = c.appId || '__unlinked__';
+      counts[key] = (counts[key] || 0) + 1;
+    }
+    liveConnectionCounts.value = counts;
+  } catch {
+    // ignore
+  }
+}
 
 export function Layout({ children }: { children: ComponentChildren }) {
   const route = currentRoute.value;
@@ -21,26 +47,41 @@ export function Layout({ children }: { children: ComponentChildren }) {
   const collapsed = sidebarCollapsed.value;
   const width = sidebarWidth.value;
 
-  useEffect(() => startSessionPolling(), []);
+  useEffect(() => {
+    pollLiveConnections();
+    const liveInterval = setInterval(pollLiveConnections, 5_000);
+    const stopSessionPolling = startSessionPolling();
+    return () => {
+      clearInterval(liveInterval);
+      stopSessionPolling();
+    };
+  }, []);
 
   const sessions = allSessions.value;
+  const tabs = openTabs.value;
+  const tabSet = new Set(tabs);
   const recentSessions = [...sessions]
     .sort((a, b) => {
+      const aOpen = tabSet.has(a.id) ? 0 : 1;
+      const bOpen = tabSet.has(b.id) ? 0 : 1;
+      if (aOpen !== bOpen) return aOpen - bOpen;
       const statusOrder = (s: string) =>
         s === 'running' ? 0 : s === 'pending' ? 1 : 2;
       const diff = statusOrder(a.status) - statusOrder(b.status);
       if (diff !== 0) return diff;
       return new Date(b.startedAt || b.createdAt || 0).getTime() -
         new Date(a.startedAt || a.createdAt || 0).getTime();
-    })
-    .slice(0, 10);
+    });
 
-  const navItems = [
-    { path: '/', match: (r: string) => r === '/' || r === '', icon: '\u{1F4CB}', label: 'Feedback' },
-    { path: '/sessions', match: (r: string) => r === '/sessions', icon: '\u26A1', label: 'Sessions' },
-    { path: '/applications', match: (r: string) => r === '/applications', icon: '\u{1F4E6}', label: 'Applications' },
-    { path: '/agents', match: (r: string) => r === '/agents', icon: '\u{1F916}', label: 'Agent Endpoints' },
-    { path: '/getting-started', match: (r: string) => r === '/getting-started', icon: '\u{1F4D6}', label: 'Getting Started' },
+  const apps = applications.value;
+  const selAppId = selectedAppId.value;
+  const hasUnlinked = unlinkedCount.value > 0;
+  const fbCounts = appFeedbackCounts.value;
+  const runningSessions = sessions.filter((s: any) => s.status === 'running').length;
+
+  const settingsItems = [
+    { path: '/settings/applications', label: 'Applications', icon: '\u{1F4E6}' },
+    { path: '/settings/getting-started', label: 'Getting Started', icon: '\u{1F4D6}' },
   ];
 
   return (
@@ -53,12 +94,105 @@ export function Layout({ children }: { children: ComponentChildren }) {
           <span class="sidebar-title">Prompt Widget</span>
         </div>
         <nav>
-          {navItems.map((item) => (
+          {!collapsed && apps.length > 0 && (
+            <div class="sidebar-section-header">Apps</div>
+          )}
+          {apps.map((app) => {
+            const isSelected = selAppId === app.id;
+            return (
+              <div key={app.id}>
+                <a
+                  href={`#/app/${app.id}/feedback`}
+                  class={`sidebar-app-item ${isSelected ? 'active' : ''}`}
+                  onClick={(e) => { e.preventDefault(); navigate(`/app/${app.id}/feedback`); }}
+                  title={collapsed ? app.name : undefined}
+                >
+                  <span class="nav-icon">{'\u{1F4BB}'}</span>
+                  <span class="nav-label">{app.name}</span>
+                </a>
+                {isSelected && !collapsed && (
+                  <div class="sidebar-subnav">
+                    <a
+                      href={`#/app/${app.id}/feedback`}
+                      class={route === `/app/${app.id}/feedback` || route.startsWith(`/app/${app.id}/feedback/`) ? 'active' : ''}
+                      onClick={(e) => { e.preventDefault(); navigate(`/app/${app.id}/feedback`); }}
+                    >
+                      {'\u{1F4CB}'} Feedback
+                      {fbCounts[app.id] > 0 && <span class="sidebar-count">{fbCounts[app.id]}</span>}
+                    </a>
+                    <a
+                      href={`#/app/${app.id}/agents`}
+                      class={route === `/app/${app.id}/agents` ? 'active' : ''}
+                      onClick={(e) => { e.preventDefault(); navigate(`/app/${app.id}/agents`); }}
+                    >
+                      {'\u{1F916}'} Agents
+                    </a>
+                    <a
+                      href={`#/app/${app.id}/aggregate`}
+                      class={route === `/app/${app.id}/aggregate` ? 'active' : ''}
+                      onClick={(e) => { e.preventDefault(); navigate(`/app/${app.id}/aggregate`); }}
+                    >
+                      {'\u{1F4CA}'} Aggregate
+                    </a>
+                    <a
+                      href={`#/app/${app.id}/sessions`}
+                      class={route === `/app/${app.id}/sessions` ? 'active' : ''}
+                      onClick={(e) => { e.preventDefault(); navigate(`/app/${app.id}/sessions`); }}
+                    >
+                      {'\u26A1'} Sessions
+                    </a>
+                    <a
+                      href={`#/app/${app.id}/live`}
+                      class={route === `/app/${app.id}/live` ? 'active' : ''}
+                      onClick={(e) => { e.preventDefault(); navigate(`/app/${app.id}/live`); }}
+                    >
+                      {'\u{1F310}'} Live
+                      {(liveConnectionCounts.value[app.id] || 0) > 0 && (
+                        <span class="sidebar-count">{liveConnectionCounts.value[app.id]}</span>
+                      )}
+                    </a>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {hasUnlinked && (
+            <div>
+              <a
+                href="#/app/__unlinked__/feedback"
+                class={`sidebar-app-item ${selAppId === '__unlinked__' ? 'active' : ''}`}
+                onClick={(e) => { e.preventDefault(); navigate('/app/__unlinked__/feedback'); }}
+                title={collapsed ? 'Unlinked' : undefined}
+              >
+                <span class="nav-icon">{'\u{1F517}'}</span>
+                <span class="nav-label">Unlinked</span>
+                {!collapsed && unlinkedCount.value > 0 && <span class="sidebar-count">{unlinkedCount.value}</span>}
+              </a>
+              {selAppId === '__unlinked__' && !collapsed && (
+                <div class="sidebar-subnav">
+                  <a
+                    href="#/app/__unlinked__/feedback"
+                    class={route.startsWith('/app/__unlinked__/feedback') ? 'active' : ''}
+                    onClick={(e) => { e.preventDefault(); navigate('/app/__unlinked__/feedback'); }}
+                  >
+                    {'\u{1F4CB}'} Feedback
+                  </a>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div class="sidebar-divider" />
+
+          {!collapsed && (
+            <div class="sidebar-section-header">Settings</div>
+          )}
+          {settingsItems.map((item) => (
             <a
               key={item.path}
               href={`#${item.path}`}
-              class={item.match(route) ? 'active' : ''}
-              onClick={() => navigate(item.path)}
+              class={route === item.path ? 'active' : ''}
+              onClick={(e) => { e.preventDefault(); navigate(item.path); }}
               title={collapsed ? item.label : undefined}
             >
               <span class="nav-icon">{item.icon}</span>
@@ -79,23 +213,93 @@ export function Layout({ children }: { children: ComponentChildren }) {
           </a>
         </nav>
         {!collapsed && (
-          <div class="sidebar-sessions">
-            <div class="sidebar-sessions-header">
-              Sessions ({sessions.length})
-            </div>
-            {recentSessions.map((s) => (
-              <div
-                key={s.id}
-                class="sidebar-session-item"
-                onClick={() => openSession(s.id)}
-                title={`${s.id} — ${s.status}`}
-              >
-                <span class={`session-status-dot ${s.status}`} />
-                <span style={{ fontFamily: "'SF Mono', Monaco, monospace" }}>{s.id.slice(-8)}</span>
-                <span style={{ opacity: 0.6, fontSize: '11px' }}>{s.status}</span>
+          <>
+            <div
+              class="sidebar-resize-handle"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                const startY = e.clientY;
+                const startH = sessionsHeight.value;
+                const onMove = (ev: MouseEvent) => {
+                  setSessionsHeight(startH - (ev.clientY - startY));
+                };
+                const onUp = () => {
+                  document.removeEventListener('mousemove', onMove);
+                  document.removeEventListener('mouseup', onUp);
+                };
+                document.addEventListener('mousemove', onMove);
+                document.addEventListener('mouseup', onUp);
+              }}
+            />
+            <div
+              class={`sidebar-sessions ${sessionsDrawerOpen.value ? 'open' : 'closed'}`}
+              style={sessionsDrawerOpen.value ? { height: `${sessionsHeight.value}px` } : undefined}
+            >
+              <div class="sidebar-sessions-header" onClick={toggleSessionsDrawer}>
+                <span class={`sessions-chevron ${sessionsDrawerOpen.value ? 'expanded' : ''}`}>{'\u25B8'}</span>
+                Sessions ({sessions.length})
+                {runningSessions > 0 && <span class="sidebar-running-badge">{runningSessions} running</span>}
               </div>
-            ))}
-          </div>
+              {sessionsDrawerOpen.value && (
+                <>
+                  <div class="sidebar-sessions-search">
+                    <input
+                      type="text"
+                      placeholder="Search sessions..."
+                      value={sessionSearchQuery.value}
+                      onInput={(e) => (sessionSearchQuery.value = (e.target as HTMLInputElement).value)}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </div>
+                  <div class="sidebar-sessions-list">
+                    {recentSessions
+                      .filter((s) => {
+                        if (!sessionSearchQuery.value) return true;
+                        const q = sessionSearchQuery.value.toLowerCase();
+                        const text = (s.feedbackTitle || s.agentName || s.id).toLowerCase();
+                        return text.includes(q);
+                      })
+                      .filter((s) => s.status !== 'deleted')
+                      .map((s, i, arr) => {
+                        const isTabbed = tabSet.has(s.id);
+                        const prevTabbed = i > 0 && tabSet.has(arr[i - 1].id);
+                        const raw = s.feedbackTitle || s.agentName || `Session ${s.id.slice(-6)}`;
+                        const label = raw.length > 28 ? raw.slice(0, 28) + '\u2026' : raw;
+                        const tooltip = s.feedbackTitle
+                          ? `${s.feedbackTitle} \u2014 ${s.status}`
+                          : `${s.agentName || 'Session'} \u2014 ${s.status}`;
+                        return (
+                          <div key={s.id}>
+                            {i > 0 && prevTabbed && !isTabbed && (
+                              <div class="sidebar-divider" style={{ margin: '4px 0' }} />
+                            )}
+                            <div
+                              class={`sidebar-session-item ${isTabbed ? 'tabbed' : ''}`}
+                              onClick={() => openSession(s.id)}
+                              title={tooltip}
+                            >
+                              <span class={`session-status-dot ${s.status}`} />
+                              <span class="session-label">{label}</span>
+                              <span style={{ opacity: 0.6, fontSize: '11px' }}>{s.status}</span>
+                              <button
+                                class="session-delete-btn"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  deleteSession(s.id);
+                                }}
+                                title="Archive session"
+                              >
+                                {'\u00D7'}
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+                </>
+              )}
+            </div>
+          </>
         )}
       </div>
       <div class="main" style={{ paddingBottom: bottomPad ? `${bottomPad + 16}px` : undefined }}>

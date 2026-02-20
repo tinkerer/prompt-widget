@@ -13,12 +13,19 @@ const dispatchInstructions = signal('');
 const dispatchLoading = signal(false);
 const newTag = signal('');
 const agentSessions = signal<any[]>([]);
+const lastLoadedId = signal<string | null>(null);
 
 const STATUSES = ['new', 'reviewed', 'dispatched', 'resolved', 'archived'];
 
-async function load(id: string) {
+let currentDetailAppId: string | null = null;
+
+async function load(id: string, appId: string | null) {
   loading.value = true;
   error.value = '';
+  agents.value = [];
+  dispatchAgentId.value = '';
+  lastLoadedId.value = id;
+  currentDetailAppId = appId;
   try {
     const [fb, agentsList, appsList] = await Promise.all([
       api.getFeedbackById(id),
@@ -27,10 +34,10 @@ async function load(id: string) {
     ]);
     feedback.value = fb;
     applications.value = appsList;
-    // Filter agents to only those associated with this feedback's application
-    const appAgents = fb.appId
-      ? agentsList.filter((a: any) => a.appId === fb.appId)
-      : agentsList;
+    const effectiveAppId = appId && appId !== '__unlinked__' ? appId : fb.appId;
+    const appAgents = effectiveAppId
+      ? agentsList.filter((a: any) => a.appId === effectiveAppId)
+      : agentsList.filter((a: any) => !a.appId);
     agents.value = appAgents;
     const def = appAgents.find((a: any) => a.isDefault);
     if (def) dispatchAgentId.value = def.id;
@@ -63,7 +70,11 @@ async function deleteFeedback() {
   const fb = feedback.value;
   if (!fb || !confirm('Delete this feedback?')) return;
   await api.deleteFeedback(fb.id);
-  navigate('/');
+  if (currentDetailAppId) {
+    navigate(`/app/${currentDetailAppId}/feedback`);
+  } else {
+    navigate('/');
+  }
 }
 
 async function addTag() {
@@ -124,6 +135,7 @@ async function doDispatch() {
   if (!fb || !dispatchAgentId.value) return;
   dispatchLoading.value = true;
   try {
+    const selectedAgent = agents.value.find((a) => a.id === dispatchAgentId.value);
     const result = await api.dispatch({
       feedbackId: fb.id,
       agentEndpointId: dispatchAgentId.value,
@@ -131,11 +143,22 @@ async function doDispatch() {
     });
     dispatchInstructions.value = '';
 
+    // Optimistically update local feedback state instead of re-fetching everything
+    feedback.value = {
+      ...fb,
+      status: 'dispatched',
+      dispatchedTo: selectedAgent?.name || 'Agent',
+      dispatchedAt: new Date().toISOString(),
+      dispatchStatus: result.sessionId ? 'running' : 'success',
+      dispatchResponse: result.response,
+    };
+
     if (result.sessionId) {
       openSession(result.sessionId);
     }
 
-    await load(fb.id);
+    // Only refresh sessions list (lightweight) instead of full page reload
+    loadSessions(fb.id);
   } catch (err: any) {
     alert('Dispatch failed: ' + err.message);
   } finally {
@@ -152,9 +175,9 @@ function formatJson(data: any) {
   return JSON.stringify(data, null, 2);
 }
 
-export function FeedbackDetailPage({ id }: { id: string }) {
-  if (feedback.value?.id !== id) {
-    load(id);
+export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | null }) {
+  if (lastLoadedId.value !== id) {
+    load(id, appId);
   }
 
   if (loading.value) return <div>Loading...</div>;
@@ -163,6 +186,7 @@ export function FeedbackDetailPage({ id }: { id: string }) {
   const fb = feedback.value;
   if (!fb) return <div>Not found</div>;
 
+  const backPath = appId ? `/app/${appId}/feedback` : '/';
   const selectedAgent = agents.value.find((a) => a.id === dispatchAgentId.value);
   const agentMode = selectedAgent?.mode || 'webhook';
   const hasTemplate = agentMode !== 'webhook' && selectedAgent?.promptTemplate;
@@ -171,7 +195,7 @@ export function FeedbackDetailPage({ id }: { id: string }) {
     <div>
       <div class="page-header">
         <div>
-          <a href="#/" onClick={(e) => { e.preventDefault(); navigate('/'); }} style="color:#64748b;text-decoration:none;font-size:13px">
+          <a href={`#${backPath}`} onClick={(e) => { e.preventDefault(); navigate(backPath); }} style="color:#64748b;text-decoration:none;font-size:13px">
             &larr; Back to list
           </a>
           <h2 style="margin-top:4px">{fb.title}</h2>
