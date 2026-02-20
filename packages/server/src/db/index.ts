@@ -1,5 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import Database, { type Database as DatabaseType } from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { ulid } from 'ulidx';
 import * as schema from './schema.js';
 
 const DB_PATH = process.env.DB_PATH || 'prompt-widget.db';
@@ -135,6 +139,11 @@ export function runMigrations() {
     `ALTER TABLE agent_sessions ADD COLUMN tmux_session_name TEXT`,
     `ALTER TABLE agent_sessions ADD COLUMN launcher_id TEXT`,
     `ALTER TABLE agent_endpoints ADD COLUMN preferred_launcher_id TEXT`,
+    `ALTER TABLE applications ADD COLUMN tmux_config_id TEXT`,
+    `ALTER TABLE applications ADD COLUMN default_permission_profile TEXT DEFAULT 'interactive'`,
+    `ALTER TABLE applications ADD COLUMN default_allowed_tools TEXT`,
+    `ALTER TABLE applications ADD COLUMN agent_path TEXT`,
+    `ALTER TABLE applications ADD COLUMN screenshot_include_widget INTEGER NOT NULL DEFAULT 0`,
   ];
 
   for (const stmt of alterStatements) {
@@ -208,4 +217,48 @@ export function runMigrations() {
     CREATE INDEX IF NOT EXISTS idx_pending_session_dir_seq
       ON pending_messages(session_id, direction, seq_num);
   `);
+
+  // Tmux configs table
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS tmux_configs (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      content TEXT NOT NULL DEFAULT '',
+      is_default INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+
+  // Seed default tmux config from tmux-pw.conf if table is empty or default has empty content
+  function readTmuxPwConf(): string {
+    // Try multiple relative paths since compiled JS runs from dist/db/
+    const candidates = [
+      resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'tmux-pw.conf'),
+      resolve(dirname(fileURLToPath(import.meta.url)), '..', 'tmux-pw.conf'),
+      resolve(process.cwd(), 'tmux-pw.conf'),
+    ];
+    for (const p of candidates) {
+      try { return readFileSync(p, 'utf-8'); } catch { /* next */ }
+    }
+    return '';
+  }
+
+  const configCount = sqlite.prepare('SELECT count(*) as cnt FROM tmux_configs').get() as { cnt: number };
+  if (configCount.cnt === 0) {
+    const now = new Date().toISOString();
+    sqlite.prepare(
+      'INSERT INTO tmux_configs (id, name, content, is_default, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)'
+    ).run(ulid(), 'Default', readTmuxPwConf(), now, now);
+  } else {
+    // Re-seed if default row exists but has empty content (path was wrong on first run)
+    const defaultRow = sqlite.prepare('SELECT id, content FROM tmux_configs WHERE is_default = 1').get() as { id: string; content: string } | undefined;
+    if (defaultRow && defaultRow.content === '') {
+      const content = readTmuxPwConf();
+      if (content) {
+        sqlite.prepare('UPDATE tmux_configs SET content = ?, updated_at = ? WHERE id = ?')
+          .run(content, new Date().toISOString(), defaultRow.id);
+      }
+    }
+  }
 }

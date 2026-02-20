@@ -4,12 +4,15 @@ import { signal } from '@preact/signals';
 import { currentRoute, clearToken, navigate, selectedAppId, applications, unlinkedCount, appFeedbackCounts } from '../lib/state.js';
 import { api } from '../lib/api.js';
 import { GlobalTerminalPanel } from './GlobalTerminalPanel.js';
+import { PopoutPanel } from './PopoutPanel.js';
 import { Tooltip } from './Tooltip.js';
 import { ShortcutHelpModal } from './ShortcutHelpModal.js';
-import { registerShortcut } from '../lib/shortcuts.js';
-import { toggleTheme, showTabs } from '../lib/settings.js';
+import { SpotlightSearch } from './SpotlightSearch.js';
+import { registerShortcut, ctrlShiftHeld } from '../lib/shortcuts.js';
+import { toggleTheme, showTabs, arrowTabSwitching } from '../lib/settings.js';
 import {
   openTabs,
+  activeTabId,
   panelHeight,
   panelMinimized,
   persistPanelState,
@@ -26,6 +29,17 @@ import {
   sessionsHeight,
   setSessionsHeight,
   setSidebarWidth,
+  spawnTerminal,
+  handleTabDigit0to9,
+  togglePopOutActive,
+  pendingFirstDigit,
+  sessionStatusFilters,
+  sessionTypeFilters,
+  sessionFiltersOpen,
+  toggleStatusFilter,
+  toggleTypeFilter,
+  toggleSessionFiltersOpen,
+  sessionPassesFilters,
 } from '../lib/sessions.js';
 
 const liveConnectionCounts = signal<Record<string, number>>({});
@@ -46,6 +60,24 @@ async function pollLiveConnections() {
   }
 }
 
+function SidebarTabBadge({ tabNum }: { tabNum: number }) {
+  const pending = pendingFirstDigit.value;
+  const digits = String(tabNum);
+  if (pending !== null) {
+    const pendingStr = String(pending);
+    if (!digits.startsWith(pendingStr)) {
+      return <span class="sidebar-tab-badge tab-badge-dimmed">{tabNum}</span>;
+    }
+    return (
+      <span class="sidebar-tab-badge tab-badge-pending">
+        <span class="tab-badge-green">{pendingStr}</span>
+        {digits.slice(pendingStr.length) || ''}
+      </span>
+    );
+  }
+  return <span class="sidebar-tab-badge">{tabNum}</span>;
+}
+
 export function Layout({ children }: { children: ComponentChildren }) {
   const route = currentRoute.value;
   const hasTabs = openTabs.value.length > 0;
@@ -54,6 +86,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
   const collapsed = sidebarCollapsed.value;
   const width = sidebarWidth.value;
   const [showShortcutHelp, setShowShortcutHelp] = useState(false);
+  const [showSpotlight, setShowSpotlight] = useState(false);
 
   useEffect(() => {
     pollLiveConnections();
@@ -83,7 +116,14 @@ export function Layout({ children }: { children: ComponentChildren }) {
         key: 'Escape',
         label: 'Close modal',
         category: 'General',
-        action: () => setShowShortcutHelp(false),
+        action: () => { setShowShortcutHelp(false); setShowSpotlight(false); },
+      }),
+      registerShortcut({
+        key: ' ',
+        modifiers: { ctrl: true, shift: true },
+        label: 'Spotlight search',
+        category: 'General',
+        action: () => setShowSpotlight((v) => !v),
       }),
       registerShortcut({
         key: '\\',
@@ -157,6 +197,66 @@ export function Layout({ children }: { children: ComponentChildren }) {
         category: 'Navigation',
         action: () => navigate('/settings/preferences'),
       }),
+      registerShortcut({
+        key: 'ArrowUp',
+        modifiers: { ctrl: true, shift: true },
+        label: 'Previous page',
+        category: 'Navigation',
+        action: () => { if (arrowTabSwitching.value) cycleNav(-1); },
+      }),
+      registerShortcut({
+        key: 'ArrowDown',
+        modifiers: { ctrl: true, shift: true },
+        label: 'Next page',
+        category: 'Navigation',
+        action: () => { if (arrowTabSwitching.value) cycleNav(1); },
+      }),
+      registerShortcut({
+        key: 'ArrowLeft',
+        modifiers: { ctrl: true, shift: true },
+        label: 'Previous session tab',
+        category: 'Panels',
+        action: () => { if (arrowTabSwitching.value) cycleSessionTab(-1); },
+      }),
+      registerShortcut({
+        key: 'ArrowRight',
+        modifiers: { ctrl: true, shift: true },
+        label: 'Next session tab',
+        category: 'Panels',
+        action: () => { if (arrowTabSwitching.value) cycleSessionTab(1); },
+      }),
+      registerShortcut({
+        sequence: 'g t',
+        key: 't',
+        label: 'New terminal',
+        category: 'Panels',
+        action: () => spawnTerminal(selectedAppId.value),
+      }),
+      // Ctrl+Shift+0-9: tab switching (0 = toggle pop-out, 1-9 = tab by index)
+      ...Array.from({ length: 10 }, (_, i) => registerShortcut({
+        key: String(i),
+        code: `Digit${i}`,
+        modifiers: { ctrl: true, shift: true },
+        label: `Switch to tab ${i}`,
+        category: 'Panels',
+        action: () => handleTabDigit0to9(i),
+      })),
+      registerShortcut({
+        key: '_',
+        code: 'Minus',
+        modifiers: { ctrl: true, shift: true },
+        label: 'Toggle pop out / dock',
+        category: 'Panels',
+        action: togglePopOutActive,
+      }),
+      registerShortcut({
+        key: '+',
+        code: 'Equal',
+        modifiers: { ctrl: true, shift: true },
+        label: 'New terminal',
+        category: 'Panels',
+        action: () => spawnTerminal(selectedAppId.value),
+      }),
     ];
     return () => cleanups.forEach((fn) => fn());
   }, []);
@@ -164,7 +264,8 @@ export function Layout({ children }: { children: ComponentChildren }) {
   const sessions = allSessions.value;
   const tabs = openTabs.value;
   const tabSet = new Set(tabs);
-  const recentSessions = [...sessions]
+  const visibleSessions = sessions.filter((s: any) => sessionPassesFilters(s, tabSet));
+  const recentSessions = [...visibleSessions]
     .sort((a, b) => {
       const aOpen = tabSet.has(a.id) ? 0 : 1;
       const bOpen = tabSet.has(b.id) ? 0 : 1;
@@ -182,6 +283,48 @@ export function Layout({ children }: { children: ComponentChildren }) {
   const hasUnlinked = unlinkedCount.value > 0;
   const fbCounts = appFeedbackCounts.value;
   const runningSessions = sessions.filter((s: any) => s.status === 'running').length;
+  const nonDeletedSessions = sessions.filter((s: any) => s.status !== 'deleted');
+  const statusCounts: Record<string, number> = {};
+  const typeCounts = { agent: 0, terminal: 0 };
+  for (const s of nonDeletedSessions) {
+    statusCounts[s.status] = (statusCounts[s.status] || 0) + 1;
+    if (s.permissionProfile === 'plain') typeCounts.terminal++;
+    else typeCounts.agent++;
+  }
+  const filtersOpen = sessionFiltersOpen.value;
+  const activeStatusFilters = sessionStatusFilters.value;
+  const activeTypeFilters = sessionTypeFilters.value;
+  const activeFilterCount = activeStatusFilters.size + activeTypeFilters.size;
+
+  const appSubTabs = ['feedback', 'aggregate', 'sessions', 'live'];
+  const settingsTabs = ['/settings/agents', '/settings/applications', '/settings/getting-started', '/settings/preferences'];
+
+  function cycleNav(dir: number) {
+    const r = currentRoute.value;
+    const appId = selectedAppId.value;
+    if (appId && r.startsWith(`/app/${appId}/`)) {
+      const segment = r.replace(`/app/${appId}/`, '').split('/')[0];
+      const idx = appSubTabs.indexOf(segment);
+      if (idx >= 0) {
+        const next = appSubTabs[(idx + dir + appSubTabs.length) % appSubTabs.length];
+        navigate(`/app/${appId}/${next}`);
+      }
+    } else if (r.startsWith('/settings/')) {
+      const idx = settingsTabs.indexOf(r);
+      if (idx >= 0) {
+        navigate(settingsTabs[(idx + dir + settingsTabs.length) % settingsTabs.length]);
+      }
+    }
+  }
+
+  function cycleSessionTab(dir: number) {
+    const tabs = openTabs.value;
+    if (tabs.length === 0) return;
+    const current = activeTabId.value;
+    const idx = current ? tabs.indexOf(current) : -1;
+    const next = tabs[(idx + dir + tabs.length) % tabs.length];
+    openSession(next);
+  }
 
   const settingsItems = [
     { path: '/settings/agents', label: 'Agents', icon: '\u{1F916}' },
@@ -338,20 +481,74 @@ export function Layout({ children }: { children: ComponentChildren }) {
             >
               <div class="sidebar-sessions-header" onClick={toggleSessionsDrawer}>
                 <span class={`sessions-chevron ${sessionsDrawerOpen.value ? 'expanded' : ''}`}>{'\u25B8'}</span>
-                Sessions ({sessions.length})
+                Sessions ({visibleSessions.length})
                 {runningSessions > 0 && <span class="sidebar-running-badge">{runningSessions} running</span>}
+                <button
+                  class="sidebar-new-terminal-btn"
+                  onClick={(e) => { e.stopPropagation(); spawnTerminal(selAppId); }}
+                  title="New terminal (g t)"
+                >+</button>
               </div>
               {sessionsDrawerOpen.value && (
                 <>
-                  <div class="sidebar-sessions-search">
+                  <div class="sidebar-sessions-filters">
                     <input
                       type="text"
-                      placeholder="Search sessions..."
+                      placeholder="Search..."
                       value={sessionSearchQuery.value}
                       onInput={(e) => (sessionSearchQuery.value = (e.target as HTMLInputElement).value)}
                       onClick={(e) => e.stopPropagation()}
                     />
+                    <button
+                      class={`sidebar-filter-toggle-btn ${filtersOpen ? 'active' : ''}`}
+                      onClick={(e) => { e.stopPropagation(); toggleSessionFiltersOpen(); }}
+                      title="Filter options"
+                    >
+                      {'\u2630'}
+                      {activeFilterCount < 7 && <span class="filter-active-dot" />}
+                    </button>
                   </div>
+                  {filtersOpen && (
+                    <div class="sidebar-filter-panel" onClick={(e) => e.stopPropagation()}>
+                      <div class="sidebar-filter-section">
+                        <div class="sidebar-filter-section-label">Status</div>
+                        <div class="sidebar-filter-checkboxes">
+                          {(['running', 'pending', 'completed', 'failed', 'killed'] as const).map((status) => (
+                            <label key={status} class="sidebar-filter-checkbox">
+                              <input
+                                type="checkbox"
+                                checked={activeStatusFilters.has(status)}
+                                onChange={() => toggleStatusFilter(status)}
+                              />
+                              <span class={`session-status-dot ${status}`} />
+                              <span>{status}</span>
+                              {(statusCounts[status] || 0) > 0 && (
+                                <span class="sidebar-filter-count">{statusCounts[status]}</span>
+                              )}
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                      <div class="sidebar-filter-section">
+                        <div class="sidebar-filter-section-label">Type</div>
+                        <div class="sidebar-filter-checkboxes">
+                          {([['agent', 'Agent sessions'], ['terminal', 'Terminals']] as const).map(([type, label]) => (
+                            <label key={type} class="sidebar-filter-checkbox">
+                              <input
+                                type="checkbox"
+                                checked={activeTypeFilters.has(type)}
+                                onChange={() => toggleTypeFilter(type)}
+                              />
+                              <span>{label}</span>
+                              {typeCounts[type] > 0 && (
+                                <span class="sidebar-filter-count">{typeCounts[type]}</span>
+                              )}
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   <div class="sidebar-sessions-list">
                     {recentSessions
                       .filter((s) => {
@@ -360,7 +557,6 @@ export function Layout({ children }: { children: ComponentChildren }) {
                         const text = (s.feedbackTitle || s.agentName || s.id).toLowerCase();
                         return text.includes(q);
                       })
-                      .filter((s) => s.status !== 'deleted')
                       .map((s, i, arr) => {
                         const isTabbed = tabSet.has(s.id);
                         const prevTabbed = i > 0 && tabSet.has(arr[i - 1].id);
@@ -381,7 +577,11 @@ export function Layout({ children }: { children: ComponentChildren }) {
                               onClick={() => openSession(s.id)}
                               title={tooltip}
                             >
-                              <span class={`session-status-dot ${s.status}`} title={s.status} />
+                              {ctrlShiftHeld.value && isTabbed ? (
+                                <SidebarTabBadge tabNum={tabs.indexOf(s.id) + 1} />
+                              ) : (
+                                <span class={`session-status-dot ${s.status}`} title={s.status} />
+                              )}
                               <span class="session-label">{raw}</span>
                               <button
                                 class="session-delete-btn"
@@ -421,11 +621,15 @@ export function Layout({ children }: { children: ComponentChildren }) {
           }}
         />
       )}
-      <div class="main" style={{ paddingBottom: bottomPad ? `${bottomPad + 16}px` : undefined }}>
+      <div class="main" style={{
+        paddingBottom: bottomPad ? `${bottomPad + 16}px` : undefined,
+      }}>
         {children}
       </div>
       <GlobalTerminalPanel />
+      <PopoutPanel />
       {showShortcutHelp && <ShortcutHelpModal onClose={() => setShowShortcutHelp(false)} />}
+      {showSpotlight && <SpotlightSearch onClose={() => setShowSpotlight(false)} />}
     </div>
   );
 }

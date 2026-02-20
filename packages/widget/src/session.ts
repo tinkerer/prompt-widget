@@ -22,6 +22,7 @@ export class SessionBridge {
   private apiKey: string | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 1000;
+  public screenshotIncludeWidget = false;
 
   constructor(endpoint: string, sessionId: string, collectors: Collector[], apiKey?: string) {
     this.endpoint = endpoint;
@@ -52,9 +53,13 @@ export class SessionBridge {
 
     this.ws.onmessage = (event) => {
       try {
-        const msg: CommandMessage = JSON.parse(event.data);
-        if (msg.type === 'command') {
-          this.handleCommand(msg);
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'config') {
+          if ('screenshotIncludeWidget' in msg) {
+            this.screenshotIncludeWidget = !!msg.screenshotIncludeWidget;
+          }
+        } else if (msg.type === 'command') {
+          this.handleCommand(msg as CommandMessage);
         }
       } catch {
         // ignore
@@ -107,7 +112,7 @@ export class SessionBridge {
     try {
       switch (command) {
         case 'screenshot': {
-          const blob = await captureScreenshot();
+          const blob = await captureScreenshot({ includeWidget: this.screenshotIncludeWidget });
           if (!blob) {
             this.respondError(requestId, 'Screenshot capture failed');
             return;

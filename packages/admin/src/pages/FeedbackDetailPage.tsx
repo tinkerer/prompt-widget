@@ -14,6 +14,10 @@ const newTag = signal('');
 const agentSessions = signal<any[]>([]);
 const lastLoadedId = signal<string | null>(null);
 const lightboxSrc = signal<string | null>(null);
+const editingTitle = signal(false);
+const editTitleValue = signal('');
+const editingDescription = signal(false);
+const editDescValue = signal('');
 
 const STATUSES = ['new', 'reviewed', 'dispatched', 'resolved', 'archived'];
 
@@ -61,10 +65,28 @@ async function updateStatus(status: string) {
   feedback.value = { ...fb };
 }
 
+async function saveTitle() {
+  const fb = feedback.value;
+  if (!fb || !editTitleValue.value.trim()) return;
+  await api.updateFeedback(fb.id, { title: editTitleValue.value.trim() });
+  fb.title = editTitleValue.value.trim();
+  feedback.value = { ...fb };
+  editingTitle.value = false;
+}
+
+async function saveDescription() {
+  const fb = feedback.value;
+  if (!fb) return;
+  await api.updateFeedback(fb.id, { description: editDescValue.value });
+  fb.description = editDescValue.value;
+  feedback.value = { ...fb };
+  editingDescription.value = false;
+}
+
 async function deleteFeedback() {
   const fb = feedback.value;
-  if (!fb || !confirm('Delete this feedback?')) return;
-  await api.deleteFeedback(fb.id);
+  if (!fb) return;
+  await api.updateFeedback(fb.id, { status: 'deleted' });
   if (currentDetailAppId) {
     navigate(`/app/${currentDetailAppId}/feedback`);
   } else {
@@ -158,7 +180,28 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
           </a>
           <h2 style="margin-top:4px">
             <code style="font-size:14px;color:var(--pw-text-faint);background:var(--pw-code-block-bg);padding:2px 6px;border-radius:4px;margin-right:8px;cursor:pointer" title={`Click to copy: ${fb.id}`} onClick={() => navigator.clipboard.writeText(fb.id)}>{fb.id.slice(-6)}</code>
-            {fb.title}
+            {editingTitle.value ? (
+              <input
+                type="text"
+                value={editTitleValue.value}
+                onInput={(e) => (editTitleValue.value = (e.target as HTMLInputElement).value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') saveTitle();
+                  if (e.key === 'Escape') (editingTitle.value = false);
+                }}
+                onBlur={saveTitle}
+                style="font-size:inherit;font-weight:inherit;padding:2px 6px;border:1px solid var(--pw-accent);border-radius:4px;background:var(--pw-input-bg);color:var(--pw-primary-text);width:400px"
+                ref={(el) => el?.focus()}
+              />
+            ) : (
+              <span
+                style="cursor:pointer;border-bottom:1px dashed var(--pw-text-faint)"
+                title="Click to edit"
+                onClick={() => { editTitleValue.value = fb.title; editingTitle.value = true; }}
+              >
+                {fb.title}
+              </span>
+            )}
           </h2>
           <div style="font-size:11px;color:var(--pw-text-faint);font-family:monospace;margin-top:2px">{fb.id}</div>
         </div>
@@ -224,7 +267,34 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
             </div>
             <div class="field-row">
               <span class="field-label">Description</span>
-              <span class="field-value">{fb.description || '—'}</span>
+              <span class="field-value">
+                {editingDescription.value ? (
+                  <div style="display:flex;flex-direction:column;gap:4px;width:100%">
+                    <textarea
+                      value={editDescValue.value}
+                      onInput={(e) => (editDescValue.value = (e.target as HTMLTextAreaElement).value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') (editingDescription.value = false);
+                        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) saveDescription();
+                      }}
+                      style="padding:6px 8px;font-size:13px;min-height:80px;resize:vertical;font-family:inherit;background:var(--pw-input-bg);color:var(--pw-primary-text);border:1px solid var(--pw-accent);border-radius:4px"
+                      ref={(el) => el?.focus()}
+                    />
+                    <div style="display:flex;gap:4px;justify-content:flex-end">
+                      <button class="btn btn-sm" onClick={() => (editingDescription.value = false)}>Cancel</button>
+                      <button class="btn btn-sm btn-primary" onClick={saveDescription}>Save</button>
+                    </div>
+                  </div>
+                ) : (
+                  <span
+                    style="cursor:pointer;border-bottom:1px dashed var(--pw-text-faint)"
+                    title="Click to edit"
+                    onClick={() => { editDescValue.value = fb.description || ''; editingDescription.value = true; }}
+                  >
+                    {fb.description || '—'}
+                  </span>
+                )}
+              </span>
             </div>
             <div class="field-row">
               <span class="field-label">Source URL</span>
@@ -346,6 +416,58 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
               <button class="btn btn-sm" onClick={addTag}>Add</button>
             </div>
           </div>
+
+          {fb.data?.selectedElement && (() => {
+            const el = fb.data.selectedElement;
+            return (
+              <div class="detail-card" style="margin-bottom:16px">
+                <h3>Selected Element</h3>
+                <div class="field-row">
+                  <span class="field-label">Tag</span>
+                  <span class="field-value"><code style="background:var(--pw-code-block-bg);padding:1px 6px;border-radius:3px">{el.tagName}</code></span>
+                </div>
+                {el.id && (
+                  <div class="field-row">
+                    <span class="field-label">ID</span>
+                    <span class="field-value" style="font-family:monospace">#{el.id}</span>
+                  </div>
+                )}
+                {el.classes?.length > 0 && (
+                  <div class="field-row">
+                    <span class="field-label">Classes</span>
+                    <span class="field-value" style="font-family:monospace">.{el.classes.join(' .')}</span>
+                  </div>
+                )}
+                <div class="field-row">
+                  <span class="field-label">Selector</span>
+                  <span class="field-value" style="font-family:monospace;word-break:break-all;font-size:12px">{el.selector}</span>
+                </div>
+                {el.textContent && (
+                  <div class="field-row">
+                    <span class="field-label">Text</span>
+                    <span class="field-value" style="font-size:12px;color:var(--pw-text-muted)">{el.textContent}</span>
+                  </div>
+                )}
+                {el.boundingRect && (
+                  <div class="field-row">
+                    <span class="field-label">Position</span>
+                    <span class="field-value" style="font-size:12px">{Math.round(el.boundingRect.x)},{Math.round(el.boundingRect.y)} &mdash; {Math.round(el.boundingRect.width)}&times;{Math.round(el.boundingRect.height)}</span>
+                  </div>
+                )}
+                {Object.keys(el.attributes || {}).length > 0 && (
+                  <div style="margin-top:8px">
+                    <div style="font-size:11px;color:var(--pw-text-faint);margin-bottom:4px">Attributes</div>
+                    {Object.entries(el.attributes).map(([k, v]) => (
+                      <div class="field-row" key={k}>
+                        <span class="field-label" style="font-family:monospace;font-size:11px">{k}</span>
+                        <span class="field-value" style="font-size:12px;word-break:break-all">{v as string}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {fb.screenshots && fb.screenshots.length > 0 && (
             <div class="detail-card" style="margin-bottom:16px">

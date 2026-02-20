@@ -8,6 +8,11 @@ export const applications = sqliteTable('applications', {
   serverUrl: text('server_url'),
   hooks: text('hooks').notNull().default('[]'),
   description: text('description').notNull().default(''),
+  tmuxConfigId: text('tmux_config_id'),
+  defaultPermissionProfile: text('default_permission_profile').default('interactive'),
+  defaultAllowedTools: text('default_allowed_tools'),
+  agentPath: text('agent_path'),
+  screenshotIncludeWidget: integer('screenshot_include_widget', { mode: 'boolean' }).notNull().default(false),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
@@ -101,6 +106,15 @@ export const agentSessions = sqliteTable('agent_sessions', {
   createdAt: text('created_at').notNull(),
   startedAt: text('started_at'),
   completedAt: text('completed_at'),
+});
+
+export const tmuxConfigs = sqliteTable('tmux_configs', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  content: text('content').notNull().default(''),
+  isDefault: integer('is_default', { mode: 'boolean' }).notNull().default(false),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
 });
 
 export const pendingMessages = sqliteTable('pending_messages', {

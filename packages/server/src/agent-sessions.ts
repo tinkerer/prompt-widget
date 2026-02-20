@@ -198,14 +198,15 @@ export async function killSession(sessionId: string): Promise<boolean> {
     }
   }
 
-  // Local session — try session-service, fall back to DB
+  // Local session — try session-service, then always update DB as safety net
   try {
-    const killed = await killSessionRemote(sessionId);
-    if (killed) return true;
+    await killSessionRemote(sessionId);
   } catch {
-    // Session service unreachable
+    // Session service unreachable — DB update below handles it
   }
 
+  // Always update DB directly so the main server sees 'killed' immediately,
+  // even if the session-service already did it (idempotent)
   db.update(schema.agentSessions)
     .set({ status: 'killed', completedAt: new Date().toISOString() })
     .where(eq(schema.agentSessions.id, sessionId))

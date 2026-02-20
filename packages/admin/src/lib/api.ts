@@ -50,6 +50,12 @@ export const api = {
 
   getFeedbackById: (id: string) => request<any>(`/admin/feedback/${id}`),
 
+  createFeedback: (data: { title: string; description?: string; type?: string; appId: string; tags?: string[] }) =>
+    request<{ id: string; status: string; createdAt: string }>('/admin/feedback', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
   updateFeedback: (id: string, data: Record<string, unknown>) =>
     request(`/admin/feedback/${id}`, {
       method: 'PATCH',
@@ -65,7 +71,10 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  getAgents: () => request<any[]>('/admin/agents'),
+  getAgents: (appId?: string) => {
+    const qs = appId ? `?appId=${encodeURIComponent(appId)}` : '';
+    return request<any[]>(`/admin/agents${qs}`);
+  },
 
   createAgent: (data: Record<string, unknown>) =>
     request('/admin/agents', {
@@ -151,6 +160,11 @@ export const api = {
       method: 'DELETE',
     }),
 
+  openSessionInTerminal: (id: string) =>
+    request<{ ok: boolean; tmuxName: string }>(`/admin/agent-sessions/${id}/open-terminal`, {
+      method: 'POST',
+    }),
+
   // Aggregate / clustering
   getAggregate: (params: Record<string, string | number> = {}) => {
     const qs = new URLSearchParams();
@@ -211,6 +225,47 @@ export const api = {
       tags: string[];
     }[]>('/agent/sessions'),
 
+  // Tmux config (legacy)
+  getTmuxConf: () =>
+    request<{ content: string }>('/admin/tmux-conf'),
+
+  saveTmuxConf: (content: string) =>
+    request<{ saved: boolean }>('/admin/tmux-conf', {
+      method: 'PUT',
+      body: JSON.stringify({ content }),
+    }),
+
+  // Tmux configs (multi-config)
+  getTmuxConfigs: () =>
+    request<any[]>('/admin/tmux-configs'),
+
+  createTmuxConfig: (data: { name: string; content?: string }) =>
+    request<{ id: string }>('/admin/tmux-configs', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  updateTmuxConfig: (id: string, data: { name?: string; content?: string; isDefault?: boolean }) =>
+    request<{ id: string; updated: boolean }>(`/admin/tmux-configs/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  deleteTmuxConfig: (id: string) =>
+    request<{ id: string; deleted: boolean }>(`/admin/tmux-configs/${id}`, {
+      method: 'DELETE',
+    }),
+
+  editTmuxConfigInTerminal: (id: string) =>
+    request<{ sessionId: string; configId: string }>(`/admin/tmux-configs/${id}/edit-terminal`, {
+      method: 'POST',
+    }),
+
+  saveTmuxConfigFromFile: (id: string) =>
+    request<{ saved: boolean; content: string }>(`/admin/tmux-configs/${id}/save-from-file`, {
+      method: 'POST',
+    }),
+
   // Launchers
   getLaunchers: () =>
     request<{ launchers: any[] }>('/admin/launchers'),
@@ -220,4 +275,7 @@ export const api = {
 
   deleteLauncher: (id: string) =>
     request<{ ok: boolean; id: string }>(`/admin/launchers/${id}`, { method: 'DELETE' }),
+
+  getDefaultPromptTemplate: () =>
+    request<{ template: string }>('/admin/default-prompt-template'),
 };

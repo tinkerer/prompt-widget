@@ -1,13 +1,17 @@
+import { signal } from '@preact/signals';
 import { shortcutsEnabled } from './settings.js';
 
 export interface Shortcut {
   key: string;
+  code?: string; // e.g. 'Digit1' — matches e.code instead of e.key
   modifiers?: { ctrl?: boolean; shift?: boolean; alt?: boolean; meta?: boolean };
   sequence?: string; // e.g. "g f" — first key already matched, this is the second
   label: string;
   category: 'Navigation' | 'Panels' | 'General';
   action: () => void;
 }
+
+export const ctrlShiftHeld = signal(false);
 
 const registry: Shortcut[] = [];
 let pendingSequence: string | null = null;
@@ -26,10 +30,21 @@ export function getAllShortcuts(): Shortcut[] {
 }
 
 function isInputFocused(): boolean {
-  const el = document.activeElement;
+  let el: Element | null = document.activeElement;
   if (!el) return false;
+  // Traverse into shadow roots — when focus is inside a Shadow DOM,
+  // document.activeElement returns the host element, not the inner target.
+  while (el?.shadowRoot?.activeElement) {
+    el = el.shadowRoot.activeElement;
+  }
   const tag = el.tagName.toLowerCase();
-  return tag === 'input' || tag === 'textarea' || tag === 'select' || (el as HTMLElement).isContentEditable;
+  if (tag === 'input' || tag === 'textarea' || tag === 'select' || (el as HTMLElement).isContentEditable) {
+    return true;
+  }
+  // xterm.js terminals live inside .xterm containers — treat them as input targets
+  // so global shortcuts don't steal keystrokes from the PTY
+  if (el.closest?.('.xterm')) return true;
+  return false;
 }
 
 function matchesModifiers(e: KeyboardEvent, mods?: Shortcut['modifiers']): boolean {
@@ -40,9 +55,25 @@ function matchesModifiers(e: KeyboardEvent, mods?: Shortcut['modifiers']): boole
   return e.ctrlKey === ctrl && e.shiftKey === shift && e.altKey === alt && e.metaKey === meta;
 }
 
+function normalizeCode(code: string): string {
+  const m = code.match(/^Numpad(\d)$/);
+  return m ? `Digit${m[1]}` : code;
+}
+
 function handleKeyDown(e: KeyboardEvent) {
   if (!shortcutsEnabled.value) return;
-  if (isInputFocused() && e.key !== 'Escape') return;
+  const code = normalizeCode(e.code);
+  if (isInputFocused() && e.key !== 'Escape') {
+    // Ctrl+Shift+Space (spotlight) works from any context
+    if (e.ctrlKey && e.shiftKey && e.code === 'Space') { /* allow through */ }
+    else {
+      const inXterm = !!document.activeElement?.closest?.('.xterm');
+      const isArrow = e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown';
+      const isDigit = /^Digit[0-9]$/.test(code);
+      const isMinusEqual = code === 'Minus' || code === 'Equal';
+      if (!(inXterm && e.ctrlKey && e.shiftKey && (isArrow || isDigit || isMinusEqual))) return;
+    }
+  }
 
   // Handle second key in sequence
   if (pendingSequence) {
@@ -52,6 +83,7 @@ function handleKeyDown(e: KeyboardEvent) {
     for (const s of registry) {
       if (s.sequence === combo && matchesModifiers(e, s.modifiers)) {
         e.preventDefault();
+        e.stopPropagation();
         s.action();
         return;
       }
@@ -67,7 +99,6 @@ function handleKeyDown(e: KeyboardEvent) {
   );
 
   if (sequenceStarters.has(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey) {
-    // Check if there's also a non-sequence shortcut for this key
     const directMatch = registry.find(
       (s) => !s.sequence && s.key === e.key && matchesModifiers(e, s.modifiers)
     );
@@ -79,11 +110,13 @@ function handleKeyDown(e: KeyboardEvent) {
     }
   }
 
-  // Direct single-key shortcuts
+  // Direct single-key shortcuts (normalize numpad codes)
   for (const s of registry) {
     if (s.sequence) continue;
-    if (s.key === e.key && matchesModifiers(e, s.modifiers)) {
+    const keyMatch = s.code ? s.code === code : s.key === e.key;
+    if (keyMatch && matchesModifiers(e, s.modifiers)) {
       e.preventDefault();
+      e.stopPropagation();
       s.action();
       return;
     }
@@ -98,5 +131,17 @@ function clearSequence() {
   }
 }
 
+// Track Ctrl+Shift held state for tab number overlay
+function updateCtrlShift(e: KeyboardEvent) {
+  ctrlShiftHeld.value = e.ctrlKey && e.shiftKey;
+}
+
+function clearCtrlShift() {
+  ctrlShiftHeld.value = false;
+}
+
 // Install global handler
-document.addEventListener('keydown', handleKeyDown);
+// Capture phase so we intercept before xterm.js processes the event
+document.addEventListener('keydown', (e) => { updateCtrlShift(e); handleKeyDown(e); }, true);
+document.addEventListener('keyup', updateCtrlShift, true);
+window.addEventListener('blur', clearCtrlShift);

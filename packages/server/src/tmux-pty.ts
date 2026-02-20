@@ -1,7 +1,11 @@
 import { execSync, execFileSync, spawnSync } from 'node:child_process';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import * as pty from 'node-pty';
 
 const TMUX_PREFIX = 'pw-';
+const PW_TMUX_CONF = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'tmux-pw.conf');
 
 let tmuxAvailable: boolean | null = null;
 
@@ -20,9 +24,11 @@ function tmuxName(sessionId: string): string {
   return `${TMUX_PREFIX}${sessionId}`;
 }
 
+const TMUX_SOCKET = ['-L', 'prompt-widget'];
+
 export function tmuxSessionExists(sessionId: string): boolean {
   const name = tmuxName(sessionId);
-  const r = spawnSync('tmux', ['has-session', '-t', name], { stdio: 'pipe' });
+  const r = spawnSync('tmux', [...TMUX_SOCKET, 'has-session', '-t', name], { stdio: 'pipe' });
   return r.status === 0;
 }
 
@@ -46,6 +52,8 @@ export function spawnInTmux(params: {
   }).join(' ');
 
   execFileSync('tmux', [
+    ...TMUX_SOCKET,
+    '-f', PW_TMUX_CONF,
     'new-session', '-d',
     '-s', name,
     '-x', String(cols),
@@ -57,7 +65,7 @@ export function spawnInTmux(params: {
     env: { ...process.env, ...env, TERM: 'xterm-256color' },
   });
 
-  const ptyProcess = pty.spawn('tmux', ['attach-session', '-t', name], {
+  const ptyProcess = pty.spawn('tmux', [...TMUX_SOCKET, 'attach-session', '-t', name], {
     name: 'xterm-256color',
     cols,
     rows,
@@ -80,7 +88,7 @@ export function reattachTmux(params: {
     throw new Error(`tmux session ${name} does not exist`);
   }
 
-  return pty.spawn('tmux', ['attach-session', '-t', name], {
+  return pty.spawn('tmux', [...TMUX_SOCKET, 'attach-session', '-t', name], {
     name: 'xterm-256color',
     cols,
     rows,
@@ -90,7 +98,7 @@ export function reattachTmux(params: {
 
 export function killTmuxSession(sessionId: string): boolean {
   const name = tmuxName(sessionId);
-  const r = spawnSync('tmux', ['kill-session', '-t', name], { stdio: 'pipe' });
+  const r = spawnSync('tmux', [...TMUX_SOCKET, 'kill-session', '-t', name], { stdio: 'pipe' });
   return r.status === 0;
 }
 
@@ -98,7 +106,7 @@ export function captureTmuxPane(sessionId: string): string {
   const name = tmuxName(sessionId);
   try {
     const output = execFileSync('tmux', [
-      'capture-pane', '-t', name, '-p', '-S', '-',
+      ...TMUX_SOCKET, 'capture-pane', '-t', name, '-p', '-S', '-',
     ], { stdio: 'pipe', encoding: 'utf-8' });
     return output;
   } catch {
@@ -108,7 +116,9 @@ export function captureTmuxPane(sessionId: string): string {
 
 export function listPwTmuxSessions(): string[] {
   try {
-    const output = execSync("tmux list-sessions -F '#{session_name}' 2>/dev/null", {
+    const output = execFileSync('tmux', [
+      ...TMUX_SOCKET, 'list-sessions', '-F', '#{session_name}',
+    ], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -123,5 +133,5 @@ export function listPwTmuxSessions(): string[] {
 
 export function detachTmuxClients(sessionId: string): void {
   const name = tmuxName(sessionId);
-  spawnSync('tmux', ['detach-client', '-s', name], { stdio: 'pipe' });
+  spawnSync('tmux', [...TMUX_SOCKET, 'detach-client', '-s', name], { stdio: 'pipe' });
 }

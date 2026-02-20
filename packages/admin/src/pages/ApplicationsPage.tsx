@@ -1,6 +1,7 @@
 import { signal } from '@preact/signals';
 import { api } from '../lib/api.js';
 import { loadApplications as refreshSidebarApps } from '../lib/state.js';
+import { spawnTerminal } from '../lib/sessions.js';
 
 const apps = signal<any[]>([]);
 const loading = signal(true);
@@ -11,14 +12,25 @@ const formProjectDir = signal('');
 const formServerUrl = signal('');
 const formHooks = signal('');
 const formDescription = signal('');
+const formTmuxConfigId = signal('');
+const formPermissionProfile = signal('interactive');
+const formAllowedTools = signal('');
+const formAgentPath = signal('');
+const formScreenshotIncludeWidget = signal(false);
 const formError = signal('');
 const formLoading = signal(false);
 const copiedKey = signal<string | null>(null);
+const tmuxConfigs = signal<any[]>([]);
 
 async function loadApps() {
   loading.value = true;
   try {
-    apps.value = await api.getApplications();
+    const [appList, configList] = await Promise.all([
+      api.getApplications(),
+      api.getTmuxConfigs(),
+    ]);
+    apps.value = appList;
+    tmuxConfigs.value = configList;
   } catch (err) {
     console.error('Failed to load applications:', err);
   } finally {
@@ -35,6 +47,11 @@ function openCreate() {
   formServerUrl.value = '';
   formHooks.value = '';
   formDescription.value = '';
+  formTmuxConfigId.value = '';
+  formPermissionProfile.value = 'interactive';
+  formAllowedTools.value = '';
+  formAgentPath.value = '';
+  formScreenshotIncludeWidget.value = false;
   formError.value = '';
   showForm.value = true;
 }
@@ -46,6 +63,11 @@ function openEdit(app: any) {
   formServerUrl.value = app.serverUrl || '';
   formHooks.value = (app.hooks || []).join(', ');
   formDescription.value = app.description || '';
+  formTmuxConfigId.value = app.tmuxConfigId || '';
+  formPermissionProfile.value = app.defaultPermissionProfile || 'interactive';
+  formAllowedTools.value = app.defaultAllowedTools || '';
+  formAgentPath.value = app.agentPath || '';
+  formScreenshotIncludeWidget.value = !!app.screenshotIncludeWidget;
   formError.value = '';
   showForm.value = true;
 }
@@ -60,12 +82,17 @@ async function saveApp(e: Event) {
     .map((h) => h.trim())
     .filter(Boolean);
 
-  const data = {
+  const data: Record<string, unknown> = {
     name: formName.value,
     projectDir: formProjectDir.value,
     serverUrl: formServerUrl.value || undefined,
     hooks,
     description: formDescription.value,
+    tmuxConfigId: formTmuxConfigId.value || null,
+    defaultPermissionProfile: formPermissionProfile.value,
+    defaultAllowedTools: formAllowedTools.value || null,
+    agentPath: formAgentPath.value || null,
+    screenshotIncludeWidget: formScreenshotIncludeWidget.value,
   };
 
   try {
@@ -146,6 +173,7 @@ export function ApplicationsPage() {
               )}
             </div>
             <div style="display:flex;gap:8px;flex-shrink:0">
+              <button class="btn btn-sm" onClick={() => spawnTerminal(app.id)} title="Open terminal in this app's directory">Terminal</button>
               <button class="btn btn-sm" onClick={() => openEdit(app)}>Edit</button>
               <button class="btn btn-sm btn-danger" onClick={() => deleteApp(app.id)}>Delete</button>
             </div>
@@ -216,6 +244,74 @@ export function ApplicationsPage() {
                 style="width:100%;min-height:60px"
               />
             </div>
+
+            {editingId.value && (
+              <>
+                <div style="border-top:1px solid var(--pw-border);margin:16px 0;padding-top:12px">
+                  <h4 style="margin:0 0 12px;font-size:13px;color:var(--pw-text-muted)">Session Settings</h4>
+                </div>
+                <div class="form-group">
+                  <label>Tmux Configuration</label>
+                  <select
+                    value={formTmuxConfigId.value}
+                    onChange={(e) => (formTmuxConfigId.value = (e.target as HTMLSelectElement).value)}
+                    style="width:100%"
+                  >
+                    <option value="">Global Default</option>
+                    {tmuxConfigs.value.map((cfg: any) => (
+                      <option key={cfg.id} value={cfg.id}>
+                        {cfg.name}{cfg.isDefault ? ' (default)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>Default Permission Profile</label>
+                  <select
+                    value={formPermissionProfile.value}
+                    onChange={(e) => (formPermissionProfile.value = (e.target as HTMLSelectElement).value)}
+                    style="width:100%"
+                  >
+                    <option value="interactive">Interactive</option>
+                    <option value="auto">Auto</option>
+                    <option value="yolo">Yolo (skip permissions)</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>Default Allowed Tools</label>
+                  <textarea
+                    value={formAllowedTools.value}
+                    onInput={(e) => (formAllowedTools.value = (e.target as HTMLTextAreaElement).value)}
+                    placeholder="Edit, Bash(npm test), Read, ..."
+                    style="width:100%;min-height:40px;font-family:'SF Mono',Monaco,Menlo,monospace;font-size:12px"
+                  />
+                  <span style="font-size:11px;color:var(--pw-text-faint)">Comma-separated list of tools for --allowedTools</span>
+                </div>
+                <div class="form-group">
+                  <label>Agent Path</label>
+                  <input
+                    type="text"
+                    value={formAgentPath.value}
+                    onInput={(e) => (formAgentPath.value = (e.target as HTMLInputElement).value)}
+                    placeholder="/usr/local/bin/claude (default: claude)"
+                    style="width:100%"
+                  />
+                  <span style="font-size:11px;color:var(--pw-text-faint)">Custom path to Claude CLI binary</span>
+                </div>
+                <div class="form-group">
+                  <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                    <input
+                      type="checkbox"
+                      checked={formScreenshotIncludeWidget.value}
+                      onChange={(e) => (formScreenshotIncludeWidget.value = (e.target as HTMLInputElement).checked)}
+                    />
+                    Include widget in screenshots
+                  </label>
+                  <span style="font-size:11px;color:var(--pw-text-faint)">When enabled, the prompt-widget overlay will appear in captured screenshots</span>
+                </div>
+              </>
+            )}
+
             <div class="modal-actions">
               <button type="button" class="btn" onClick={() => (showForm.value = false)}>Cancel</button>
               <button type="submit" class="btn btn-primary" disabled={formLoading.value}>

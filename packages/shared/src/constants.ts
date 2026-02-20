@@ -12,6 +12,7 @@ export const FEEDBACK_STATUSES = [
   'dispatched',
   'resolved',
   'archived',
+  'deleted',
 ] as const;
 
 export const WIDGET_MODES = ['always', 'admin', 'hidden'] as const;

@@ -67,13 +67,21 @@ export const feedbackUpdateSchema = z.object({
   tags: z.array(z.string().max(50)).max(20).optional(),
 });
 
+export const adminFeedbackCreateSchema = z.object({
+  title: z.string().min(1).max(500),
+  description: z.string().max(10000).default(''),
+  type: z.enum(FEEDBACK_TYPES).default('manual'),
+  appId: z.string(),
+  tags: z.array(z.string().max(50)).max(20).optional(),
+});
+
 export type FeedbackUpdateInput = z.infer<typeof feedbackUpdateSchema>;
 
 export const feedbackListSchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(20),
   type: z.enum(FEEDBACK_TYPES).optional(),
-  status: z.enum(FEEDBACK_STATUSES).optional(),
+  status: z.string().optional(),
   tag: z.string().optional(),
   search: z.string().optional(),
   appId: z.string().optional(),
@@ -83,7 +91,7 @@ export const feedbackListSchema = z.object({
 
 export const batchOperationSchema = z.object({
   ids: z.array(z.string()).min(1).max(100),
-  operation: z.enum(['updateStatus', 'addTag', 'removeTag', 'delete']),
+  operation: z.enum(['updateStatus', 'addTag', 'removeTag', 'delete', 'permanentDelete']),
   value: z.string().optional(),
 });
 

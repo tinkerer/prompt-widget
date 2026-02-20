@@ -74,14 +74,22 @@ applicationRoutes.patch('/:id', async (c) => {
   }
 
   const now = new Date().toISOString();
-  await db.update(schema.applications).set({
+  const updates: Record<string, unknown> = {
     name: parsed.data.name,
     projectDir: parsed.data.projectDir,
     serverUrl: parsed.data.serverUrl || null,
     hooks: JSON.stringify(parsed.data.hooks),
     description: parsed.data.description,
     updatedAt: now,
-  }).where(eq(schema.applications.id, id));
+  };
+
+  if ('tmuxConfigId' in body) updates.tmuxConfigId = body.tmuxConfigId || null;
+  if ('defaultPermissionProfile' in body) updates.defaultPermissionProfile = body.defaultPermissionProfile || 'interactive';
+  if ('defaultAllowedTools' in body) updates.defaultAllowedTools = body.defaultAllowedTools || null;
+  if ('agentPath' in body) updates.agentPath = body.agentPath || null;
+  if ('screenshotIncludeWidget' in body) updates.screenshotIncludeWidget = !!body.screenshotIncludeWidget;
+
+  await db.update(schema.applications).set(updates).where(eq(schema.applications.id, id));
 
   return c.json({ id, updated: true });
 });

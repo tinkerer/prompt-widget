@@ -25,11 +25,21 @@ function genId(): string {
 }
 
 function stripAnsi(s: string): string {
-  return s
+  let cleaned = s
     .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
     .replace(/\x1b\][^\x07]*\x07/g, '')
     .replace(/\x1b\(B/g, '')
     .replace(/\x1b\[[\?]?[0-9;]*[hlm]/g, '');
+  // Handle \r (carriage return) — keep only the last segment per line
+  // This handles Claude CLI status line overwrites
+  cleaned = cleaned.split('\n').map(line => {
+    if (line.includes('\r')) {
+      const parts = line.split('\r');
+      return parts[parts.length - 1];
+    }
+    return line;
+  }).join('\n');
+  return cleaned;
 }
 
 // Parses structured JSON output from `claude --output-format stream-json`
@@ -71,7 +81,33 @@ export class JsonOutputParser {
   private parseJsonEvent(obj: any): ParsedMessage[] {
     const type = obj.type;
 
-    // message_start: extract model
+    // --- CLI stream-json: system message (session metadata) ---
+    if (type === 'system') {
+      if (obj.model) this.currentModel = obj.model;
+      const parts: string[] = [];
+      if (obj.model) parts.push(`Model: ${obj.model}`);
+      if (obj.session_id) parts.push(`Session: ${obj.session_id}`);
+      if (obj.tools?.length) parts.push(`Tools: ${obj.tools.length}`);
+      if (parts.length > 0) {
+        return [{ id: genId(), role: 'system', timestamp: Date.now(), content: parts.join(' | '), model: obj.model }];
+      }
+      return [];
+    }
+
+    // --- CLI stream-json: user message ---
+    if (type === 'user') {
+      const content = typeof obj.message?.content === 'string'
+        ? obj.message.content
+        : Array.isArray(obj.message?.content)
+          ? obj.message.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
+          : '';
+      if (content) {
+        return [{ id: genId(), role: 'user_input', timestamp: Date.now(), content }];
+      }
+      return [];
+    }
+
+    // --- API streaming: message_start ---
     if (type === 'message_start' && obj.message) {
       if (obj.message.model) this.currentModel = obj.message.model;
       if (obj.message.usage) {
@@ -80,7 +116,7 @@ export class JsonOutputParser {
       return [];
     }
 
-    // message_delta: extract usage stats
+    // --- API streaming: message_delta ---
     if (type === 'message_delta') {
       if (obj.usage) {
         this.currentUsage = {
@@ -91,7 +127,7 @@ export class JsonOutputParser {
       return [];
     }
 
-    // Non-streaming assistant message (complete content blocks)
+    // --- CLI stream-json / API: assistant message with complete content blocks ---
     if (type === 'assistant' && obj.message?.content) {
       const results: ParsedMessage[] = [];
       const model = obj.message?.model || this.currentModel;
@@ -106,6 +142,16 @@ export class JsonOutputParser {
             toolName: block.name, toolInput: block.input,
             content: JSON.stringify(block.input, null, 2), model,
           });
+        } else if (block.type === 'tool_result') {
+          const resultContent = typeof block.content === 'string'
+            ? block.content
+            : Array.isArray(block.content)
+              ? block.content.map((c: any) => typeof c === 'string' ? c : c.text || JSON.stringify(c)).join('\n')
+              : JSON.stringify(block.content);
+          results.push({
+            id: genId(), role: 'tool_result', timestamp: Date.now(),
+            content: resultContent, isError: block.is_error || false,
+          });
         } else if (block.type === 'thinking') {
           results.push({ id: genId(), role: 'thinking', timestamp: Date.now(), content: block.thinking || '', model });
         }
@@ -113,7 +159,7 @@ export class JsonOutputParser {
       return results;
     }
 
-    // content_block_start: begin streaming a block
+    // --- API streaming: content_block_start ---
     if (type === 'content_block_start' && obj.content_block) {
       const block = obj.content_block;
       const idx = obj.index ?? this.activeBlocks.size;
@@ -129,7 +175,7 @@ export class JsonOutputParser {
       return [];
     }
 
-    // content_block_delta: accumulate streaming data
+    // --- API streaming: content_block_delta ---
     if (type === 'content_block_delta') {
       const idx = obj.index ?? 0;
       const active = this.activeBlocks.get(idx);
@@ -148,7 +194,7 @@ export class JsonOutputParser {
       return [];
     }
 
-    // content_block_stop: finalize block into a message
+    // --- API streaming: content_block_stop ---
     if (type === 'content_block_stop') {
       const idx = obj.index ?? 0;
       const active = this.activeBlocks.get(idx);
@@ -184,8 +230,23 @@ export class JsonOutputParser {
       return [];
     }
 
-    // Tool result events
+    // --- CLI stream-json / API: result (session end or error) ---
     if (type === 'result') {
+      // Session end with metadata
+      if (obj.subtype === 'session_end' || obj.duration_ms != null || obj.total_cost_usd != null) {
+        const parts: string[] = ['Session complete'];
+        if (obj.total_cost_usd != null) parts.push(`Cost: $${obj.total_cost_usd.toFixed(4)}`);
+        if (obj.duration_ms != null) parts.push(`Duration: ${(obj.duration_ms / 1000).toFixed(1)}s`);
+        if (obj.num_turns != null) parts.push(`Turns: ${obj.num_turns}`);
+        if (obj.usage) {
+          const u = obj.usage;
+          if (u.input_tokens || u.output_tokens) {
+            parts.push(`Tokens: ${(u.input_tokens || 0).toLocaleString()}↓ ${(u.output_tokens || 0).toLocaleString()}↑`);
+          }
+        }
+        return [{ id: genId(), role: 'system', timestamp: Date.now(), content: parts.join(' | ') }];
+      }
+      // Error result
       if (obj.subtype === 'error_message' || obj.is_error) {
         return [{ id: genId(), role: 'tool_result', timestamp: Date.now(), content: obj.result || obj.error || 'Error', isError: true }];
       }
@@ -203,6 +264,13 @@ export class JsonOutputParser {
 }
 
 type ParserState = 'idle' | 'assistant_text' | 'tool_use' | 'tool_result' | 'thinking' | 'user_input';
+
+const KNOWN_TOOLS = new Set([
+  'Bash', 'Edit', 'Write', 'Read', 'Glob', 'Grep', 'TodoWrite', 'Task',
+  'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet',
+  'WebFetch', 'WebSearch', 'AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode',
+  'NotebookEdit', 'Skill',
+]);
 
 // Heuristic state-machine parser for interactive terminal output from Claude CLI.
 // Detects tool calls (⏺ ToolName), results (⎿), assistant text, thinking blocks, and user input.
@@ -237,8 +305,9 @@ export class TerminalOutputParser {
     const results: ParsedMessage[] = [];
 
     // Detect tool use: ⏺ ToolName(arg) or ● ToolName
+    // Only match known tool names to avoid false positives from status line garble
     const toolMatch = line.match(/^\s*[⏺●]\s+(\w+)(?:\(([^)]*)\))?/);
-    if (toolMatch) {
+    if (toolMatch && KNOWN_TOOLS.has(toolMatch[1])) {
       results.push(...this.flush());
       const toolName = toolMatch[1];
       const toolArg = toolMatch[2] || '';
@@ -256,6 +325,15 @@ export class TerminalOutputParser {
       } else if (toolArg) {
         this.currentToolInput = { args: toolArg };
       }
+      return results;
+    }
+
+    // ⏺ followed by text that isn't a known tool = assistant text
+    const assistantBullet = line.match(/^\s*[⏺●]\s+(.*)/);
+    if (assistantBullet && assistantBullet[1].trim()) {
+      results.push(...this.flush());
+      this.state = 'assistant_text';
+      this.accum = assistantBullet[1];
       return results;
     }
 

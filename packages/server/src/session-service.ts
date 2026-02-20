@@ -52,7 +52,7 @@ function buildClaudeArgs(
     case 'interactive':
       return { command: 'claude', args: [], sendPromptAfterSpawn: true };
     case 'auto': {
-      const args = ['-p', prompt];
+      const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose'];
       if (allowedTools) {
         args.push('--allowedTools', allowedTools);
       }
@@ -61,7 +61,7 @@ function buildClaudeArgs(
     case 'yolo':
       return {
         command: 'claude',
-        args: ['-p', prompt, '--dangerously-skip-permissions'],
+        args: ['-p', prompt, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'],
         sendPromptAfterSpawn: false,
       };
     case 'plain': {
@@ -204,6 +204,9 @@ function spawnSession(params: {
   });
 
   ptyProcess.onExit(({ exitCode }) => {
+    // If already killed, killSessionProcess handled cleanup
+    if (proc.status === 'killed') return;
+
     proc.status = exitCode === 0 ? 'completed' : 'failed';
     clearInterval(proc.flushTimer);
 
@@ -233,7 +236,9 @@ function spawnSession(params: {
       if (sent) return;
       sent = true;
       try {
-        ptyProcess.write(prompt + '\r');
+        // Wrap in bracketed paste so Claude's REPL treats multi-line
+        // content as a single pasted input instead of submitting on each newline
+        ptyProcess.write('\x1b[200~' + prompt + '\x1b[201~' + '\r');
       } catch {
         // PTY may have already exited
       }
@@ -335,6 +340,8 @@ function tryRecoverSession(session: typeof schema.agentSessions.$inferSelect): b
     });
 
     ptyProcess.onExit(({ exitCode }) => {
+      if (proc.status === 'killed') return;
+
       proc.status = exitCode === 0 ? 'completed' : 'failed';
       clearInterval(proc.flushTimer);
       sendSequenced(proc, { kind: 'exit', exitCode, status: proc.status });

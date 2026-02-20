@@ -15,6 +15,8 @@ export const theme = signal<Theme>(loadSetting('pw-theme', 'system'));
 export const shortcutsEnabled = signal<boolean>(loadSetting('pw-shortcuts-enabled', true));
 export const tooltipsEnabled = signal<boolean>(loadSetting('pw-tooltips-enabled', true));
 export const showTabs = signal<boolean>(loadSetting('pw-show-tabs', true));
+export const arrowTabSwitching = signal<boolean>(loadSetting('pw-arrow-tab-switching', true));
+export const multiDigitTabs = signal<boolean>(loadSetting('pw-multi-digit-tabs', true));
 
 export function getEffectiveTheme(): 'light' | 'dark' {
   if (theme.value !== 'system') return theme.value;
@@ -55,6 +57,14 @@ effect(() => {
 
 effect(() => {
   localStorage.setItem('pw-show-tabs', JSON.stringify(showTabs.value));
+});
+
+effect(() => {
+  localStorage.setItem('pw-arrow-tab-switching', JSON.stringify(arrowTabSwitching.value));
+});
+
+effect(() => {
+  localStorage.setItem('pw-multi-digit-tabs', JSON.stringify(multiDigitTabs.value));
 });
 
 // Listen for system theme changes

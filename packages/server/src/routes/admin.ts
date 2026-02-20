@@ -1,12 +1,13 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Hono } from 'hono';
 import { ulid } from 'ulidx';
-import { eq, desc, asc, like, and, or, isNull, sql } from 'drizzle-orm';
+import { eq, desc, asc, like, and, or, isNull, sql, inArray } from 'drizzle-orm';
 import {
   feedbackListSchema,
   feedbackUpdateSchema,
+  adminFeedbackCreateSchema,
   batchOperationSchema,
   agentEndpointSchema,
   dispatchSchema,
@@ -18,6 +19,7 @@ import {
   dispatchAgentSession,
   dispatchTerminalSession,
 } from '../dispatch.js';
+import { inputSessionRemote } from '../session-service-client.js';
 import { feedbackEvents } from '../events.js';
 import { verifyAdminToken } from '../auth.js';
 
@@ -75,6 +77,38 @@ function hydrateFeedback(row: typeof schema.feedbackItems.$inferSelect, tags: st
   };
 }
 
+adminRoutes.post('/feedback', async (c) => {
+  const body = await c.req.json();
+  const parsed = adminFeedbackCreateSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: 'Validation failed', details: parsed.error.flatten() }, 400);
+  }
+
+  const now = new Date().toISOString();
+  const id = ulid();
+  const input = parsed.data;
+
+  await db.insert(schema.feedbackItems).values({
+    id,
+    type: input.type,
+    status: 'new',
+    title: input.title,
+    description: input.description,
+    appId: input.appId,
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  if (input.tags && input.tags.length > 0) {
+    await db.insert(schema.feedbackTags).values(
+      input.tags.map((tag) => ({ feedbackId: id, tag }))
+    );
+  }
+
+  feedbackEvents.emit('new', { id, appId: input.appId });
+  return c.json({ id, status: 'new', createdAt: now }, 201);
+});
+
 adminRoutes.get('/feedback', async (c) => {
   const query = feedbackListSchema.safeParse(c.req.query());
   if (!query.success) {
@@ -86,7 +120,17 @@ adminRoutes.get('/feedback', async (c) => {
 
   const conditions = [];
   if (type) conditions.push(eq(schema.feedbackItems.type, type));
-  if (status) conditions.push(eq(schema.feedbackItems.status, status));
+  if (status) {
+    const statuses = status.split(',').filter(Boolean);
+    if (statuses.length === 1) {
+      conditions.push(eq(schema.feedbackItems.status, statuses[0]));
+    } else if (statuses.length > 1) {
+      conditions.push(inArray(schema.feedbackItems.status, statuses));
+    }
+  } else {
+    // Exclude deleted items by default unless explicitly requested
+    conditions.push(sql`${schema.feedbackItems.status} != 'deleted'`);
+  }
   if (search) conditions.push(like(schema.feedbackItems.title, `%${search}%`));
   if (appId) {
     if (appId === '__unlinked__') {
@@ -369,6 +413,12 @@ adminRoutes.post('/feedback/batch', async (c) => {
         }
         break;
       case 'delete':
+        await db.update(schema.feedbackItems)
+          .set({ status: 'deleted', updatedAt: now })
+          .where(eq(schema.feedbackItems.id, id));
+        affected++;
+        break;
+      case 'permanentDelete':
         await db.delete(schema.feedbackItems).where(eq(schema.feedbackItems.id, id));
         affected++;
         break;
@@ -486,53 +536,71 @@ adminRoutes.delete('/agents/:id', async (c) => {
   return c.json({ id, deleted: true });
 });
 
-function buildDispatchPrompt(
+const DEFAULT_PROMPT_TEMPLATE = `do feedback item {{feedback.id}}
+
+Title: {{feedback.title}}
+{{feedback.description}}
+URL: {{feedback.sourceUrl}}
+
+App: {{app.name}}
+Project dir: {{app.projectDir}}
+App description: {{app.description}}
+
+{{feedback.consoleLogs}}
+{{feedback.networkErrors}}
+{{feedback.data}}
+{{instructions}}
+
+consider screenshot`;
+
+function renderPromptTemplate(
+  template: string,
   fb: FeedbackItem,
-  app: { name: string; projectDir: string; description?: string; hooks?: string[] } | null,
+  app: { name: string; projectDir: string; description?: string; [key: string]: unknown } | null,
   instructions?: string
 ): string {
-  const lines: string[] = [];
-  lines.push(`do feedback item ${fb.id}`);
-  lines.push('');
-  lines.push(`Title: ${fb.title}`);
-  if (fb.description) lines.push(`Description: ${fb.description}`);
-  if (fb.sourceUrl) lines.push(`URL: ${fb.sourceUrl}`);
-  if (fb.tags?.length) lines.push(`Tags: ${fb.tags.join(', ')}`);
-
-  if (app) {
-    lines.push('');
-    lines.push(`App: ${app.name}`);
-    if (app.projectDir) lines.push(`Project dir: ${app.projectDir}`);
-    if (app.description) lines.push(`App description: ${app.description}`);
-  }
-
+  let consoleLogs = '';
   if (fb.context?.consoleLogs?.length) {
-    lines.push('');
-    lines.push('Console logs:');
-    for (const l of fb.context.consoleLogs) {
-      lines.push(`  [${l.level.toUpperCase()}] ${l.message}`);
-    }
+    consoleLogs = 'Console logs:\n' + fb.context.consoleLogs.map(
+      (l) => `  [${l.level.toUpperCase()}] ${l.message}`
+    ).join('\n');
   }
 
+  let networkErrors = '';
   if (fb.context?.networkErrors?.length) {
-    lines.push('');
-    lines.push('Network errors:');
-    for (const e of fb.context.networkErrors) {
-      lines.push(`  ${e.method} ${e.url} → ${e.status} ${e.statusText}`);
-    }
+    networkErrors = 'Network errors:\n' + fb.context.networkErrors.map(
+      (e) => `  ${e.method} ${e.url} → ${e.status} ${e.statusText}`
+    ).join('\n');
   }
 
+  let customData = '';
   if (fb.data) {
-    lines.push('');
-    lines.push(`Custom data: ${JSON.stringify(fb.data, null, 2)}`);
+    customData = `Custom data: ${JSON.stringify(fb.data, null, 2)}`;
   }
 
-  if (instructions) {
-    lines.push('');
-    lines.push(instructions);
+  const vars: Record<string, string> = {
+    'feedback.id': fb.id,
+    'feedback.title': fb.title || '',
+    'feedback.description': fb.description || '',
+    'feedback.sourceUrl': fb.sourceUrl || '',
+    'feedback.tags': fb.tags?.join(', ') || '',
+    'feedback.consoleLogs': consoleLogs,
+    'feedback.networkErrors': networkErrors,
+    'feedback.data': customData,
+    'app.name': app?.name || '',
+    'app.projectDir': app?.projectDir || '',
+    'app.description': app?.description || '',
+    'instructions': instructions || '',
+  };
+
+  let result = template;
+  for (const [key, value] of Object.entries(vars)) {
+    result = result.replaceAll(`{{${key}}}`, value);
   }
 
-  return lines.join('\n');
+  // Clean up blank lines from empty variables (collapse 3+ newlines to 2)
+  result = result.replace(/\n{3,}/g, '\n\n');
+  return result.trim();
 }
 
 // Dispatch
@@ -639,22 +707,8 @@ adminRoutes.post('/dispatch', async (c) => {
       const cwd = app?.projectDir || process.cwd();
       const permissionProfile = (agent.permissionProfile || 'interactive') as PermissionProfile;
 
-      const prompt = buildDispatchPrompt(hydratedFeedback, app, instructions);
-
-      // Resolve tmux config: app-specific > global default
-      let tmuxConfigContent: string | undefined;
-      const appRow = appIdForCwd ? db.select().from(schema.applications)
-        .where(eq(schema.applications.id, appIdForCwd)).get() : null;
-      if (appRow?.tmuxConfigId) {
-        const config = db.select().from(schema.tmuxConfigs)
-          .where(eq(schema.tmuxConfigs.id, appRow.tmuxConfigId)).get();
-        if (config) tmuxConfigContent = config.content;
-      }
-      if (tmuxConfigContent === undefined) {
-        const defaultConfig = db.select().from(schema.tmuxConfigs)
-          .where(eq(schema.tmuxConfigs.isDefault, true)).get();
-        if (defaultConfig) tmuxConfigContent = defaultConfig.content;
-      }
+      const template = agent.promptTemplate || DEFAULT_PROMPT_TEMPLATE;
+      const prompt = renderPromptTemplate(template, hydratedFeedback, app, instructions);
 
       const { sessionId } = await dispatchAgentSession({
         feedbackId,
@@ -663,7 +717,6 @@ adminRoutes.post('/dispatch', async (c) => {
         cwd,
         permissionProfile,
         allowedTools: agent.allowedTools,
-        tmuxConfigContent,
       });
 
       // Update feedback status in the background — don't block the response
@@ -698,6 +751,11 @@ adminRoutes.post('/dispatch', async (c) => {
 
     return c.json({ dispatched: false, error: errorMsg }, 502);
   }
+});
+
+// Default prompt template
+adminRoutes.get('/default-prompt-template', (c) => {
+  return c.json({ template: DEFAULT_PROMPT_TEMPLATE });
 });
 
 // Tmux configs CRUD
@@ -752,11 +810,55 @@ adminRoutes.delete('/tmux-configs/:id', async (c) => {
   return c.json({ id, deleted: true });
 });
 
-// Legacy tmux config endpoints — delegate to default config row
+// Edit tmux config in terminal (nano/vim)
+adminRoutes.post('/tmux-configs/:id/edit-terminal', async (c) => {
+  const id = c.req.param('id');
+  const config = db.select().from(schema.tmuxConfigs).where(eq(schema.tmuxConfigs.id, id)).get();
+  if (!config) return c.json({ error: 'Not found' }, 404);
+
+  const tmpPath = `/tmp/pw-tmux-edit-${id}.conf`;
+  writeFileSync(tmpPath, config.content, 'utf-8');
+
+  const { sessionId } = await dispatchTerminalSession({ cwd: '/tmp' });
+
+  // Send editor command after shell is ready
+  setTimeout(async () => {
+    try {
+      await inputSessionRemote(sessionId, `\${EDITOR:-nano} ${tmpPath}\r`);
+    } catch (err) {
+      console.error('[admin] Failed to send editor command:', err);
+    }
+  }, 800);
+
+  return c.json({ sessionId, configId: id });
+});
+
+// Save tmux config back from temp file after terminal editing
+adminRoutes.post('/tmux-configs/:id/save-from-file', async (c) => {
+  const id = c.req.param('id');
+  const existing = db.select().from(schema.tmuxConfigs).where(eq(schema.tmuxConfigs.id, id)).get();
+  if (!existing) return c.json({ error: 'Config not found' }, 404);
+
+  const tmpPath = `/tmp/pw-tmux-edit-${id}.conf`;
+  let content: string;
+  try {
+    content = readFileSync(tmpPath, 'utf-8');
+  } catch {
+    return c.json({ error: 'Temp file not found — editor may not have saved yet' }, 404);
+  }
+
+  const now = new Date().toISOString();
+  db.update(schema.tmuxConfigs)
+    .set({ content, updatedAt: now })
+    .where(eq(schema.tmuxConfigs.id, id)).run();
+
+  try { unlinkSync(tmpPath); } catch {}
+
+  return c.json({ saved: true, content });
+});
+
+// Tmux config endpoints — read/write tmux-pw.conf file directly
 adminRoutes.get('/tmux-conf', (c) => {
-  const defaultConfig = db.select().from(schema.tmuxConfigs)
-    .where(eq(schema.tmuxConfigs.isDefault, true)).get();
-  if (defaultConfig) return c.json({ content: defaultConfig.content });
   try {
     const content = readFileSync(PW_TMUX_CONF, 'utf-8');
     return c.json({ content });
@@ -767,14 +869,6 @@ adminRoutes.get('/tmux-conf', (c) => {
 
 adminRoutes.put('/tmux-conf', async (c) => {
   const { content } = await c.req.json() as { content: string };
-  const defaultConfig = db.select().from(schema.tmuxConfigs)
-    .where(eq(schema.tmuxConfigs.isDefault, true)).get();
-  if (defaultConfig) {
-    db.update(schema.tmuxConfigs)
-      .set({ content, updatedAt: new Date().toISOString() })
-      .where(eq(schema.tmuxConfigs.id, defaultConfig.id)).run();
-    return c.json({ saved: true });
-  }
   writeFileSync(PW_TMUX_CONF, content, 'utf-8');
   return c.json({ saved: true });
 });

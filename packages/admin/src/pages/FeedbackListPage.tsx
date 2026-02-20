@@ -1,7 +1,7 @@
 import { signal, effect } from '@preact/signals';
 import { useEffect } from 'preact/hooks';
 import { api } from '../lib/api.js';
-import { navigate } from '../lib/state.js';
+import { navigate, currentRoute } from '../lib/state.js';
 import { quickDispatch, quickDispatchState, batchQuickDispatch } from '../lib/sessions.js';
 
 const items = signal<any[]>([]);
@@ -10,20 +10,26 @@ const page = signal(1);
 const totalPages = signal(0);
 const loading = signal(false);
 const filterType = signal('');
-const filterStatus = signal('');
+const filterStatuses = signal<Set<string>>(new Set());
 const searchQuery = signal('');
 const selected = signal<Set<string>>(new Set());
 const currentAppId = signal<string | null>(null);
+const showCreateForm = signal(false);
+const createTitle = signal('');
+const createDescription = signal('');
+const createType = signal('manual');
+const createTags = signal('');
+const createLoading = signal(false);
 
 const TYPES = ['', 'manual', 'ab_test', 'analytics', 'error_report', 'programmatic'];
-const STATUSES = ['', 'new', 'reviewed', 'dispatched', 'resolved', 'archived'];
+const STATUSES = ['', 'new', 'reviewed', 'dispatched', 'resolved', 'archived', 'deleted'];
 
 async function loadFeedback() {
   loading.value = true;
   try {
     const params: Record<string, string | number> = { page: page.value, limit: 20 };
     if (filterType.value) params.type = filterType.value;
-    if (filterStatus.value) params.status = filterStatus.value;
+    if (filterStatuses.value.size > 0) params.status = Array.from(filterStatuses.value).join(',');
     if (searchQuery.value) params.search = searchQuery.value;
     if (currentAppId.value) params.appId = currentAppId.value;
     const result = await api.getFeedback(params);
@@ -39,9 +45,10 @@ async function loadFeedback() {
 
 effect(() => {
   void filterType.value;
-  void filterStatus.value;
+  void filterStatuses.value;
   void page.value;
   void currentAppId.value;
+  void currentRoute.value;
   loadFeedback();
 });
 
@@ -69,10 +76,51 @@ async function batchUpdateStatus(status: string) {
 
 async function batchDelete() {
   if (selected.value.size === 0) return;
-  if (!confirm(`Delete ${selected.value.size} items?`)) return;
   await api.batchOperation({ ids: Array.from(selected.value), operation: 'delete' });
   selected.value = new Set();
   await loadFeedback();
+}
+
+async function batchPermanentDelete() {
+  if (selected.value.size === 0) return;
+  if (!confirm(`Permanently delete ${selected.value.size} items? This cannot be undone.`)) return;
+  await api.batchOperation({ ids: Array.from(selected.value), operation: 'permanentDelete' });
+  selected.value = new Set();
+  await loadFeedback();
+}
+
+async function batchRestore() {
+  if (selected.value.size === 0) return;
+  await api.batchOperation({ ids: Array.from(selected.value), operation: 'updateStatus', value: 'new' });
+  selected.value = new Set();
+  await loadFeedback();
+}
+
+async function createFeedback() {
+  if (!createTitle.value.trim() || !currentAppId.value) return;
+  createLoading.value = true;
+  try {
+    const tags = createTags.value.trim()
+      ? createTags.value.split(',').map((t) => t.trim()).filter(Boolean)
+      : undefined;
+    const result = await api.createFeedback({
+      title: createTitle.value.trim(),
+      description: createDescription.value,
+      type: createType.value,
+      appId: currentAppId.value,
+      tags,
+    });
+    showCreateForm.value = false;
+    createTitle.value = '';
+    createDescription.value = '';
+    createType.value = 'manual';
+    createTags.value = '';
+    navigate(`/app/${currentAppId.value}/feedback/${result.id}`);
+  } catch (err: any) {
+    alert('Failed to create: ' + err.message);
+  } finally {
+    createLoading.value = false;
+  }
 }
 
 function formatDate(iso: string) {
@@ -85,9 +133,14 @@ function DispatchButton({ id }: { id: string }) {
     <button
       class="btn-dispatch-quick"
       disabled={state === 'loading'}
-      onClick={(e) => {
+      onClick={async (e) => {
         e.stopPropagation();
-        quickDispatch(id);
+        await quickDispatch(id, currentAppId.value);
+        if (quickDispatchState.value[id] === 'success') {
+          items.value = items.value.map((item) =>
+            item.id === id ? { ...item, status: 'dispatched' } : item
+          );
+        }
       }}
       title="Quick dispatch to default agent"
     >
@@ -107,6 +160,7 @@ export function FeedbackListPage({ appId }: { appId: string }) {
   }
 
   useEffect(() => {
+    loadFeedback();
     const token = localStorage.getItem('pw-admin-token');
     if (!token) return;
     const es = new EventSource(`/api/v1/admin/feedback/events?token=${encodeURIComponent(token)}`);
@@ -121,18 +175,41 @@ export function FeedbackListPage({ appId }: { appId: string }) {
 
   const basePath = `/app/${appId}/feedback`;
 
+  const viewingDeleted = filterStatuses.value.has('deleted');
+
   return (
     <div>
       <div class="page-header">
         <h2>Feedback ({total.value})</h2>
         <div style="display:flex;gap:8px">
-          {selected.value.size > 0 && (
+          <button class="btn btn-sm btn-primary" onClick={() => (showCreateForm.value = !showCreateForm.value)}>
+            + New
+          </button>
+        </div>
+      </div>
+
+      {selected.value.size > 0 && (
+        <div class="selection-bar">
+          <span class="selection-bar-count">{selected.value.size} selected</span>
+          {viewingDeleted ? (
+            <>
+              <button class="btn btn-sm btn-primary" onClick={batchRestore}>
+                Restore
+              </button>
+              <button class="btn btn-sm btn-danger" onClick={batchPermanentDelete}>
+                Permanently Delete
+              </button>
+            </>
+          ) : (
             <>
               <button
                 class="btn btn-sm btn-primary"
-                onClick={() => batchQuickDispatch(Array.from(selected.value))}
+                onClick={async () => {
+                  await batchQuickDispatch(Array.from(selected.value), currentAppId.value);
+                  loadFeedback();
+                }}
               >
-                Dispatch ({selected.value.size})
+                Dispatch
               </button>
               <select
                 class="btn btn-sm"
@@ -143,17 +220,67 @@ export function FeedbackListPage({ appId }: { appId: string }) {
                 }}
               >
                 <option value="">Set status...</option>
-                {STATUSES.filter(Boolean).map((s) => (
+                {STATUSES.filter((s) => s && s !== 'deleted').map((s) => (
                   <option value={s}>{s}</option>
                 ))}
               </select>
               <button class="btn btn-sm btn-danger" onClick={batchDelete}>
-                Delete ({selected.value.size})
+                Delete
               </button>
             </>
           )}
         </div>
-      </div>
+      )}
+
+      {showCreateForm.value && (
+        <div class="detail-card" style="margin-bottom:16px">
+          <h3 style="margin-bottom:12px">New Feedback</h3>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <input
+              type="text"
+              placeholder="Title"
+              value={createTitle.value}
+              onInput={(e) => (createTitle.value = (e.target as HTMLInputElement).value)}
+              onKeyDown={(e) => e.key === 'Enter' && createFeedback()}
+              style="padding:6px 10px;font-size:14px"
+            />
+            <textarea
+              placeholder="Description (optional)"
+              value={createDescription.value}
+              onInput={(e) => (createDescription.value = (e.target as HTMLTextAreaElement).value)}
+              style="padding:6px 10px;font-size:13px;min-height:80px;resize:vertical;font-family:inherit"
+            />
+            <div style="display:flex;gap:8px;align-items:center">
+              <select
+                value={createType.value}
+                onChange={(e) => (createType.value = (e.target as HTMLSelectElement).value)}
+                style="padding:4px 8px;font-size:13px"
+              >
+                {TYPES.filter(Boolean).map((t) => (
+                  <option value={t}>{t.replace(/_/g, ' ')}</option>
+                ))}
+              </select>
+              <input
+                type="text"
+                placeholder="Tags (comma-separated)"
+                value={createTags.value}
+                onInput={(e) => (createTags.value = (e.target as HTMLInputElement).value)}
+                style="flex:1;padding:4px 8px;font-size:13px"
+              />
+            </div>
+            <div style="display:flex;gap:8px;justify-content:flex-end">
+              <button class="btn btn-sm" onClick={() => (showCreateForm.value = false)}>Cancel</button>
+              <button
+                class="btn btn-sm btn-primary"
+                disabled={!createTitle.value.trim() || createLoading.value}
+                onClick={createFeedback}
+              >
+                {createLoading.value ? 'Creating...' : 'Create'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div class="filters">
         <input
@@ -180,18 +307,26 @@ export function FeedbackListPage({ appId }: { appId: string }) {
             <option value={t}>{t.replace(/_/g, ' ')}</option>
           ))}
         </select>
-        <select
-          value={filterStatus.value}
-          onChange={(e) => {
-            filterStatus.value = (e.target as HTMLSelectElement).value;
-            page.value = 1;
-          }}
-        >
-          <option value="">All statuses</option>
-          {STATUSES.filter(Boolean).map((s) => (
-            <option value={s}>{s}</option>
-          ))}
-        </select>
+        <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
+          {STATUSES.filter(Boolean).map((s) => {
+            const active = filterStatuses.value.has(s);
+            return (
+              <button
+                key={s}
+                class={`status-filter-pill badge-${s} ${active ? 'active' : ''}`}
+                onClick={() => {
+                  const next = new Set(filterStatuses.value);
+                  if (next.has(s)) next.delete(s);
+                  else next.add(s);
+                  filterStatuses.value = next;
+                  page.value = 1;
+                }}
+              >
+                {s}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       <div class="table-wrap">

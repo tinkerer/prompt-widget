@@ -13,8 +13,8 @@ interface Props {
 
 export function SessionViewToggle({ sessionId, isActive, onExit, permissionProfile, mode }: Props) {
   return (
-    <div class="session-view-toggle" style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%' }}>
-      <div class="view-content" style={{ flex: 1, overflow: 'hidden', display: 'flex' }}>
+    <div class="session-view-toggle" style={{ display: 'flex', flexDirection: 'column', width: '100%', flex: 1, minHeight: 0 }}>
+      <div class="view-content" style={{ flex: 1, overflow: 'hidden', display: 'flex', minHeight: 0 }}>
         {mode === 'terminal' && (
           <div style={{ width: '100%', height: '100%' }}>
             <AgentTerminal sessionId={sessionId} isActive={isActive} onExit={onExit} />

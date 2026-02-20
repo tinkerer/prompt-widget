@@ -15,6 +15,7 @@ import { WIDGET_CSS } from './styles.js';
 import { installCollectors, collectContext } from './collectors.js';
 import { captureScreenshot } from './screenshot.js';
 import { SessionBridge } from './session.js';
+import { startPicker, type SelectedElementInfo } from './element-picker.js';
 
 type EventHandler = (data: unknown) => void;
 
@@ -33,6 +34,8 @@ export class PromptWidgetElement {
   private history: string[] = [];
   private historyIndex = -1;
   private currentDraft = '';
+  private selectedElement: SelectedElementInfo | null = null;
+  private pickerCleanup: (() => void) | null = null;
 
   constructor() {
     this.host = document.createElement('prompt-widget-host');
@@ -104,6 +107,7 @@ export class PromptWidgetElement {
     panel.innerHTML = `
       <button class="pw-close">&times;</button>
       <div class="pw-screenshots pw-hidden" id="pw-screenshots"></div>
+      <div id="pw-selected-element" class="pw-selected-element pw-hidden"></div>
       <div class="pw-input-area">
         <textarea class="pw-textarea" id="pw-chat-input" placeholder="What's on your mind?" rows="3" autocomplete="off"></textarea>
         <div class="pw-context-options">
@@ -115,6 +119,9 @@ export class PromptWidgetElement {
         <div class="pw-toolbar">
           <button class="pw-camera-btn" id="pw-capture-btn" title="Capture screenshot">
             <svg viewBox="0 0 24 24"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z"/><path d="M9 2 7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9zm3 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"/></svg>
+          </button>
+          <button class="pw-picker-btn" id="pw-picker-btn" title="Select an element">
+            <svg viewBox="0 0 24 24"><path d="M3 3h4V1H1v6h2V3zm0 14H1v6h6v-2H3v-4zm14 4h-4v2h6v-6h-2v4zM17 3V1h6v6h-2V3h-4zM12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0 6a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/></svg>
           </button>
           <button class="pw-send-btn" id="pw-send-btn" title="Send feedback">
             <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
@@ -131,8 +138,11 @@ export class PromptWidgetElement {
     const captureBtn = panel.querySelector('#pw-capture-btn') as HTMLButtonElement;
     const sendBtn = panel.querySelector('#pw-send-btn') as HTMLButtonElement;
 
+    const pickerBtn = panel.querySelector('#pw-picker-btn') as HTMLButtonElement;
+
     closeBtn.addEventListener('click', () => this.close());
     captureBtn.addEventListener('click', () => this.captureScreen());
+    pickerBtn.addEventListener('click', () => this.startElementPicker());
     sendBtn.addEventListener('click', () => this.handleSubmit());
 
     input.addEventListener('keydown', (e: KeyboardEvent) => {
@@ -182,7 +192,7 @@ export class PromptWidgetElement {
     const btn = this.shadow.querySelector('#pw-capture-btn') as HTMLButtonElement;
     btn.disabled = true;
 
-    const blob = await captureScreenshot();
+    const blob = await captureScreenshot({ includeWidget: this.sessionBridge.screenshotIncludeWidget });
     if (blob) {
       this.addScreenshot(blob);
     }
@@ -228,6 +238,45 @@ export class PromptWidgetElement {
       wrap.appendChild(img);
       wrap.appendChild(removeBtn);
       container.appendChild(wrap);
+    });
+  }
+
+  private startElementPicker() {
+    const panel = this.shadow.querySelector('.pw-panel') as HTMLElement;
+    if (panel) panel.style.opacity = '0.3';
+
+    this.pickerCleanup = startPicker((info) => {
+      if (panel) panel.style.opacity = '1';
+      this.pickerCleanup = null;
+      if (info) {
+        this.selectedElement = info;
+        this.renderSelectedElementChip();
+      }
+    }, this.host);
+  }
+
+  private renderSelectedElementChip() {
+    const container = this.shadow.querySelector('#pw-selected-element');
+    if (!container) return;
+
+    if (!this.selectedElement) {
+      container.classList.add('pw-hidden');
+      container.innerHTML = '';
+      return;
+    }
+
+    const el = this.selectedElement;
+    let display = el.tagName;
+    if (el.id) display += '#' + el.id;
+    const cls = el.classes.filter(c => !c.startsWith('pw-')).slice(0, 2);
+    if (cls.length) display += '.' + cls.join('.');
+
+    container.classList.remove('pw-hidden');
+    container.innerHTML = `<code>${display}</code><button class="pw-selected-element-remove" title="Remove">\u00d7</button>`;
+
+    container.querySelector('.pw-selected-element-remove')!.addEventListener('click', () => {
+      this.selectedElement = null;
+      this.renderSelectedElementChip();
     });
   }
 
@@ -413,6 +462,7 @@ export class PromptWidgetElement {
       this.historyIndex = -1;
       this.currentDraft = '';
       this.pendingScreenshots = [];
+      this.selectedElement = null;
 
       this.emit('submit', { type: 'manual', title: '', description });
       this.showFlash();
@@ -439,7 +489,7 @@ export class PromptWidgetElement {
   private async submitFeedback(opts: { type: string; title: string; description: string }, collectors?: Collector[]) {
     const context = collectContext(collectors ?? this.config.collectors);
 
-    const feedbackPayload = {
+    const feedbackPayload: Record<string, unknown> = {
       type: opts.type,
       title: opts.title,
       description: opts.description,
@@ -450,6 +500,9 @@ export class PromptWidgetElement {
       sessionId: this.getSessionId(),
       userId: this.identity?.id,
     };
+    if (this.selectedElement) {
+      feedbackPayload.data = { selectedElement: this.selectedElement };
+    }
 
     if (this.pendingScreenshots.length > 0) {
       const formData = new FormData();
@@ -526,6 +579,11 @@ export class PromptWidgetElement {
   close() {
     if (!this.isOpen) return;
     this.isOpen = false;
+    if (this.pickerCleanup) {
+      this.pickerCleanup();
+      this.pickerCleanup = null;
+    }
+    this.selectedElement = null;
     const panel = this.shadow.querySelector('.pw-panel');
     if (panel) panel.remove();
   }
@@ -540,7 +598,7 @@ export class PromptWidgetElement {
     const screenshots: Blob[] = [];
 
     if (opts.screenshot) {
-      const blob = await captureScreenshot();
+      const blob = await captureScreenshot({ includeWidget: this.sessionBridge.screenshotIncludeWidget });
       if (blob) screenshots.push(blob);
     }
 

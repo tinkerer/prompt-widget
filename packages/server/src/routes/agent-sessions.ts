@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { eq, desc, inArray, ne, and } from 'drizzle-orm';
+import { eq, desc, ne, and } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
 import { killSession } from '../agent-sessions.js';
 import { resumeAgentSession } from '../dispatch.js';
@@ -9,7 +9,6 @@ export const agentSessionRoutes = new Hono();
 agentSessionRoutes.get('/', async (c) => {
   const feedbackId = c.req.query('feedbackId');
   const includeDeleted = c.req.query('includeDeleted') === 'true';
-  const includeIds = c.req.query('include')?.split(',').filter(Boolean) || [];
 
   const selectFields = {
     session: schema.agentSessions,
@@ -37,20 +36,7 @@ agentSessionRoutes.get('/', async (c) => {
     rows = baseQuery()
       .where(where)
       .orderBy(desc(schema.agentSessions.createdAt))
-      .limit(50)
       .all();
-
-    // Ensure requested sessions are always included even if outside the limit
-    if (includeIds.length > 0) {
-      const returnedIds = new Set(rows.map((r) => r.session.id));
-      const missingIds = includeIds.filter((id) => !returnedIds.has(id));
-      if (missingIds.length > 0) {
-        const extra = baseQuery()
-          .where(inArray(schema.agentSessions.id, missingIds))
-          .all();
-        rows = [...rows, ...extra];
-      }
-    }
   }
 
   const sessions = rows.map((r) => ({
@@ -121,6 +107,24 @@ agentSessionRoutes.post('/:id/archive', async (c) => {
     .run();
 
   return c.json({ id, archived: true });
+});
+
+agentSessionRoutes.post('/:id/open-terminal', async (c) => {
+  const id = c.req.param('id');
+  const tmuxName = `pw-${id}`;
+  const { execSync } = await import('node:child_process');
+  try {
+    // Check session exists on the prompt-widget socket
+    execSync(`tmux -L prompt-widget has-session -t ${tmuxName}`, { stdio: 'pipe' });
+  } catch {
+    return c.json({ error: 'Tmux session not found' }, 404);
+  }
+  try {
+    execSync(`osascript -e 'tell application "Terminal"' -e 'activate' -e 'do script "tmux -L prompt-widget attach-session -t ${tmuxName}"' -e 'end tell'`, { stdio: 'pipe' });
+    return c.json({ ok: true, tmuxName });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
 });
 
 agentSessionRoutes.delete('/:id', async (c) => {

@@ -252,6 +252,75 @@ export const WIDGET_CSS = `
   fill: currentColor;
 }
 
+.pw-picker-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  border: none;
+  background: #334155;
+  color: #94a3b8;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+}
+
+.pw-picker-btn:hover {
+  background: #475569;
+  color: #e2e8f0;
+}
+
+.pw-picker-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+.pw-selected-element {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 10px 0;
+  padding: 4px 8px;
+  background: rgba(99, 102, 241, 0.1);
+  border: 1px solid #6366f1;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.pw-selected-element code {
+  font-family: monospace;
+  color: #c7d2fe;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pw-selected-element-remove {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255,255,255,0.1);
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.pw-selected-element-remove:hover {
+  background: rgba(255,255,255,0.2);
+  color: #e2e8f0;
+}
+
 .pw-send-btn {
   height: 32px;
   padding: 0 14px;
