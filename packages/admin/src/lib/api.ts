@@ -88,6 +88,12 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
+  spawnTerminal: (data?: { cwd?: string; appId?: string }) =>
+    request<{ sessionId: string }>('/admin/terminal', {
+      method: 'POST',
+      body: JSON.stringify(data || {}),
+    }),
+
   getApplications: () => request<any[]>('/admin/applications'),
 
   getApplication: (id: string) => request<any>(`/admin/applications/${id}`),

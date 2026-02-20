@@ -2,7 +2,7 @@ import { signal } from '@preact/signals';
 import { useEffect } from 'preact/hooks';
 import { api } from '../lib/api.js';
 import { navigate } from '../lib/state.js';
-import { allSessions, openSession, closeTab, loadAllSessions, deleteSession, permanentlyDeleteSession } from '../lib/sessions.js';
+import { allSessions, openSession, closeTab, loadAllSessions, deleteSession, permanentlyDeleteSession, spawnTerminal } from '../lib/sessions.js';
 
 const filterStatus = signal('');
 const feedbackMap = signal<Record<string, string>>({});
@@ -115,6 +115,9 @@ export function SessionsPage({ appId }: { appId?: string | null }) {
     <div>
       <div class="page-header">
         <h2>Sessions ({appFiltered.length})</h2>
+        <button class="btn btn-sm" onClick={() => spawnTerminal(appId)}>
+          Open Terminal
+        </button>
       </div>
 
       <div class="sessions-page-filters">
@@ -186,7 +189,7 @@ export function SessionsPage({ appId }: { appId?: string | null }) {
                     <span style={{ color: '#94a3b8' }}>{s.feedbackId?.slice(-8) || '—'}</span>
                   )}
                 </td>
-                <td>{agentMap.value[s.agentEndpointId] || s.agentEndpointId?.slice(-8) || '—'}</td>
+                <td>{s.permissionProfile === 'plain' ? 'Terminal' : (agentMap.value[s.agentEndpointId] || s.agentEndpointId?.slice(-8) || '—')}</td>
                 <td style={{ whiteSpace: 'nowrap' }}>{formatRelativeTime(s.startedAt || s.createdAt)}</td>
                 <td style={{ whiteSpace: 'nowrap' }}>{formatDuration(s.startedAt, s.completedAt)}</td>
                 <td>

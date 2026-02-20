@@ -30,12 +30,14 @@ export function persistPanelState() {
 export const quickDispatchState = signal<Record<string, 'idle' | 'loading' | 'success' | 'error'>>({});
 export const cachedAgents = signal<any[]>([]);
 
-export const SIDEBAR_WIDTH_EXPANDED = 220;
 export const SIDEBAR_WIDTH_COLLAPSED = 56;
+export const SIDEBAR_MIN_WIDTH = 180;
+export const SIDEBAR_MAX_WIDTH = 500;
+export const SIDEBAR_DEFAULT_WIDTH = 220;
 
 export const sidebarCollapsed = signal(localStorage.getItem('pw-sidebar-collapsed') === 'true');
-export const sidebarWidth = computed(() =>
-  sidebarCollapsed.value ? SIDEBAR_WIDTH_COLLAPSED : SIDEBAR_WIDTH_EXPANDED
+export const sidebarWidth = signal(
+  sidebarCollapsed.value ? SIDEBAR_WIDTH_COLLAPSED : loadJson('pw-sidebar-width', SIDEBAR_DEFAULT_WIDTH)
 );
 
 export const allSessions = signal<any[]>([]);
@@ -47,6 +49,15 @@ export const sessionsHeight = signal(loadJson('pw-sessions-height', 300));
 export function toggleSidebar() {
   sidebarCollapsed.value = !sidebarCollapsed.value;
   localStorage.setItem('pw-sidebar-collapsed', String(sidebarCollapsed.value));
+  sidebarWidth.value = sidebarCollapsed.value
+    ? SIDEBAR_WIDTH_COLLAPSED
+    : loadJson('pw-sidebar-width', SIDEBAR_DEFAULT_WIDTH);
+}
+
+export function setSidebarWidth(w: number) {
+  const clamped = Math.max(SIDEBAR_MIN_WIDTH, Math.min(w, SIDEBAR_MAX_WIDTH));
+  sidebarWidth.value = clamped;
+  localStorage.setItem('pw-sidebar-width', JSON.stringify(clamped));
 }
 
 export function toggleSessionsDrawer() {
@@ -149,6 +160,20 @@ export async function resumeSession(sessionId: string): Promise<string | null> {
     return newId;
   } catch (err: any) {
     console.error('Resume failed:', err.message);
+    return null;
+  }
+}
+
+export async function spawnTerminal(appId?: string | null) {
+  try {
+    const data: { appId?: string } = {};
+    if (appId && appId !== '__unlinked__') data.appId = appId;
+    const { sessionId } = await api.spawnTerminal(data);
+    openSession(sessionId);
+    loadAllSessions();
+    return sessionId;
+  } catch (err: any) {
+    console.error('Spawn terminal failed:', err.message);
     return null;
   }
 }

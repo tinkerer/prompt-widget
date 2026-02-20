@@ -84,10 +84,8 @@ export const plans = sqliteTable('plans', {
 export const agentSessions = sqliteTable('agent_sessions', {
   id: text('id').primaryKey(),
   feedbackId: text('feedback_id')
-    .notNull()
     .references(() => feedbackItems.id, { onDelete: 'cascade' }),
   agentEndpointId: text('agent_endpoint_id')
-    .notNull()
     .references(() => agentEndpoints.id, { onDelete: 'cascade' }),
   permissionProfile: text('permission_profile').notNull().default('interactive'),
   parentSessionId: text('parent_session_id'),

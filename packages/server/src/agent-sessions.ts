@@ -32,7 +32,7 @@ const launcherSessionAdmins = new Map<string, Set<WsWebSocket>>();
 
 export async function spawnAgentSession(params: {
   sessionId: string;
-  prompt: string;
+  prompt?: string;
   cwd: string;
   permissionProfile: PermissionProfile;
   allowedTools?: string | null;
@@ -109,6 +109,10 @@ export function attachAdmin(sessionId: string, ws: WsWebSocket): boolean {
         ws.send(JSON.stringify({ type: 'history', data: s.outputLog || '' }));
         if (s.status !== 'pending' && s.status !== 'running') {
           ws.send(JSON.stringify({ type: 'exit', exitCode: s.exitCode, status: s.status }));
+        } else {
+          // Session is still pending/running but we lost the bridge — close the
+          // browser WS so the terminal reconnects and gets a fresh bridge
+          try { ws.close(4010, 'Session service unavailable, reconnecting'); } catch {}
         }
       } else {
         ws.close(4004, 'Session not found');

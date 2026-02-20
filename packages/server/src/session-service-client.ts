@@ -4,7 +4,7 @@ const SESSION_SERVICE_URL = process.env.SESSION_SERVICE_URL || 'http://localhost
 
 export interface SpawnParams {
   sessionId: string;
-  prompt: string;
+  prompt?: string;
   cwd: string;
   permissionProfile: PermissionProfile;
   allowedTools?: string | null;

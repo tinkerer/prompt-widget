@@ -187,14 +187,27 @@ body {
 
 /* Resize handle between nav and sessions */
 .sidebar-resize-handle {
-  height: 4px;
+  height: 2px;
   cursor: ns-resize;
   flex-shrink: 0;
-  background: #334155;
+  background: transparent;
   transition: background 0.15s;
 }
 
 .sidebar-resize-handle:hover {
+  background: #6366f1;
+}
+
+/* Vertical resize handle on sidebar right edge */
+.sidebar-edge-handle {
+  width: 4px;
+  cursor: ew-resize;
+  flex-shrink: 0;
+  background: transparent;
+  transition: background 0.15s;
+}
+
+.sidebar-edge-handle:hover {
   background: #6366f1;
 }
 
@@ -218,11 +231,11 @@ body {
 .sidebar.collapsed .sidebar-sessions { display: none; }
 
 .sidebar-sessions-header {
-  padding: 6px 16px;
-  font-size: 11px;
+  padding: 4px 12px;
+  font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: #64748b;
+  color: #475569;
   font-weight: 600;
   cursor: pointer;
   display: flex;

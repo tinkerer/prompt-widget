@@ -60,7 +60,8 @@ export function GlobalTerminalPanel() {
             const isExited = exited.has(sid);
             const isActive = sid === activeId;
             const sess = sessionMap.get(sid);
-            const raw = sess?.feedbackTitle || sess?.agentName || `Session ${sid.slice(-6)}`;
+            const isPlain = sess?.permissionProfile === 'plain';
+            const raw = isPlain ? `Terminal ${sid.slice(-6)}` : (sess?.feedbackTitle || sess?.agentName || `Session ${sid.slice(-6)}`);
             const tabLabel = raw.length > 24 ? raw.slice(0, 24) + '\u2026' : raw;
             return (
               <button

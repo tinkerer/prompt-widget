@@ -20,6 +20,7 @@ import {
   toggleSessionsDrawer,
   sessionsHeight,
   setSessionsHeight,
+  setSidebarWidth,
 } from '../lib/sessions.js';
 
 const liveConnectionCounts = signal<Record<string, number>>({});
@@ -263,11 +264,14 @@ export function Layout({ children }: { children: ComponentChildren }) {
                       .map((s, i, arr) => {
                         const isTabbed = tabSet.has(s.id);
                         const prevTabbed = i > 0 && tabSet.has(arr[i - 1].id);
-                        const raw = s.feedbackTitle || s.agentName || `Session ${s.id.slice(-6)}`;
+                        const isPlain = s.permissionProfile === 'plain';
+                        const raw = isPlain ? `Terminal ${s.id.slice(-6)}` : (s.feedbackTitle || s.agentName || `Session ${s.id.slice(-6)}`);
                         const label = raw.length > 28 ? raw.slice(0, 28) + '\u2026' : raw;
-                        const tooltip = s.feedbackTitle
-                          ? `${s.feedbackTitle} \u2014 ${s.status}`
-                          : `${s.agentName || 'Session'} \u2014 ${s.status}`;
+                        const tooltip = isPlain
+                          ? `Terminal \u2014 ${s.status}`
+                          : s.feedbackTitle
+                            ? `${s.feedbackTitle} \u2014 ${s.status}`
+                            : `${s.agentName || 'Session'} \u2014 ${s.status}`;
                         return (
                           <div key={s.id}>
                             {i > 0 && prevTabbed && !isTabbed && (
@@ -278,9 +282,8 @@ export function Layout({ children }: { children: ComponentChildren }) {
                               onClick={() => openSession(s.id)}
                               title={tooltip}
                             >
-                              <span class={`session-status-dot ${s.status}`} />
+                              <span class={`session-status-dot ${s.status}`} title={s.status} />
                               <span class="session-label">{label}</span>
-                              <span style={{ opacity: 0.6, fontSize: '11px' }}>{s.status}</span>
                               <button
                                 class="session-delete-btn"
                                 onClick={(e) => {
@@ -302,6 +305,23 @@ export function Layout({ children }: { children: ComponentChildren }) {
           </>
         )}
       </div>
+      {!collapsed && (
+        <div
+          class="sidebar-edge-handle"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            const startX = e.clientX;
+            const startW = width;
+            const onMove = (ev: MouseEvent) => setSidebarWidth(startW + (ev.clientX - startX));
+            const onUp = () => {
+              document.removeEventListener('mousemove', onMove);
+              document.removeEventListener('mouseup', onUp);
+            };
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+          }}
+        />
+      )}
       <div class="main" style={{ paddingBottom: bottomPad ? `${bottomPad + 16}px` : undefined }}>
         {children}
       </div>

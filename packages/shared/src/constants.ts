@@ -35,7 +35,7 @@ export const DEFAULT_MODE = 'always' as const;
 export const DEFAULT_SHORTCUT = 'ctrl+shift+f';
 export const DISPATCH_MODES = ['webhook', 'headless', 'interactive'] as const;
 
-export const PERMISSION_PROFILES = ['interactive', 'auto', 'yolo'] as const;
+export const PERMISSION_PROFILES = ['interactive', 'auto', 'yolo', 'plain'] as const;
 
 export const AGENT_SESSION_STATUSES = [
   'pending',

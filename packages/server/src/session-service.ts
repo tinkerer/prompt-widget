@@ -64,6 +64,10 @@ function buildClaudeArgs(
         args: ['-p', prompt, '--dangerously-skip-permissions'],
         sendPromptAfterSpawn: false,
       };
+    case 'plain': {
+      const shell = process.env.SHELL || '/bin/bash';
+      return { command: shell, args: [], sendPromptAfterSpawn: false };
+    }
     default:
       return { command: 'claude', args: [], sendPromptAfterSpawn: true };
   }
@@ -108,12 +112,12 @@ function sendSequenced(proc: AgentProcess, content: SessionOutputData): void {
 
 function spawnSession(params: {
   sessionId: string;
-  prompt: string;
+  prompt?: string;
   cwd: string;
   permissionProfile: PermissionProfile;
   allowedTools?: string | null;
 }): void {
-  const { sessionId, prompt, cwd, permissionProfile, allowedTools } = params;
+  const { sessionId, prompt = '', cwd, permissionProfile, allowedTools } = params;
 
   if (activeSessions.has(sessionId)) {
     throw new Error(`Session ${sessionId} is already running`);
@@ -507,8 +511,11 @@ app.post('/spawn', async (c) => {
   const body = await c.req.json();
   const { sessionId, prompt, cwd, permissionProfile, allowedTools } = body;
 
-  if (!sessionId || !prompt || !cwd || !permissionProfile) {
+  if (!sessionId || !cwd || !permissionProfile) {
     return c.json({ error: 'Missing required fields' }, 400);
+  }
+  if (permissionProfile !== 'plain' && !prompt) {
+    return c.json({ error: 'Prompt required for non-plain sessions' }, 400);
   }
 
   try {

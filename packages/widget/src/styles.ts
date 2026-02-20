@@ -47,10 +47,11 @@ export const WIDGET_CSS = `
 .pw-panel {
   position: fixed;
   z-index: 2147483647;
-  width: 340px;
+  width: 360px;
   background: #1e293b;
-  border-radius: 12px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  border: 1px solid #334155;
+  border-radius: 14px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(99, 102, 241, 0.08);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -130,11 +131,94 @@ export const WIDGET_CSS = `
   background: #b91c1c;
 }
 
-.pw-input-bar {
+.pw-input-area {
+  padding: 10px;
+}
+
+.pw-textarea {
+  width: 100%;
+  min-height: 60px;
+  max-height: 150px;
+  padding: 10px 12px;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 13px;
+  font-family: inherit;
+  line-height: 1.5;
+  outline: none;
+  resize: vertical;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.pw-textarea::placeholder {
+  color: #64748b;
+}
+
+.pw-textarea:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+}
+
+.pw-context-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 8px;
+}
+
+.pw-check {
   display: flex;
   align-items: center;
-  gap: 0;
-  padding: 8px;
+  gap: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  color: #94a3b8;
+  user-select: none;
+  transition: color 0.15s;
+}
+
+.pw-check:hover {
+  color: #cbd5e1;
+}
+
+.pw-check input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border: 1px solid #475569;
+  border-radius: 3px;
+  background: #0f172a;
+  cursor: pointer;
+  position: relative;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.pw-check input[type="checkbox"]:checked {
+  background: #6366f1;
+  border-color: #6366f1;
+}
+
+.pw-check input[type="checkbox"]:checked::after {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 4px;
+  width: 4px;
+  height: 7px;
+  border: solid white;
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+}
+
+.pw-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
 }
 
 .pw-camera-btn {
@@ -163,28 +247,36 @@ export const WIDGET_CSS = `
   fill: currentColor;
 }
 
-.pw-chat-input {
-  flex: 1;
+.pw-send-btn {
   height: 32px;
-  padding: 0 10px;
-  margin-left: 6px;
-  border: 1px solid #334155;
+  padding: 0 14px;
   border-radius: 6px;
-  background: #0f172a;
-  color: #e2e8f0;
+  border: none;
+  background: #6366f1;
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   font-size: 13px;
   font-family: inherit;
-  outline: none;
-  transition: border-color 0.15s;
+  font-weight: 500;
+  transition: background 0.15s, transform 0.1s;
 }
 
-.pw-chat-input::placeholder {
-  color: #64748b;
+.pw-send-btn:hover {
+  background: #4f46e5;
 }
 
-.pw-chat-input:focus {
-  border-color: #6366f1;
-  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+.pw-send-btn:active {
+  transform: scale(0.97);
+}
+
+.pw-send-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
 }
 
 .pw-flash {

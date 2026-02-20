@@ -131,35 +131,75 @@ export async function dispatchAgentSession(params: {
       console.log(`[dispatch] Sent session ${sessionId} to launcher ${launcher.id}`);
     } catch (err) {
       console.error(`[dispatch] Failed to send to launcher, falling back to local:`, err);
-      spawnLocal(sessionId, params);
+      await spawnLocal(sessionId, params);
     }
   } else {
-    // Local spawn
-    spawnLocal(sessionId, params);
+    // Local spawn — await so errors propagate to the caller
+    await spawnLocal(sessionId, params);
   }
 
   return { sessionId };
 }
 
-function spawnLocal(sessionId: string, params: {
-  prompt: string;
+async function spawnLocal(sessionId: string, params: {
+  prompt?: string;
   cwd: string;
   permissionProfile: PermissionProfile;
   allowedTools?: string | null;
-}): void {
-  spawnAgentSession({
-    sessionId,
-    prompt: params.prompt,
-    cwd: params.cwd,
-    permissionProfile: params.permissionProfile,
-    allowedTools: params.allowedTools,
-  }).catch((err) => {
+}): Promise<void> {
+  try {
+    await spawnAgentSession({
+      sessionId,
+      prompt: params.prompt,
+      cwd: params.cwd,
+      permissionProfile: params.permissionProfile,
+      allowedTools: params.allowedTools,
+    });
+  } catch (err) {
     console.error(`Failed to spawn session ${sessionId}:`, err);
     db.update(schema.agentSessions)
       .set({ status: 'failed', completedAt: new Date().toISOString() })
       .where(eq(schema.agentSessions.id, sessionId))
       .run();
-  });
+    throw err;
+  }
+}
+
+export async function dispatchTerminalSession(params: {
+  cwd: string;
+  appId?: string | null;
+}): Promise<{ sessionId: string }> {
+  const sessionId = ulid();
+  const now = new Date().toISOString();
+
+  db.insert(schema.agentSessions)
+    .values({
+      id: sessionId,
+      feedbackId: null,
+      agentEndpointId: null,
+      permissionProfile: 'plain',
+      status: 'pending',
+      outputBytes: 0,
+      createdAt: now,
+    })
+    .run();
+
+  try {
+    await spawnAgentSession({
+      sessionId,
+      cwd: params.cwd,
+      permissionProfile: 'plain',
+    });
+  } catch (err) {
+    console.error(`Failed to spawn terminal session ${sessionId}:`, err);
+    db.update(schema.agentSessions)
+      .set({ status: 'failed', completedAt: new Date().toISOString() })
+      .where(eq(schema.agentSessions.id, sessionId))
+      .run();
+    throw err;
+  }
+
+  return { sessionId };
 }
 
 export async function resumeAgentSession(parentSessionId: string): Promise<{ sessionId: string }> {
@@ -175,6 +215,18 @@ export async function resumeAgentSession(parentSessionId: string): Promise<{ ses
 
   if (parent.status === 'running' || parent.status === 'pending') {
     throw new Error('Session is still active');
+  }
+
+  // Plain terminal sessions just spawn a new shell
+  if (parent.permissionProfile === 'plain') {
+    return dispatchTerminalSession({ cwd: process.cwd() });
+  }
+
+  if (!parent.agentEndpointId) {
+    throw new Error('Agent endpoint not found');
+  }
+  if (!parent.feedbackId) {
+    throw new Error('Original feedback not found');
   }
 
   const agent = db
@@ -293,17 +345,10 @@ IMPORTANT: The previous session may have made partial progress. Check the curren
     })
     .run();
 
-  spawnAgentSession({
-    sessionId,
+  await spawnLocal(sessionId, {
     prompt: resumePrompt,
     cwd,
     permissionProfile,
-  }).catch((err) => {
-    console.error(`Failed to resume session ${sessionId}:`, err);
-    db.update(schema.agentSessions)
-      .set({ status: 'failed', completedAt: new Date().toISOString() })
-      .where(eq(schema.agentSessions.id, sessionId))
-      .run();
   });
 
   return { sessionId };

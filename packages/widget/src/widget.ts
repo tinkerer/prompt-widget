@@ -104,29 +104,42 @@ export class PromptWidgetElement {
     panel.innerHTML = `
       <button class="pw-close">&times;</button>
       <div class="pw-screenshots pw-hidden" id="pw-screenshots"></div>
-      <div class="pw-input-bar">
-        <button class="pw-camera-btn" id="pw-capture-btn" title="Capture screenshot">
-          <svg viewBox="0 0 24 24"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z"/><path d="M9 2 7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9zm3 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"/></svg>
-        </button>
-        <input type="text" class="pw-chat-input" id="pw-chat-input" placeholder="Type your feedback..." autocomplete="off" />
+      <div class="pw-input-area">
+        <textarea class="pw-textarea" id="pw-chat-input" placeholder="What's on your mind?" rows="3" autocomplete="off"></textarea>
+        <div class="pw-context-options">
+          <label class="pw-check"><input type="checkbox" value="console" checked /><span>Console</span></label>
+          <label class="pw-check"><input type="checkbox" value="environment" checked /><span>Page info</span></label>
+          <label class="pw-check"><input type="checkbox" value="network" checked /><span>Network</span></label>
+          <label class="pw-check"><input type="checkbox" value="performance" checked /><span>Perf</span></label>
+        </div>
+        <div class="pw-toolbar">
+          <button class="pw-camera-btn" id="pw-capture-btn" title="Capture screenshot">
+            <svg viewBox="0 0 24 24"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z"/><path d="M9 2 7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9zm3 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"/></svg>
+          </button>
+          <button class="pw-send-btn" id="pw-send-btn" title="Send feedback">
+            <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+          </button>
+        </div>
       </div>
       <div id="pw-error" class="pw-error pw-hidden"></div>
     `;
 
     this.shadow.appendChild(panel);
 
-    const input = panel.querySelector('#pw-chat-input') as HTMLInputElement;
+    const input = panel.querySelector('#pw-chat-input') as HTMLTextAreaElement;
     const closeBtn = panel.querySelector('.pw-close') as HTMLButtonElement;
     const captureBtn = panel.querySelector('#pw-capture-btn') as HTMLButtonElement;
+    const sendBtn = panel.querySelector('#pw-send-btn') as HTMLButtonElement;
 
     closeBtn.addEventListener('click', () => this.close());
     captureBtn.addEventListener('click', () => this.captureScreen());
+    sendBtn.addEventListener('click', () => this.handleSubmit());
 
     input.addEventListener('keydown', (e: KeyboardEvent) => {
-      if (e.key === 'Enter') {
+      if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         this.handleSubmit();
-      } else if (e.key === 'ArrowUp') {
+      } else if (e.key === 'ArrowUp' && input.value === '') {
         e.preventDefault();
         if (this.history.length === 0) return;
         if (this.historyIndex === -1) {
@@ -136,7 +149,7 @@ export class PromptWidgetElement {
           this.historyIndex--;
         }
         input.value = this.history[this.historyIndex];
-      } else if (e.key === 'ArrowDown') {
+      } else if (e.key === 'ArrowDown' && input.value === '') {
         e.preventDefault();
         if (this.historyIndex === -1) return;
         if (this.historyIndex < this.history.length - 1) {
@@ -216,8 +229,13 @@ export class PromptWidgetElement {
     });
   }
 
+  private getCheckedCollectors(): Collector[] {
+    const checkboxes = this.shadow.querySelectorAll('.pw-context-options input[type="checkbox"]:checked');
+    return Array.from(checkboxes).map((cb) => (cb as HTMLInputElement).value as Collector);
+  }
+
   private async handleSubmit() {
-    const input = this.shadow.querySelector('#pw-chat-input') as HTMLInputElement;
+    const input = this.shadow.querySelector('#pw-chat-input') as HTMLTextAreaElement;
     const errorEl = this.shadow.querySelector('#pw-error') as HTMLElement;
     const description = input.value.trim();
 
@@ -229,7 +247,7 @@ export class PromptWidgetElement {
     input.disabled = true;
 
     try {
-      await this.submitFeedback({ type: 'manual', title: '', description });
+      await this.submitFeedback({ type: 'manual', title: '', description }, this.getCheckedCollectors());
 
       if (description) {
         this.history.push(description);
@@ -261,8 +279,8 @@ export class PromptWidgetElement {
     setTimeout(() => this.close(), 1000);
   }
 
-  private async submitFeedback(opts: { type: string; title: string; description: string }) {
-    const context = collectContext(this.config.collectors);
+  private async submitFeedback(opts: { type: string; title: string; description: string }, collectors?: Collector[]) {
+    const context = collectContext(collectors ?? this.config.collectors);
 
     const feedbackPayload = {
       type: opts.type,

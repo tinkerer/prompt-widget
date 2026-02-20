@@ -145,6 +145,42 @@ export function runMigrations() {
     }
   }
 
+  // Migration: make feedback_id and agent_endpoint_id nullable for plain terminal sessions
+  try {
+    const info = sqlite.pragma(`table_info(agent_sessions)`) as { name: string; notnull: number }[];
+    const feedbackCol = info.find(c => c.name === 'feedback_id');
+    if (feedbackCol && feedbackCol.notnull === 1) {
+      sqlite.exec(`
+        CREATE TABLE agent_sessions_new (
+          id TEXT PRIMARY KEY,
+          feedback_id TEXT REFERENCES feedback_items(id) ON DELETE CASCADE,
+          agent_endpoint_id TEXT REFERENCES agent_endpoints(id) ON DELETE CASCADE,
+          permission_profile TEXT NOT NULL DEFAULT 'interactive',
+          parent_session_id TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          pid INTEGER,
+          exit_code INTEGER,
+          output_log TEXT,
+          output_bytes INTEGER NOT NULL DEFAULT 0,
+          last_output_seq INTEGER NOT NULL DEFAULT 0,
+          last_input_seq INTEGER NOT NULL DEFAULT 0,
+          tmux_session_name TEXT,
+          launcher_id TEXT,
+          created_at TEXT NOT NULL,
+          started_at TEXT,
+          completed_at TEXT
+        );
+        INSERT INTO agent_sessions_new SELECT * FROM agent_sessions;
+        DROP TABLE agent_sessions;
+        ALTER TABLE agent_sessions_new RENAME TO agent_sessions;
+        CREATE INDEX IF NOT EXISTS idx_agent_sessions_feedback ON agent_sessions(feedback_id);
+        CREATE INDEX IF NOT EXISTS idx_agent_sessions_status ON agent_sessions(status);
+      `);
+    }
+  } catch {
+    // Migration already applied or table doesn't exist yet
+  }
+
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS pending_messages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

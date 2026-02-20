@@ -15,6 +15,7 @@ import {
   fillPromptTemplate,
   dispatchWebhook,
   dispatchAgentSession,
+  dispatchTerminalSession,
 } from '../dispatch.js';
 import type { DispatchContext } from '../dispatch.js';
 import { feedbackEvents } from '../events.js';
@@ -183,6 +184,85 @@ adminRoutes.get('/feedback/:id', async (c) => {
     .all();
 
   return c.json(hydrateFeedback(item, tags, screenshots));
+});
+
+adminRoutes.get('/feedback/:id/context', async (c) => {
+  const id = c.req.param('id');
+  const item = await db.query.feedbackItems.findFirst({
+    where: eq(schema.feedbackItems.id, id),
+  });
+
+  if (!item) {
+    return c.json({ error: 'Not found' }, 404);
+  }
+
+  const context = item.context ? JSON.parse(item.context) : null;
+  const lines: string[] = [];
+
+  lines.push(`# Feedback Context: ${id}`);
+  lines.push(`Title: ${item.title}`);
+  lines.push(`Description: ${item.description}`);
+  lines.push(`URL: ${item.sourceUrl || 'N/A'}`);
+  lines.push(`Created: ${item.createdAt}`);
+  lines.push('');
+
+  if (context?.environment) {
+    const env = context.environment;
+    lines.push('## Page Info');
+    lines.push(`URL: ${env.url}`);
+    lines.push(`Referrer: ${env.referrer || 'none'}`);
+    lines.push(`Viewport: ${env.viewport}`);
+    lines.push(`Screen: ${env.screenResolution}`);
+    lines.push(`Platform: ${env.platform}`);
+    lines.push(`Language: ${env.language}`);
+    lines.push(`User-Agent: ${env.userAgent}`);
+    lines.push(`Timestamp: ${new Date(env.timestamp).toISOString()}`);
+    lines.push('');
+  }
+
+  if (context?.consoleLogs && context.consoleLogs.length > 0) {
+    lines.push('## Console Logs');
+    for (const log of context.consoleLogs) {
+      const ts = new Date(log.timestamp).toISOString();
+      lines.push(`[${ts}] ${log.level.toUpperCase()}: ${log.message}`);
+    }
+    lines.push('');
+  }
+
+  if (context?.networkErrors && context.networkErrors.length > 0) {
+    lines.push('## Network Errors');
+    for (const err of context.networkErrors) {
+      const ts = new Date(err.timestamp).toISOString();
+      lines.push(`[${ts}] ${err.method} ${err.url} → ${err.status} ${err.statusText}`);
+    }
+    lines.push('');
+  }
+
+  if (context?.performanceTiming) {
+    const perf = context.performanceTiming;
+    lines.push('## Performance');
+    if (perf.loadTime != null) lines.push(`Load time: ${perf.loadTime.toFixed(1)}ms`);
+    if (perf.domContentLoaded != null) lines.push(`DOM content loaded: ${perf.domContentLoaded.toFixed(1)}ms`);
+    if (perf.firstContentfulPaint != null) lines.push(`First contentful paint: ${perf.firstContentfulPaint.toFixed(1)}ms`);
+    lines.push('');
+  }
+
+  const screenshots = db
+    .select()
+    .from(schema.feedbackScreenshots)
+    .where(eq(schema.feedbackScreenshots.feedbackId, id))
+    .all();
+
+  if (screenshots.length > 0) {
+    lines.push('## Screenshots');
+    for (const ss of screenshots) {
+      const baseUrl = new URL(c.req.url).origin;
+      lines.push(`- ${baseUrl}/api/v1/images/${ss.id} (${ss.mimeType}, ${ss.size} bytes)`);
+    }
+    lines.push('');
+  }
+
+  return c.text(lines.join('\n'));
 });
 
 adminRoutes.patch('/feedback/:id', async (c) => {
@@ -534,5 +614,27 @@ adminRoutes.post('/dispatch', async (c) => {
     }).where(eq(schema.feedbackItems.id, feedbackId));
 
     return c.json({ dispatched: false, error: errorMsg }, 502);
+  }
+});
+
+// Plain terminal session (no agent, no feedback)
+adminRoutes.post('/terminal', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const { cwd, appId } = body as { cwd?: string; appId?: string };
+
+  let resolvedCwd = cwd || process.cwd();
+  if (!cwd && appId) {
+    const app = await db.query.applications.findFirst({
+      where: eq(schema.applications.id, appId),
+    });
+    if (app?.projectDir) resolvedCwd = app.projectDir;
+  }
+
+  try {
+    const { sessionId } = await dispatchTerminalSession({ cwd: resolvedCwd, appId });
+    return c.json({ sessionId });
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+    return c.json({ error: errorMsg }, 500);
   }
 });
