@@ -7,7 +7,6 @@ const feedback = signal<any>(null);
 const loading = signal(true);
 const error = signal('');
 const agents = signal<any[]>([]);
-const applications = signal<any[]>([]);
 const dispatchAgentId = signal('');
 const dispatchInstructions = signal('');
 const dispatchLoading = signal(false);
@@ -27,21 +26,21 @@ async function load(id: string, appId: string | null) {
   lastLoadedId.value = id;
   currentDetailAppId = appId;
   try {
-    const [fb, agentsList, appsList] = await Promise.all([
+    const [fb, agentsList] = await Promise.all([
       api.getFeedbackById(id),
       api.getAgents(),
-      api.getApplications(),
     ]);
     feedback.value = fb;
-    applications.value = appsList;
     const effectiveAppId = appId && appId !== '__unlinked__' ? appId : fb.appId;
+    // Show all agents, but put the current app's agents first
     const appAgents = effectiveAppId
       ? agentsList.filter((a: any) => a.appId === effectiveAppId)
       : agentsList.filter((a: any) => !a.appId);
-    agents.value = appAgents;
+    const otherAgents = agentsList.filter((a: any) => !appAgents.includes(a));
+    agents.value = [...appAgents, ...otherAgents];
     const def = appAgents.find((a: any) => a.isDefault);
     if (def) dispatchAgentId.value = def.id;
-    else if (appAgents.length > 0) dispatchAgentId.value = appAgents[0].id;
+    else if (agentsList.length > 0) dispatchAgentId.value = agentsList[0].id;
     loadSessions(id);
   } catch (err: any) {
     error.value = err.message;
@@ -94,40 +93,6 @@ async function removeTag(tag: string) {
   await api.updateFeedback(fb.id, { tags });
   fb.tags = tags;
   feedback.value = { ...fb };
-}
-
-function fillPreviewTemplate(template: string, fb: any, instructions: string): string {
-  const consoleLogs = fb.context?.consoleLogs
-    ?.map((l: any) => `[${l.level.toUpperCase()}] ${l.message}`)
-    .join('\n') || '';
-  const networkErrors = fb.context?.networkErrors
-    ?.map((e: any) => `${e.method} ${e.url} -> ${e.status} ${e.statusText}`)
-    .join('\n') || '';
-
-  const selectedAgent = agents.value.find((a) => a.id === dispatchAgentId.value);
-  const app = selectedAgent?.appId ? applications.value.find((a: any) => a.id === selectedAgent.appId) : null;
-
-  const replacements: Record<string, string> = {
-    '{{feedback.title}}': fb.title || '',
-    '{{feedback.description}}': fb.description || '',
-    '{{feedback.consoleLogs}}': consoleLogs,
-    '{{feedback.networkErrors}}': networkErrors,
-    '{{feedback.data}}': fb.data ? JSON.stringify(fb.data, null, 2) : '',
-    '{{feedback.tags}}': (fb.tags || []).join(', '),
-    '{{app.name}}': app?.name || '',
-    '{{app.projectDir}}': app?.projectDir || '',
-    '{{app.hooks}}': (app?.hooks || []).join(', '),
-    '{{app.description}}': app?.description || '',
-    '{{instructions}}': instructions,
-    '{{session.url}}': fb.sourceUrl || '',
-    '{{session.viewport}}': fb.viewport || '',
-  };
-
-  let result = template;
-  for (const [key, value] of Object.entries(replacements)) {
-    result = result.replaceAll(key, value);
-  }
-  return result;
 }
 
 async function doDispatch() {
@@ -187,19 +152,16 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
   if (!fb) return <div>Not found</div>;
 
   const backPath = appId ? `/app/${appId}/feedback` : '/';
-  const selectedAgent = agents.value.find((a) => a.id === dispatchAgentId.value);
-  const agentMode = selectedAgent?.mode || 'webhook';
-  const hasTemplate = agentMode !== 'webhook' && selectedAgent?.promptTemplate;
 
   return (
     <div>
       <div class="page-header">
         <div>
-          <a href={`#${backPath}`} onClick={(e) => { e.preventDefault(); navigate(backPath); }} style="color:#64748b;text-decoration:none;font-size:13px">
+          <a href={`#${backPath}`} onClick={(e) => { e.preventDefault(); navigate(backPath); }} style="color:var(--pw-text-muted);text-decoration:none;font-size:13px">
             &larr; Back to list
           </a>
           <h2 style="margin-top:4px">{fb.title}</h2>
-          <span style="font-size:11px;color:#64748b;font-family:monospace">{fb.id}</span>
+          <span style="font-size:11px;color:var(--pw-text-muted);font-family:monospace">{fb.id}</span>
         </div>
         <div style="display:flex;gap:8px">
           <button class="btn btn-danger" onClick={deleteFeedback}>Delete</button>
@@ -235,15 +197,6 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
             {dispatchLoading.value ? 'Dispatching...' : 'Dispatch'}
           </button>
         </div>
-      )}
-
-      {hasTemplate && (
-        <details class="dispatch-preview">
-          <summary>Preview filled prompt</summary>
-          <div class="json-viewer" style="max-height:250px;font-size:11px;white-space:pre-wrap;margin-top:8px">
-            {fillPreviewTemplate(selectedAgent.promptTemplate, fb, dispatchInstructions.value)}
-          </div>
-        </details>
       )}
 
       <div class="detail-grid">
@@ -317,7 +270,7 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
               <div class="console-viewer">
                 {fb.context.consoleLogs.map((entry: any, i: number) => (
                   <div class={`console-entry ${entry.level}`} key={i}>
-                    <span style="color:#64748b">{new Date(entry.timestamp).toLocaleTimeString()}</span>{' '}
+                    <span style="color:var(--pw-text-muted)">{new Date(entry.timestamp).toLocaleTimeString()}</span>{' '}
                     [{entry.level.toUpperCase()}] {entry.message}
                   </div>
                 ))}
@@ -380,7 +333,7 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
                   <button onClick={() => removeTag(t)}>&times;</button>
                 </span>
               ))}
-              {(fb.tags || []).length === 0 && <span style="color:#94a3b8;font-size:13px">No tags</span>}
+              {(fb.tags || []).length === 0 && <span style="color:var(--pw-text-faint);font-size:13px">No tags</span>}
             </div>
             <div style="display:flex;gap:4px">
               <input

@@ -1,13 +1,18 @@
 import { ComponentChildren } from 'preact';
-import { useEffect, useRef, useCallback } from 'preact/hooks';
+import { useEffect, useRef, useCallback, useState } from 'preact/hooks';
 import { signal } from '@preact/signals';
 import { currentRoute, clearToken, navigate, selectedAppId, applications, unlinkedCount, appFeedbackCounts } from '../lib/state.js';
 import { api } from '../lib/api.js';
 import { GlobalTerminalPanel } from './GlobalTerminalPanel.js';
+import { Tooltip } from './Tooltip.js';
+import { ShortcutHelpModal } from './ShortcutHelpModal.js';
+import { registerShortcut } from '../lib/shortcuts.js';
+import { toggleTheme } from '../lib/settings.js';
 import {
   openTabs,
   panelHeight,
   panelMinimized,
+  persistPanelState,
   sidebarCollapsed,
   sidebarWidth,
   toggleSidebar,
@@ -47,6 +52,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
   const bottomPad = hasTabs ? (panelMinimized.value ? 36 : panelHeight.value) : 0;
   const collapsed = sidebarCollapsed.value;
   const width = sidebarWidth.value;
+  const [showShortcutHelp, setShowShortcutHelp] = useState(false);
 
   useEffect(() => {
     pollLiveConnections();
@@ -56,6 +62,105 @@ export function Layout({ children }: { children: ComponentChildren }) {
       clearInterval(liveInterval);
       stopSessionPolling();
     };
+  }, []);
+
+  useEffect(() => {
+    const cleanups = [
+      registerShortcut({
+        key: '?',
+        label: 'Show keyboard shortcuts',
+        category: 'General',
+        action: () => setShowShortcutHelp(true),
+      }),
+      registerShortcut({
+        key: 't',
+        label: 'Toggle theme',
+        category: 'General',
+        action: toggleTheme,
+      }),
+      registerShortcut({
+        key: 'Escape',
+        label: 'Close modal',
+        category: 'General',
+        action: () => setShowShortcutHelp(false),
+      }),
+      registerShortcut({
+        key: '\\',
+        modifiers: { ctrl: true },
+        label: 'Toggle sidebar',
+        category: 'Panels',
+        action: toggleSidebar,
+      }),
+      registerShortcut({
+        key: '`',
+        label: 'Toggle terminal panel',
+        category: 'Panels',
+        action: () => {
+          if (openTabs.value.length > 0) {
+            panelMinimized.value = !panelMinimized.value;
+            persistPanelState();
+          }
+        },
+      }),
+      registerShortcut({
+        sequence: 'g f',
+        key: 'f',
+        label: 'Go to Feedback',
+        category: 'Navigation',
+        action: () => {
+          const appId = selectedAppId.value || applications.value[0]?.id;
+          if (appId) navigate(`/app/${appId}/feedback`);
+        },
+      }),
+      registerShortcut({
+        sequence: 'g a',
+        key: 'a',
+        label: 'Go to Agents',
+        category: 'Navigation',
+        action: () => {
+          const appId = selectedAppId.value || applications.value[0]?.id;
+          if (appId) navigate(`/app/${appId}/agents`);
+        },
+      }),
+      registerShortcut({
+        sequence: 'g g',
+        key: 'g',
+        label: 'Go to Aggregate',
+        category: 'Navigation',
+        action: () => {
+          const appId = selectedAppId.value || applications.value[0]?.id;
+          if (appId) navigate(`/app/${appId}/aggregate`);
+        },
+      }),
+      registerShortcut({
+        sequence: 'g s',
+        key: 's',
+        label: 'Go to Sessions',
+        category: 'Navigation',
+        action: () => {
+          const appId = selectedAppId.value || applications.value[0]?.id;
+          if (appId) navigate(`/app/${appId}/sessions`);
+        },
+      }),
+      registerShortcut({
+        sequence: 'g l',
+        key: 'l',
+        label: 'Go to Live',
+        category: 'Navigation',
+        action: () => {
+          const appId = selectedAppId.value || applications.value[0]?.id;
+          if (appId) navigate(`/app/${appId}/live`);
+        },
+      }),
+      registerShortcut({
+        sequence: 'g p',
+        key: 'p',
+        label: 'Go to Preferences',
+        category: 'Navigation',
+        action: () => navigate('/settings/preferences'),
+      }),
+    ];
+    return () => cleanups.forEach((fn) => fn());
   }, []);
 
   const sessions = allSessions.value;
@@ -83,15 +188,18 @@ export function Layout({ children }: { children: ComponentChildren }) {
   const settingsItems = [
     { path: '/settings/applications', label: 'Applications', icon: '\u{1F4E6}' },
     { path: '/settings/getting-started', label: 'Getting Started', icon: '\u{1F4D6}' },
+    { path: '/settings/preferences', label: 'Preferences', icon: '\u2699' },
   ];
 
   return (
     <div class="layout">
       <div class={`sidebar ${collapsed ? 'collapsed' : ''}`} style={{ width: `${width}px` }}>
         <div class="sidebar-header">
-          <button class="sidebar-toggle" onClick={toggleSidebar} title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
-            &#9776;
-          </button>
+          <Tooltip text={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} shortcut="Ctrl+\" position="right">
+            <button class="sidebar-toggle" onClick={toggleSidebar}>
+              &#9776;
+            </button>
+          </Tooltip>
           <span class="sidebar-title">Prompt Widget</span>
         </div>
         <nav>
@@ -266,7 +374,6 @@ export function Layout({ children }: { children: ComponentChildren }) {
                         const prevTabbed = i > 0 && tabSet.has(arr[i - 1].id);
                         const isPlain = s.permissionProfile === 'plain';
                         const raw = isPlain ? `Terminal ${s.id.slice(-6)}` : (s.feedbackTitle || s.agentName || `Session ${s.id.slice(-6)}`);
-                        const label = raw.length > 28 ? raw.slice(0, 28) + '\u2026' : raw;
                         const tooltip = isPlain
                           ? `Terminal \u2014 ${s.status}`
                           : s.feedbackTitle
@@ -283,7 +390,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
                               title={tooltip}
                             >
                               <span class={`session-status-dot ${s.status}`} title={s.status} />
-                              <span class="session-label">{label}</span>
+                              <span class="session-label">{raw}</span>
                               <button
                                 class="session-delete-btn"
                                 onClick={(e) => {
@@ -326,6 +433,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
         {children}
       </div>
       <GlobalTerminalPanel />
+      {showShortcutHelp && <ShortcutHelpModal onClose={() => setShowShortcutHelp(false)} />}
     </div>
   );
 }

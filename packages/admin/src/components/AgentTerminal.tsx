@@ -55,6 +55,8 @@ export function AgentTerminal({ sessionId, isActive, onExit }: AgentTerminalProp
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(containerRef.current);
+    // Suppress browser context menu over the terminal (capture phase to beat xterm internals)
+    containerRef.current.addEventListener('contextmenu', (e) => e.preventDefault(), true);
     // Only fit if container is visible (non-zero size); hidden tabs fit on activation
     if (containerRef.current.offsetWidth > 0) {
       fit.fit();

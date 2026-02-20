@@ -118,10 +118,10 @@ export function ApplicationsPage() {
           <div class="agent-card" key={app.id}>
             <div class="agent-info" style="flex:1;min-width:0">
               <h4>{app.name}</h4>
-              <p style="font-size:12px;color:#94a3b8;margin:2px 0">{app.projectDir}</p>
-              {app.description && <p style="font-size:12px;color:#64748b;margin:2px 0">{app.description}</p>}
+              <p style="font-size:12px;color:var(--pw-text-faint);margin:2px 0">{app.projectDir}</p>
+              {app.description && <p style="font-size:12px;color:var(--pw-text-muted);margin:2px 0">{app.description}</p>}
               <div style="margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-                <code style="font-size:11px;background:#1e293b;padding:2px 8px;border-radius:4px;color:#e2e8f0;word-break:break-all">
+                <code style="font-size:11px;background:var(--pw-code-block-bg);padding:2px 8px;border-radius:4px;color:var(--pw-code-block-text);word-break:break-all">
                   {app.apiKey}
                 </code>
                 <button
@@ -140,7 +140,7 @@ export function ApplicationsPage() {
                 </button>
               </div>
               {app.hooks && app.hooks.length > 0 && (
-                <div style="margin-top:4px;font-size:11px;color:#94a3b8">
+                <div style="margin-top:4px;font-size:11px;color:var(--pw-text-faint)">
                   Hooks: {app.hooks.join(', ')}
                 </div>
               )}
@@ -152,7 +152,7 @@ export function ApplicationsPage() {
           </div>
         ))}
         {apps.value.length === 0 && !loading.value && (
-          <div style="text-align:center;padding:40px;color:#94a3b8">
+          <div style="text-align:center;padding:40px;color:var(--pw-text-faint)">
             No applications registered yet
           </div>
         )}
@@ -184,7 +184,7 @@ export function ApplicationsPage() {
                 required
                 style="width:100%"
               />
-              <span style="font-size:11px;color:#94a3b8">Used as --cwd for Claude Code</span>
+              <span style="font-size:11px;color:var(--pw-text-faint)">Used as --cwd for Claude Code</span>
             </div>
             <div class="form-group">
               <label>Server URL (optional)</label>
@@ -205,7 +205,7 @@ export function ApplicationsPage() {
                 placeholder="navigate, click, getState"
                 style="width:100%"
               />
-              <span style="font-size:11px;color:#94a3b8">Names of window.agent.* methods the app exposes</span>
+              <span style="font-size:11px;color:var(--pw-text-faint)">Names of window.agent.* methods the app exposes</span>
             </div>
             <div class="form-group">
               <label>Description</label>

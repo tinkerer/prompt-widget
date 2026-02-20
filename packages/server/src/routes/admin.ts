@@ -10,14 +10,11 @@ import {
 } from '@prompt-widget/shared';
 import type { FeedbackItem, PermissionProfile } from '@prompt-widget/shared';
 import { db, schema } from '../db/index.js';
-import { getSession } from '../sessions.js';
 import {
-  fillPromptTemplate,
   dispatchWebhook,
   dispatchAgentSession,
   dispatchTerminalSession,
 } from '../dispatch.js';
-import type { DispatchContext } from '../dispatch.js';
 import { feedbackEvents } from '../events.js';
 import { verifyAdminToken } from '../auth.js';
 
@@ -463,6 +460,55 @@ adminRoutes.delete('/agents/:id', async (c) => {
   return c.json({ id, deleted: true });
 });
 
+function buildDispatchPrompt(
+  fb: FeedbackItem,
+  app: { name: string; projectDir: string; description?: string; hooks?: string[] } | null,
+  instructions?: string
+): string {
+  const lines: string[] = [];
+  lines.push(`do feedback item ${fb.id}`);
+  lines.push('');
+  lines.push(`Title: ${fb.title}`);
+  if (fb.description) lines.push(`Description: ${fb.description}`);
+  if (fb.sourceUrl) lines.push(`URL: ${fb.sourceUrl}`);
+  if (fb.tags?.length) lines.push(`Tags: ${fb.tags.join(', ')}`);
+
+  if (app) {
+    lines.push('');
+    lines.push(`App: ${app.name}`);
+    if (app.projectDir) lines.push(`Project dir: ${app.projectDir}`);
+    if (app.description) lines.push(`App description: ${app.description}`);
+  }
+
+  if (fb.context?.consoleLogs?.length) {
+    lines.push('');
+    lines.push('Console logs:');
+    for (const l of fb.context.consoleLogs) {
+      lines.push(`  [${l.level.toUpperCase()}] ${l.message}`);
+    }
+  }
+
+  if (fb.context?.networkErrors?.length) {
+    lines.push('');
+    lines.push('Network errors:');
+    for (const e of fb.context.networkErrors) {
+      lines.push(`  ${e.method} ${e.url} → ${e.status} ${e.statusText}`);
+    }
+  }
+
+  if (fb.data) {
+    lines.push('');
+    lines.push(`Custom data: ${JSON.stringify(fb.data, null, 2)}`);
+  }
+
+  if (instructions) {
+    lines.push('');
+    lines.push(instructions);
+  }
+
+  return lines.join('\n');
+}
+
 // Dispatch
 adminRoutes.post('/dispatch', async (c) => {
   const body = await c.req.json();
@@ -514,16 +560,31 @@ adminRoutes.post('/dispatch', async (c) => {
     }
   }
 
-  // Find live session for prompt context
-  let sessionInfo: { url: string | null; viewport: string | null } | undefined;
-  if (feedback.sessionId) {
-    const liveSession = getSession(feedback.sessionId);
-    if (liveSession) {
-      sessionInfo = { url: liveSession.url, viewport: liveSession.viewport };
+  const mode = (agent.mode || 'webhook') as 'webhook' | 'headless' | 'interactive';
+
+  // For PTY-based sessions, check for existing active session to prevent duplicates
+  if (mode !== 'webhook') {
+    const existing = db
+      .select()
+      .from(schema.agentSessions)
+      .where(
+        and(
+          eq(schema.agentSessions.feedbackId, feedbackId),
+          sql`${schema.agentSessions.status} IN ('pending', 'running')`
+        )
+      )
+      .get();
+
+    if (existing) {
+      return c.json({
+        dispatched: true,
+        sessionId: existing.id,
+        status: 200,
+        response: `Existing active session: ${existing.id}`,
+        existing: true,
+      });
     }
   }
-
-  const mode = (agent.mode || 'webhook') as 'webhook' | 'headless' | 'interactive';
 
   try {
     if (mode === 'webhook') {
@@ -549,35 +610,15 @@ adminRoutes.post('/dispatch', async (c) => {
       });
     } else {
       // headless or interactive → PTY-based agent session
-      const baseTemplate = agent.promptTemplate || '{{feedback.title}}\n\n{{feedback.description}}\n\n{{instructions}}';
-      const template = agent.autoPlan
-        ? baseTemplate + '\n\nIMPORTANT: Before making any changes, create a detailed plan first. Present the plan and wait for approval before implementing.'
-        : baseTemplate;
-      const ctx: DispatchContext = {
-        feedback: hydratedFeedback,
-        agent: {
-          ...agent,
-          mode: agent.mode as 'webhook' | 'headless' | 'interactive',
-          appId: agent.appId || null,
-          promptTemplate: agent.promptTemplate || null,
-          authHeader: agent.authHeader || null,
-          isDefault: !!agent.isDefault,
-          permissionProfile: (agent.permissionProfile || 'interactive') as PermissionProfile,
-          allowedTools: agent.allowedTools || null,
-          autoPlan: !!agent.autoPlan,
-        },
-        app,
-        instructions,
-        session: sessionInfo,
-      };
-      const filledPrompt = fillPromptTemplate(template, ctx);
       const cwd = app?.projectDir || process.cwd();
       const permissionProfile = (agent.permissionProfile || 'interactive') as PermissionProfile;
+
+      const prompt = buildDispatchPrompt(hydratedFeedback, app, instructions);
 
       const { sessionId } = await dispatchAgentSession({
         feedbackId,
         agentEndpointId,
-        prompt: filledPrompt,
+        prompt,
         cwd,
         permissionProfile,
         allowedTools: agent.allowedTools,

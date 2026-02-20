@@ -133,7 +133,7 @@ export function SessionsPage({ appId }: { appId?: string | null }) {
           <option value="killed">Killed{statusCounts.killed ? ` (${statusCounts.killed})` : ''}</option>
           <option value="deleted">Deleted{statusCounts.deleted ? ` (${statusCounts.deleted})` : ''}</option>
         </select>
-        <span style={{ color: '#64748b', fontSize: '13px' }}>
+        <span style={{ color: 'var(--pw-text-muted)', fontSize: '13px' }}>
           {sorted.length} shown
           {statusCounts.running ? ` \u00b7 ${statusCounts.running} running` : ''}
         </span>
@@ -147,82 +147,64 @@ export function SessionsPage({ appId }: { appId?: string | null }) {
         )}
       </div>
 
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Status</th>
-              <th>Session ID</th>
-              <th>Feedback</th>
-              <th>Agent</th>
-              <th>Started</th>
-              <th>Duration</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.length === 0 && (
-              <tr><td colSpan={7} style={{ textAlign: 'center', color: '#94a3b8', padding: '24px' }}>No sessions found</td></tr>
-            )}
-            {sorted.map((s) => (
-              <tr key={s.id}>
-                <td>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span class={`session-status-dot ${s.status}`} />
-                    {s.status}
+      <div class="session-card-list">
+        {sorted.length === 0 && (
+          <div style={{ textAlign: 'center', color: 'var(--pw-text-faint)', padding: '24px' }}>No sessions found</div>
+        )}
+        {sorted.map((s) => {
+          const agentLabel = s.permissionProfile === 'plain' ? 'Terminal' : (agentMap.value[s.agentEndpointId] || s.agentEndpointId?.slice(-8) || null);
+          const feedbackTitle = feedbackMap.value[s.feedbackId];
+          return (
+            <div key={s.id} class={`session-card ${s.status}`} onClick={() => openSession(s.id)}>
+              <div class="session-card-main">
+                <span class={`session-status-dot ${s.status}`} />
+                <span class="session-card-label">
+                  {feedbackTitle || agentLabel || `Session ${s.id.slice(-8)}`}
+                </span>
+                <span class="session-card-id">{s.id.slice(-8)}</span>
+                <span class={`session-card-status ${s.status}`}>{s.status}</span>
+              </div>
+              <div class="session-card-meta">
+                {agentLabel && feedbackTitle && <span>{agentLabel}</span>}
+                <span>{formatRelativeTime(s.startedAt || s.createdAt)}</span>
+                <span>{formatDuration(s.startedAt, s.completedAt)}</span>
+                {feedbackTitle && (
+                  <span
+                    class="session-feedback-link"
+                    onClick={(e) => { e.stopPropagation(); navigate(`${feedbackPath}/${s.feedbackId}`); }}
+                  >
+                    feedback
                   </span>
-                </td>
-                <td>
-                  <span class="session-id-link" onClick={() => openSession(s.id)}>
-                    {s.id.slice(-8)}
-                  </span>
-                </td>
-                <td>
-                  {feedbackMap.value[s.feedbackId] ? (
-                    <span
-                      class="session-feedback-link"
-                      onClick={() => navigate(`${feedbackPath}/${s.feedbackId}`)}
+                )}
+              </div>
+              <div class="session-card-actions" onClick={(e) => e.stopPropagation()}>
+                {s.status !== 'deleted' && (
+                  <>
+                    <button class="btn btn-sm" onClick={() => openSession(s.id)}>
+                      {s.status === 'running' ? 'Attach' : 'View'}
+                    </button>
+                    <button
+                      class="btn btn-sm btn-danger"
+                      onClick={() => deleteSession(s.id)}
+                      title="Archive session"
                     >
-                      {feedbackMap.value[s.feedbackId]}
-                    </span>
-                  ) : (
-                    <span style={{ color: '#94a3b8' }}>{s.feedbackId?.slice(-8) || '—'}</span>
-                  )}
-                </td>
-                <td>{s.permissionProfile === 'plain' ? 'Terminal' : (agentMap.value[s.agentEndpointId] || s.agentEndpointId?.slice(-8) || '—')}</td>
-                <td style={{ whiteSpace: 'nowrap' }}>{formatRelativeTime(s.startedAt || s.createdAt)}</td>
-                <td style={{ whiteSpace: 'nowrap' }}>{formatDuration(s.startedAt, s.completedAt)}</td>
-                <td>
-                  <div style={{ display: 'flex', gap: '4px' }}>
-                    {s.status !== 'deleted' && (
-                      <>
-                        <button class="btn btn-sm" onClick={() => openSession(s.id)}>
-                          {s.status === 'running' ? 'Attach' : 'View'}
-                        </button>
-                        <button
-                          class="btn btn-sm btn-danger"
-                          onClick={() => deleteSession(s.id)}
-                          title="Archive session"
-                        >
-                          &times;
-                        </button>
-                      </>
-                    )}
-                    {s.status === 'deleted' && (
-                      <button
-                        class="btn btn-sm btn-danger"
-                        onClick={() => permanentlyDelete(s.id)}
-                        title="Permanently delete"
-                      >
-                        Delete forever
-                      </button>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                      &times;
+                    </button>
+                  </>
+                )}
+                {s.status === 'deleted' && (
+                  <button
+                    class="btn btn-sm btn-danger"
+                    onClick={() => permanentlyDelete(s.id)}
+                    title="Permanently delete"
+                  >
+                    Delete forever
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

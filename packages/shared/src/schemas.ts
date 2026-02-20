@@ -120,6 +120,7 @@ export const aggregateQuerySchema = z.object({
   appId: z.string().optional(),
   type: z.enum(FEEDBACK_TYPES).optional(),
   status: z.enum(FEEDBACK_STATUSES).optional(),
+  includeClosed: z.coerce.boolean().default(false),
   minCount: z.coerce.number().int().min(1).default(1),
 });
 

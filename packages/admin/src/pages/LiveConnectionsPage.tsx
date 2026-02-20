@@ -101,18 +101,18 @@ export function LiveConnectionsPage({ appId }: { appId?: string | null }) {
     <div>
       <div class="page-header">
         <h2>Live Connections ({filtered.length})</h2>
-        <span style={{ color: '#64748b', fontSize: '13px' }}>
+        <span style={{ color: 'var(--pw-text-muted)', fontSize: '13px' }}>
           {activeCount} active
           {idleCount > 0 && ` \u00b7 ${idleCount} idle`}
         </span>
       </div>
 
       {loading.value && filtered.length === 0 && (
-        <p style={{ color: '#94a3b8', textAlign: 'center', padding: '24px' }}>Loading...</p>
+        <p style={{ color: 'var(--pw-text-faint)', textAlign: 'center', padding: '24px' }}>Loading...</p>
       )}
 
       {!loading.value && filtered.length === 0 && (
-        <p style={{ color: '#94a3b8', textAlign: 'center', padding: '24px' }}>
+        <p style={{ color: 'var(--pw-text-faint)', textAlign: 'center', padding: '24px' }}>
           No widget connections active. Open a page with the widget embedded to see it here.
         </p>
       )}

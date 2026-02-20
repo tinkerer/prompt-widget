@@ -16,6 +16,7 @@ import {
   persistPanelState,
 } from '../lib/sessions.js';
 import { navigate, selectedAppId } from '../lib/state.js';
+import { showTabs } from '../lib/settings.js';
 
 export function GlobalTerminalPanel() {
   const tabs = openTabs.value;
@@ -55,28 +56,32 @@ export function GlobalTerminalPanel() {
     >
       <div class="terminal-resize-handle" onMouseDown={onResizeMouseDown} />
       <div class="terminal-tab-bar">
-        <div class="terminal-tabs">
-          {tabs.map((sid) => {
-            const isExited = exited.has(sid);
-            const isActive = sid === activeId;
-            const sess = sessionMap.get(sid);
-            const isPlain = sess?.permissionProfile === 'plain';
-            const raw = isPlain ? `Terminal ${sid.slice(-6)}` : (sess?.feedbackTitle || sess?.agentName || `Session ${sid.slice(-6)}`);
-            const tabLabel = raw.length > 24 ? raw.slice(0, 24) + '\u2026' : raw;
-            return (
-              <button
-                key={sid}
-                class={`terminal-tab ${isActive ? 'active' : ''}`}
-                onClick={() => openSession(sid)}
-                title={sess?.feedbackTitle || sess?.agentName || sid}
-              >
-                <span class={`status-dot ${isExited ? 'exited' : ''}`} />
-                <span>{tabLabel}</span>
-                <span class="tab-close" onClick={(e) => { e.stopPropagation(); closeTab(sid); }}>&times;</span>
-              </button>
-            );
-          })}
-        </div>
+        {showTabs.value ? (
+          <div class="terminal-tabs">
+            {tabs.map((sid) => {
+              const isExited = exited.has(sid);
+              const isActive = sid === activeId;
+              const sess = sessionMap.get(sid);
+              const isPlain = sess?.permissionProfile === 'plain';
+              const raw = isPlain ? `Terminal ${sid.slice(-6)}` : (sess?.feedbackTitle || sess?.agentName || `Session ${sid.slice(-6)}`);
+              const tabLabel = raw.length > 24 ? raw.slice(0, 24) + '\u2026' : raw;
+              return (
+                <button
+                  key={sid}
+                  class={`terminal-tab ${isActive ? 'active' : ''}`}
+                  onClick={() => openSession(sid)}
+                  title={sess?.feedbackTitle || sess?.agentName || sid}
+                >
+                  <span class={`status-dot ${isExited ? 'exited' : ''}`} />
+                  <span>{tabLabel}</span>
+                  <span class="tab-close" onClick={(e) => { e.stopPropagation(); closeTab(sid); }}>&times;</span>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div class="terminal-tabs" />
+        )}
         <div class="terminal-tab-actions">
           <button onClick={() => { panelMinimized.value = !panelMinimized.value; persistPanelState(); }}>
             {minimized ? '▲' : '▼'}
@@ -93,12 +98,12 @@ export function GlobalTerminalPanel() {
               : null;
             return (
               <div class="terminal-active-header">
-                <span style="color:#64748b;font-size:12px;font-family:monospace;margin-right:8px">{activeId.slice(-8)}</span>
+                <span style="color:var(--pw-terminal-text-dim);font-size:12px;font-family:monospace;margin-right:8px">{activeId.slice(-8)}</span>
                 {feedbackPath && (
                   <a
                     href={`#${feedbackPath}`}
                     onClick={(e) => { e.preventDefault(); navigate(feedbackPath); }}
-                    style="color:#818cf8;font-size:12px;text-decoration:none;margin-right:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                    style="color:var(--pw-primary-text);font-size:12px;text-decoration:none;margin-right:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
                     title={sess?.feedbackTitle || 'View feedback'}
                   >
                     {sess?.feedbackTitle ? (sess.feedbackTitle.length > 50 ? sess.feedbackTitle.slice(0, 50) + '\u2026' : sess.feedbackTitle) : 'View feedback'}

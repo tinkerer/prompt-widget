@@ -19,7 +19,13 @@ agentRoutes.get('/sessions/:id', (c) => {
 // Capture screenshot of the live page
 agentRoutes.post('/sessions/:id/screenshot', async (c) => {
   try {
-    const result = await sendCommand(c.req.param('id'), 'screenshot');
+    const result = await sendCommand(c.req.param('id'), 'screenshot') as { dataUrl: string; mimeType?: string };
+    if (c.req.query('format') === 'raw') {
+      const base64 = result.dataUrl.split(',')[1];
+      const buffer = Buffer.from(base64, 'base64');
+      c.header('Content-Type', result.mimeType || 'image/png');
+      return c.body(buffer);
+    }
     return c.json(result);
   } catch (err: any) {
     return c.json({ error: err.message }, err.message.includes('not found') ? 404 : 504);

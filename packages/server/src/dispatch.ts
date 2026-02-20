@@ -1,57 +1,9 @@
 import { ulid } from 'ulidx';
 import { eq } from 'drizzle-orm';
-import type { FeedbackItem, Application, AgentEndpoint, PermissionProfile, LaunchSession } from '@prompt-widget/shared';
+import type { FeedbackItem, PermissionProfile, LaunchSession } from '@prompt-widget/shared';
 import { db, schema } from './db/index.js';
 import { spawnAgentSession } from './agent-sessions.js';
 import { getLauncher, addSessionToLauncher } from './launcher-registry.js';
-
-export interface DispatchContext {
-  feedback: FeedbackItem;
-  agent: AgentEndpoint;
-  app: Application | null;
-  instructions?: string;
-  session?: {
-    url: string | null;
-    viewport: string | null;
-  };
-  serverUrl?: string;
-}
-
-export function fillPromptTemplate(template: string, ctx: DispatchContext): string {
-  const fb = ctx.feedback;
-  const app = ctx.app;
-  const session = ctx.session;
-
-  const consoleLogs = fb.context?.consoleLogs
-    ?.map((l) => `[${l.level.toUpperCase()}] ${l.message}`)
-    .join('\n') || '';
-
-  const networkErrors = fb.context?.networkErrors
-    ?.map((e) => `${e.method} ${e.url} → ${e.status} ${e.statusText}`)
-    .join('\n') || '';
-
-  const replacements: Record<string, string> = {
-    '{{feedback.title}}': fb.title,
-    '{{feedback.description}}': fb.description || '',
-    '{{feedback.consoleLogs}}': consoleLogs,
-    '{{feedback.networkErrors}}': networkErrors,
-    '{{feedback.data}}': fb.data ? JSON.stringify(fb.data, null, 2) : '',
-    '{{feedback.tags}}': fb.tags?.join(', ') || '',
-    '{{app.name}}': app?.name || '',
-    '{{app.projectDir}}': app?.projectDir || '',
-    '{{app.hooks}}': app?.hooks?.join(', ') || '',
-    '{{app.description}}': app?.description || '',
-    '{{instructions}}': ctx.instructions || '',
-    '{{session.url}}': session?.url || '',
-    '{{session.viewport}}': session?.viewport || '',
-  };
-
-  let result = template;
-  for (const [key, value] of Object.entries(replacements)) {
-    result = result.replaceAll(key, value);
-  }
-  return result;
-}
 
 export async function dispatchWebhook(
   url: string,
@@ -239,7 +191,6 @@ export async function resumeAgentSession(parentSessionId: string): Promise<{ ses
     throw new Error('Agent endpoint not found');
   }
 
-  // Look up the original feedback to rebuild the prompt with full context
   const feedbackRow = db
     .select()
     .from(schema.feedbackItems)
@@ -250,26 +201,7 @@ export async function resumeAgentSession(parentSessionId: string): Promise<{ ses
     throw new Error('Original feedback not found');
   }
 
-  const tags = db
-    .select()
-    .from(schema.feedbackTags)
-    .where(eq(schema.feedbackTags.feedbackId, feedbackRow.id))
-    .all()
-    .map((t) => t.tag);
-
-  const feedback: FeedbackItem = {
-    ...feedbackRow,
-    type: feedbackRow.type as FeedbackItem['type'],
-    status: feedbackRow.status as FeedbackItem['status'],
-    data: feedbackRow.data ? JSON.parse(feedbackRow.data) : null,
-    context: feedbackRow.context ? JSON.parse(feedbackRow.context) : null,
-    appId: feedbackRow.appId || null,
-    tags,
-    screenshots: [],
-  };
-
   let cwd = process.cwd();
-  let app: Application | null = null;
   const resumeAppId = agent.appId || feedbackRow.appId;
   if (resumeAppId) {
     const appRow = db
@@ -277,36 +209,10 @@ export async function resumeAgentSession(parentSessionId: string): Promise<{ ses
       .from(schema.applications)
       .where(eq(schema.applications.id, resumeAppId))
       .get();
-    if (appRow) {
-      app = {
-        ...appRow,
-        hooks: JSON.parse(appRow.hooks || '[]'),
-        serverUrl: appRow.serverUrl || null,
-      };
-      if (appRow.projectDir) cwd = appRow.projectDir;
-    }
+    if (appRow?.projectDir) cwd = appRow.projectDir;
   }
 
-  // Rebuild the original prompt template with feedback context
-  const baseTemplate = agent.promptTemplate || '{{feedback.title}}\n\n{{feedback.description}}\n\n{{instructions}}';
-  const template = agent.autoPlan
-    ? baseTemplate + '\n\nIMPORTANT: Before making any changes, create a detailed plan first. Present the plan and wait for approval before implementing.'
-    : baseTemplate;
-
-  const agentTyped: AgentEndpoint = {
-    ...agent,
-    mode: agent.mode as AgentEndpoint['mode'],
-    appId: agent.appId || null,
-    promptTemplate: agent.promptTemplate || null,
-    authHeader: agent.authHeader || null,
-    isDefault: !!agent.isDefault,
-    permissionProfile: (agent.permissionProfile || 'interactive') as PermissionProfile,
-    allowedTools: agent.allowedTools || null,
-    autoPlan: !!agent.autoPlan,
-  };
-
-  const ctx: DispatchContext = { feedback, agent: agentTyped, app };
-  const originalPrompt = fillPromptTemplate(template, ctx);
+  const originalPrompt = `do feedback item ${parent.feedbackId}\n\nTitle: ${feedbackRow.title}${feedbackRow.description ? `\nDescription: ${feedbackRow.description}` : ''}`;
 
   // Include a tail of the parent session's output so the agent knows what was already done
   const parentOutput = parent.outputLog || '';

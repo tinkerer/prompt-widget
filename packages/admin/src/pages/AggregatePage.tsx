@@ -360,7 +360,7 @@ function AnalyzeButton({ appId }: { appId: string }) {
         <div class="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) setShowModal(false); }}>
           <div class="modal">
             <h3>AI-Powered Feedback Analysis</h3>
-            <p style="font-size:13px;color:#64748b;margin-bottom:16px">
+            <p style="font-size:13px;color:var(--pw-text-muted);margin-bottom:16px">
               Dispatch all feedback to an agent for intelligent clustering, disambiguation, and action plan generation.
             </p>
             {!result ? (
@@ -378,7 +378,7 @@ function AnalyzeButton({ appId }: { appId: string }) {
                     ))}
                   </select>
                   {appAgents.length === 0 && (
-                    <span style="font-size:12px;color:#f59e0b;display:block;margin-top:4px">
+                    <span style="font-size:12px;color:var(--pw-warning);display:block;margin-top:4px">
                       No headless/interactive agents configured. Create one in the Agents page first.
                     </span>
                   )}
@@ -396,7 +396,7 @@ function AnalyzeButton({ appId }: { appId: string }) {
               </>
             ) : (
               <>
-                <div style="background:#d1fae5;color:#065f46;padding:12px;border-radius:8px;font-size:13px;margin-bottom:16px">
+                <div style="background:var(--pw-success-soft);color:var(--pw-success-text);padding:12px;border-radius:8px;font-size:13px;margin-bottom:16px">
                   Analysis session started. {result.itemCount} feedback items sent for clustering.
                 </div>
                 <div class="modal-actions">
@@ -464,11 +464,11 @@ export function AggregatePage({ appId }: { appId: string }) {
       </div>
 
       {loading.value && (
-        <div style="text-align:center;padding:40px;color:#94a3b8">Loading...</div>
+        <div style="text-align:center;padding:40px;color:var(--pw-text-faint)">Loading...</div>
       )}
 
       {!loading.value && clusters.value.length === 0 && (
-        <div style="text-align:center;padding:40px;color:#94a3b8">
+        <div style="text-align:center;padding:40px;color:var(--pw-text-faint)">
           No clusters found. Submit feedback items first, or lower the minimum count filter.
         </div>
       )}

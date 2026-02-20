@@ -147,6 +147,7 @@ export function runMigrations() {
 
   // Migration: make feedback_id and agent_endpoint_id nullable for plain terminal sessions
   try {
+    sqlite.exec(`DROP TABLE IF EXISTS agent_sessions_new`);
     const info = sqlite.pragma(`table_info(agent_sessions)`) as { name: string; notnull: number }[];
     const feedbackCol = info.find(c => c.name === 'feedback_id');
     if (feedbackCol && feedbackCol.notnull === 1) {
@@ -170,7 +171,20 @@ export function runMigrations() {
           started_at TEXT,
           completed_at TEXT
         );
-        INSERT INTO agent_sessions_new SELECT * FROM agent_sessions;
+        INSERT INTO agent_sessions_new (
+          id, feedback_id, agent_endpoint_id, permission_profile,
+          status, pid, exit_code, output_log, output_bytes,
+          created_at, started_at, completed_at,
+          parent_session_id, last_output_seq, last_input_seq,
+          tmux_session_name, launcher_id
+        )
+        SELECT
+          id, feedback_id, agent_endpoint_id, permission_profile,
+          status, pid, exit_code, output_log, output_bytes,
+          created_at, started_at, completed_at,
+          parent_session_id, last_output_seq, last_input_seq,
+          tmux_session_name, launcher_id
+        FROM agent_sessions;
         DROP TABLE agent_sessions;
         ALTER TABLE agent_sessions_new RENAME TO agent_sessions;
         CREATE INDEX IF NOT EXISTS idx_agent_sessions_feedback ON agent_sessions(feedback_id);

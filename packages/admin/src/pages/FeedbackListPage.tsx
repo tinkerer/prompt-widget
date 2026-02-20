@@ -232,7 +232,7 @@ export function FeedbackListPage({ appId }: { appId: string }) {
                       e.preventDefault();
                       navigate(`${basePath}/${item.id}`);
                     }}
-                    style="color:#6366f1;text-decoration:none;font-weight:500"
+                    style="color:var(--pw-primary-text);text-decoration:none;font-weight:500"
                   >
                     {item.title}
                   </a>
@@ -250,7 +250,7 @@ export function FeedbackListPage({ appId }: { appId: string }) {
                     ))}
                   </div>
                 </td>
-                <td style="white-space:nowrap;color:#64748b;font-size:13px">{formatDate(item.createdAt)}</td>
+                <td style="white-space:nowrap;color:var(--pw-text-muted);font-size:13px">{formatDate(item.createdAt)}</td>
                 <td>
                   <DispatchButton id={item.id} appId={appId} />
                 </td>

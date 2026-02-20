@@ -43,7 +43,7 @@ aggregateRoutes.get('/', async (c) => {
     return c.json({ error: 'Invalid query', details: query.error.flatten() }, 400);
   }
 
-  const { appId, type, status, minCount } = query.data;
+  const { appId, type, status, includeClosed, minCount } = query.data;
 
   const conditions: string[] = [];
   const params: unknown[] = [];
@@ -63,6 +63,8 @@ aggregateRoutes.get('/', async (c) => {
   if (status) {
     conditions.push('fi.status = ?');
     params.push(status);
+  } else if (!includeClosed) {
+    conditions.push("fi.status NOT IN ('resolved', 'archived')");
   }
 
   const whereClause = conditions.length > 0
@@ -530,6 +532,17 @@ aggregateRoutes.patch('/plans/:id', async (c) => {
   }
 
   await db.update(schema.plans).set(updates).where(eq(schema.plans.id, id));
+
+  if (parsed.data.status === 'completed') {
+    const feedbackIds: string[] = JSON.parse(existing.linkedFeedbackIds || '[]');
+    if (feedbackIds.length > 0) {
+      const placeholders = feedbackIds.map(() => '?').join(',');
+      sqlite.prepare(
+        `UPDATE feedback_items SET status = 'resolved', updated_at = ? WHERE id IN (${placeholders}) AND status NOT IN ('resolved', 'archived')`
+      ).run(now, ...feedbackIds);
+    }
+  }
+
   return c.json({ id, updated: true });
 });
 

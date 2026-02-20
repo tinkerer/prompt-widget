@@ -147,7 +147,7 @@ export function AgentsPage({ appId }: { appId: string | null }) {
               <h4>
                 {agent.name}
                 {agent.isDefault && <span class="badge badge-resolved" style="margin-left:8px">default</span>}
-                <span class="badge" style="margin-left:8px;background:#334155">{MODE_LABELS[agent.mode] || 'Webhook'}</span>
+                <span class="badge" style="margin-left:8px;background:var(--pw-bg-raised)">{MODE_LABELS[agent.mode] || 'Webhook'}</span>
                 {agent.mode !== 'webhook' && (
                   <span class="badge" style="margin-left:4px;background:#1e1b4b;color:#a5b4fc">
                     {PROFILE_LABELS[agent.permissionProfile] || 'Interactive'}
@@ -160,9 +160,9 @@ export function AgentsPage({ appId }: { appId: string | null }) {
                 )}
               </h4>
               {agent.mode === 'webhook' && <p>{agent.url}</p>}
-              {agent.authHeader && <p style="font-size:12px;color:#94a3b8">Auth header configured</p>}
+              {agent.authHeader && <p style="font-size:12px;color:var(--pw-text-faint)">Auth header configured</p>}
               {getAppName(agent.appId) && (
-                <p style="font-size:12px;color:#94a3b8">App: {getAppName(agent.appId)}</p>
+                <p style="font-size:12px;color:var(--pw-text-faint)">App: {getAppName(agent.appId)}</p>
               )}
             </div>
             <div style="display:flex;gap:8px">
@@ -172,7 +172,7 @@ export function AgentsPage({ appId }: { appId: string | null }) {
           </div>
         ))}
         {agents.value.length === 0 && !loading.value && (
-          <div style="text-align:center;padding:40px;color:#94a3b8">
+          <div style="text-align:center;padding:40px;color:var(--pw-text-faint)">
             No agent endpoints configured yet
           </div>
         )}
@@ -260,7 +260,7 @@ export function AgentsPage({ appId }: { appId: string | null }) {
                     placeholder={'{{feedback.title}}\n\n{{feedback.description}}\n\n{{instructions}}'}
                     style="width:100%;min-height:120px;font-family:monospace;font-size:12px"
                   />
-                  <span style="font-size:11px;color:#94a3b8">
+                  <span style="font-size:11px;color:var(--pw-text-faint)">
                     Variables: {'{{feedback.title}}'}, {'{{feedback.description}}'}, {'{{feedback.consoleLogs}}'}, {'{{feedback.networkErrors}}'}, {'{{feedback.data}}'}, {'{{feedback.tags}}'}, {'{{app.name}}'}, {'{{app.projectDir}}'}, {'{{app.hooks}}'}, {'{{app.description}}'}, {'{{instructions}}'}, {'{{session.url}}'}, {'{{session.viewport}}'}
                   </span>
                 </div>
@@ -280,7 +280,7 @@ export function AgentsPage({ appId }: { appId: string | null }) {
                       </label>
                     ))}
                   </div>
-                  <span style="font-size:11px;color:#94a3b8;margin-top:4px;display:block">
+                  <span style="font-size:11px;color:var(--pw-text-faint);margin-top:4px;display:block">
                     {formPermissionProfile.value === 'interactive' && 'Admin watches and approves all tool uses in real-time.'}
                     {formPermissionProfile.value === 'auto' && 'Pre-approved tools run automatically; admin sees output and handles remaining prompts.'}
                     {formPermissionProfile.value === 'yolo' && 'Fully autonomous — skips all permission checks. Use only in sandboxed environments.'}
@@ -295,13 +295,13 @@ export function AgentsPage({ appId }: { appId: string | null }) {
                       placeholder={'Edit,Read,Bash(git *)'}
                       style="width:100%;min-height:60px;font-family:monospace;font-size:12px"
                     />
-                    <span style="font-size:11px;color:#94a3b8">
+                    <span style="font-size:11px;color:var(--pw-text-faint)">
                       Comma-separated list of tools to auto-approve. e.g. Edit,Read,Write,Bash(git *),Bash(npm run *)
                     </span>
                   </div>
                 )}
                 {formPermissionProfile.value === 'yolo' && (
-                  <div style="background:#7f1d1d;color:#fecaca;padding:8px 12px;border-radius:6px;font-size:12px;margin-top:-8px">
+                  <div style="background:var(--pw-danger-border);color:#fecaca;padding:8px 12px;border-radius:6px;font-size:12px;margin-top:-8px">
                     Warning: YOLO mode skips ALL permission checks. The agent can execute any command, edit any file, and access any resource. Only use in sandboxed/Docker environments.
                   </div>
                 )}
@@ -314,7 +314,7 @@ export function AgentsPage({ appId }: { appId: string | null }) {
                     />
                     Auto-plan
                   </label>
-                  <span style="font-size:11px;color:#94a3b8;margin-top:4px;display:block">
+                  <span style="font-size:11px;color:var(--pw-text-faint);margin-top:4px;display:block">
                     Agent creates a plan and waits for approval before implementing. Resumed sessions continue with the plan context.
                   </span>
                 </div>
