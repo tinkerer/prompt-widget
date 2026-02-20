@@ -1,5 +1,12 @@
 export type MessageRole = 'assistant' | 'tool_use' | 'tool_result' | 'user_input' | 'system' | 'thinking';
 
+export interface TokenUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+}
+
 export interface ParsedMessage {
   id: string;
   role: MessageRole;
@@ -8,6 +15,8 @@ export interface ParsedMessage {
   toolInput?: Record<string, unknown>;
   content: string;
   isError?: boolean;
+  model?: string;
+  usage?: TokenUsage;
 }
 
 let nextId = 0;
@@ -27,6 +36,11 @@ function stripAnsi(s: string): string {
 export class JsonOutputParser {
   private buffer = '';
   private messages: ParsedMessage[] = [];
+  private currentModel = '';
+  private currentUsage: TokenUsage = {};
+
+  // Track in-progress streaming blocks by index
+  private activeBlocks: Map<number, { id: string; type: string; toolName?: string; textAccum: string; jsonAccum: string; thinkingAccum: string }> = new Map();
 
   feed(chunk: string): ParsedMessage[] {
     this.buffer += chunk;
@@ -41,8 +55,8 @@ export class JsonOutputParser {
 
       try {
         const obj = JSON.parse(trimmed);
-        const msg = this.parseJsonEvent(obj);
-        if (msg) {
+        const msgs = this.parseJsonEvent(obj);
+        for (const msg of msgs) {
           this.messages.push(msg);
           newMessages.push(msg);
         }
@@ -54,51 +68,133 @@ export class JsonOutputParser {
     return newMessages;
   }
 
-  private parseJsonEvent(obj: any): ParsedMessage | null {
+  private parseJsonEvent(obj: any): ParsedMessage[] {
     const type = obj.type;
 
-    if (type === 'assistant' && obj.message?.content) {
-      for (const block of obj.message.content) {
-        if (block.type === 'text') {
-          return { id: genId(), role: 'assistant', timestamp: Date.now(), content: block.text };
-        }
-        if (block.type === 'tool_use') {
-          return {
-            id: genId(),
-            role: 'tool_use',
-            timestamp: Date.now(),
-            toolName: block.name,
-            toolInput: block.input,
-            content: JSON.stringify(block.input, null, 2),
-          };
-        }
+    // message_start: extract model
+    if (type === 'message_start' && obj.message) {
+      if (obj.message.model) this.currentModel = obj.message.model;
+      if (obj.message.usage) {
+        this.currentUsage = { ...obj.message.usage };
       }
+      return [];
     }
 
-    if (type === 'content_block_start' && obj.content_block) {
-      const block = obj.content_block;
-      if (block.type === 'tool_use') {
-        return {
-          id: genId(),
-          role: 'tool_use',
-          timestamp: Date.now(),
-          toolName: block.name,
-          toolInput: {},
-          content: '',
+    // message_delta: extract usage stats
+    if (type === 'message_delta') {
+      if (obj.usage) {
+        this.currentUsage = {
+          ...this.currentUsage,
+          output_tokens: obj.usage.output_tokens || this.currentUsage.output_tokens,
         };
       }
+      return [];
     }
 
+    // Non-streaming assistant message (complete content blocks)
+    if (type === 'assistant' && obj.message?.content) {
+      const results: ParsedMessage[] = [];
+      const model = obj.message?.model || this.currentModel;
+      const usage = obj.message?.usage || undefined;
+
+      for (const block of obj.message.content) {
+        if (block.type === 'text') {
+          results.push({ id: genId(), role: 'assistant', timestamp: Date.now(), content: block.text, model, usage });
+        } else if (block.type === 'tool_use') {
+          results.push({
+            id: genId(), role: 'tool_use', timestamp: Date.now(),
+            toolName: block.name, toolInput: block.input,
+            content: JSON.stringify(block.input, null, 2), model,
+          });
+        } else if (block.type === 'thinking') {
+          results.push({ id: genId(), role: 'thinking', timestamp: Date.now(), content: block.thinking || '', model });
+        }
+      }
+      return results;
+    }
+
+    // content_block_start: begin streaming a block
+    if (type === 'content_block_start' && obj.content_block) {
+      const block = obj.content_block;
+      const idx = obj.index ?? this.activeBlocks.size;
+      const id = genId();
+
+      if (block.type === 'tool_use') {
+        this.activeBlocks.set(idx, { id, type: 'tool_use', toolName: block.name, textAccum: '', jsonAccum: '', thinkingAccum: '' });
+      } else if (block.type === 'text') {
+        this.activeBlocks.set(idx, { id, type: 'text', textAccum: '', jsonAccum: '', thinkingAccum: '' });
+      } else if (block.type === 'thinking') {
+        this.activeBlocks.set(idx, { id, type: 'thinking', textAccum: '', jsonAccum: '', thinkingAccum: '' });
+      }
+      return [];
+    }
+
+    // content_block_delta: accumulate streaming data
+    if (type === 'content_block_delta') {
+      const idx = obj.index ?? 0;
+      const active = this.activeBlocks.get(idx);
+      if (!active) return [];
+
+      const delta = obj.delta;
+      if (!delta) return [];
+
+      if (delta.type === 'text_delta' && delta.text) {
+        active.textAccum += delta.text;
+      } else if (delta.type === 'input_json_delta' && delta.partial_json) {
+        active.jsonAccum += delta.partial_json;
+      } else if (delta.type === 'thinking_delta' && delta.thinking) {
+        active.thinkingAccum += delta.thinking;
+      }
+      return [];
+    }
+
+    // content_block_stop: finalize block into a message
+    if (type === 'content_block_stop') {
+      const idx = obj.index ?? 0;
+      const active = this.activeBlocks.get(idx);
+      if (!active) return [];
+
+      this.activeBlocks.delete(idx);
+      const model = this.currentModel || undefined;
+
+      if (active.type === 'text' && active.textAccum) {
+        return [{
+          id: active.id, role: 'assistant', timestamp: Date.now(),
+          content: active.textAccum, model,
+          usage: Object.keys(this.currentUsage).length > 0 ? { ...this.currentUsage } : undefined,
+        }];
+      }
+
+      if (active.type === 'tool_use') {
+        let toolInput: Record<string, unknown> = {};
+        if (active.jsonAccum) {
+          try { toolInput = JSON.parse(active.jsonAccum); } catch { /* partial JSON */ }
+        }
+        return [{
+          id: active.id, role: 'tool_use', timestamp: Date.now(),
+          toolName: active.toolName, toolInput,
+          content: active.jsonAccum || '', model,
+        }];
+      }
+
+      if (active.type === 'thinking' && active.thinkingAccum) {
+        return [{ id: active.id, role: 'thinking', timestamp: Date.now(), content: active.thinkingAccum, model }];
+      }
+
+      return [];
+    }
+
+    // Tool result events
     if (type === 'result') {
       if (obj.subtype === 'error_message' || obj.is_error) {
-        return { id: genId(), role: 'tool_result', timestamp: Date.now(), content: obj.result || obj.error || 'Error', isError: true };
+        return [{ id: genId(), role: 'tool_result', timestamp: Date.now(), content: obj.result || obj.error || 'Error', isError: true }];
       }
       if (obj.result) {
-        return { id: genId(), role: 'tool_result', timestamp: Date.now(), content: obj.result };
+        return [{ id: genId(), role: 'tool_result', timestamp: Date.now(), content: obj.result }];
       }
     }
 
-    return null;
+    return [];
   }
 
   getMessages(): ParsedMessage[] {

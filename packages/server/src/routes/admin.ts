@@ -548,9 +548,9 @@ adminRoutes.post('/dispatch', async (c) => {
 
   const hydratedFeedback = hydrateFeedback(feedback, tags, screenshots);
 
-  // Look up associated application (agent's app takes priority, then feedback's app)
+  // Look up associated application from the feedback item
   let app = null;
-  const appIdForCwd = agent.appId || feedback.appId;
+  const appIdForCwd = feedback.appId;
   if (appIdForCwd) {
     const appRow = await db.query.applications.findFirst({
       where: eq(schema.applications.id, appIdForCwd),

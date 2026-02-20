@@ -191,28 +191,11 @@ export async function ensureAgentsLoaded(): Promise<any[]> {
   return agentsLoading;
 }
 
-export async function quickDispatch(feedbackId: string, appId?: string | null) {
+export async function quickDispatch(feedbackId: string) {
   quickDispatchState.value = { ...quickDispatchState.value, [feedbackId]: 'loading' };
   try {
     const agents = await ensureAgentsLoaded();
-
-    // Resolve appId: use the feedback item's own appId if the caller didn't provide one
-    let effectiveAppId = appId;
-    if (!effectiveAppId || effectiveAppId === '__unlinked__') {
-      try {
-        const fb = await api.getFeedbackById(feedbackId);
-        effectiveAppId = fb.appId;
-      } catch { /* fall through */ }
-    }
-
-    // Find default agent for the feedback's app
-    const appAgents = effectiveAppId
-      ? agents.filter((a: any) => a.appId === effectiveAppId)
-      : [];
-    const defaultAgent = appAgents.find((a: any) => a.isDefault)
-      || appAgents[0]
-      || agents.find((a: any) => a.isDefault)
-      || agents[0];
+    const defaultAgent = agents.find((a: any) => a.isDefault) || agents[0];
     if (!defaultAgent) {
       quickDispatchState.value = { ...quickDispatchState.value, [feedbackId]: 'error' };
       setTimeout(() => {
@@ -233,7 +216,7 @@ export async function quickDispatch(feedbackId: string, appId?: string | null) {
   }, 2000);
 }
 
-export async function batchQuickDispatch(feedbackIds: string[], appId?: string | null) {
+export async function batchQuickDispatch(feedbackIds: string[]) {
   await ensureAgentsLoaded();
-  await Promise.all(feedbackIds.map((id) => quickDispatch(id, appId)));
+  await Promise.all(feedbackIds.map((id) => quickDispatch(id)));
 }

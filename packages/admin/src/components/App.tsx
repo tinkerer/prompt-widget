@@ -54,7 +54,9 @@ export function App() {
     } else if (parsed.sub === 'feedback') {
       page = <FeedbackListPage appId={parsed.appId} />;
     } else if (parsed.sub === 'agents') {
-      page = <AgentsPage appId={parsed.appId} />;
+      // Legacy per-app agents route — redirect to global agents
+      navigate('/settings/agents');
+      return null;
     } else if (parsed.sub === 'sessions') {
       page = <SessionsPage appId={parsed.appId} />;
     } else if (parsed.sub === 'aggregate') {
@@ -64,6 +66,8 @@ export function App() {
     } else {
       page = <FeedbackListPage appId={parsed.appId} />;
     }
+  } else if (route === '/settings/agents') {
+    page = <AgentsPage />;
   } else if (route === '/settings/applications') {
     selectedAppId.value = null;
     page = <ApplicationsPage />;

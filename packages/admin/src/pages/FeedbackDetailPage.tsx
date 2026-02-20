@@ -31,14 +31,8 @@ async function load(id: string, appId: string | null) {
       api.getAgents(),
     ]);
     feedback.value = fb;
-    const effectiveAppId = appId && appId !== '__unlinked__' ? appId : fb.appId;
-    // Show all agents, but put the current app's agents first
-    const appAgents = effectiveAppId
-      ? agentsList.filter((a: any) => a.appId === effectiveAppId)
-      : agentsList.filter((a: any) => !a.appId);
-    const otherAgents = agentsList.filter((a: any) => !appAgents.includes(a));
-    agents.value = [...appAgents, ...otherAgents];
-    const def = appAgents.find((a: any) => a.isDefault);
+    agents.value = agentsList;
+    const def = agentsList.find((a: any) => a.isDefault);
     if (def) dispatchAgentId.value = def.id;
     else if (agentsList.length > 0) dispatchAgentId.value = agentsList[0].id;
     loadSessions(id);
@@ -160,8 +154,10 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
           <a href={`#${backPath}`} onClick={(e) => { e.preventDefault(); navigate(backPath); }} style="color:var(--pw-text-muted);text-decoration:none;font-size:13px">
             &larr; Back to list
           </a>
-          <h2 style="margin-top:4px">{fb.title}</h2>
-          <span style="font-size:11px;color:var(--pw-text-muted);font-family:monospace">{fb.id}</span>
+          <h2 style="margin-top:4px">
+            <code style="font-size:14px;color:var(--pw-text-faint);background:var(--pw-code-block-bg);padding:2px 6px;border-radius:4px;margin-right:8px;cursor:pointer" title={`Click to copy: ${fb.id}`} onClick={() => navigator.clipboard.writeText(fb.id)}>{fb.id.slice(-6)}</code>
+            {fb.title}
+          </h2>
         </div>
         <div style="display:flex;gap:8px">
           <button class="btn btn-danger" onClick={deleteFeedback}>Delete</button>
@@ -177,7 +173,7 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
           >
             {agents.value.map((a) => (
               <option value={a.id}>
-                {a.name} {a.isDefault ? '(default)' : ''} [{a.mode || 'webhook'}]
+                {a.name}{a.isDefault ? ' (default)' : ''}
               </option>
             ))}
           </select>

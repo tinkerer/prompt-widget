@@ -26,6 +26,7 @@ export function AgentTerminal({ sessionId, isActive, onExit }: AgentTerminalProp
 
     const term = new Terminal({
       cursorBlink: true,
+      rightClickSelectsWord: false,
       fontSize: 13,
       fontFamily: "'SF Mono', Monaco, 'Cascadia Code', monospace",
       theme: {
@@ -55,8 +56,11 @@ export function AgentTerminal({ sessionId, isActive, onExit }: AgentTerminalProp
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(containerRef.current);
-    // Suppress browser context menu over the terminal (capture phase to beat xterm internals)
-    containerRef.current.addEventListener('contextmenu', (e) => e.preventDefault(), true);
+    // Suppress browser context menu but let xterm process right-click first for tmux menus
+    const xtermScreen = containerRef.current.querySelector('.xterm-screen');
+    if (xtermScreen) {
+      xtermScreen.addEventListener('contextmenu', (e) => e.preventDefault());
+    }
     // Only fit if container is visible (non-zero size); hidden tabs fit on activation
     if (containerRef.current.offsetWidth > 0) {
       fit.fit();

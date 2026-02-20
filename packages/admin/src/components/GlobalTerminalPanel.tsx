@@ -1,5 +1,6 @@
 import { useRef, useCallback } from 'preact/hooks';
-import { SessionViewToggle } from './SessionViewToggle.js';
+import { signal } from '@preact/signals';
+import { SessionViewToggle, type ViewMode } from './SessionViewToggle.js';
 import {
   openTabs,
   activeTabId,
@@ -17,6 +18,28 @@ import {
 } from '../lib/sessions.js';
 import { navigate, selectedAppId } from '../lib/state.js';
 import { showTabs } from '../lib/settings.js';
+import { api } from '../lib/api.js';
+
+const viewModes = signal<Record<string, ViewMode>>({});
+
+function getViewMode(sessionId: string): ViewMode {
+  return viewModes.value[sessionId] || 'terminal';
+}
+
+function setViewMode(sessionId: string, mode: ViewMode) {
+  viewModes.value = { ...viewModes.value, [sessionId]: mode };
+}
+
+async function resolveSession(sessionId: string, feedbackId?: string) {
+  await killSession(sessionId);
+  if (feedbackId) {
+    try {
+      await api.updateFeedback(feedbackId, { status: 'resolved' });
+    } catch (err: any) {
+      console.error('Resolve feedback failed:', err.message);
+    }
+  }
+}
 
 export function GlobalTerminalPanel() {
   const tabs = openTabs.value;
@@ -51,38 +74,19 @@ export function GlobalTerminalPanel() {
 
   const hasTabs = showTabs.value;
   const toggleMinimized = () => { panelMinimized.value = !panelMinimized.value; persistPanelState(); };
+  const activeSess = activeId ? sessionMap.get(activeId) : null;
+  const appId = selectedAppId.value;
+  const feedbackPath = activeSess?.feedbackId
+    ? appId ? `/app/${appId}/feedback/${activeSess.feedbackId}` : `/feedback/${activeSess.feedbackId}`
+    : null;
+  const activeViewMode = activeId ? getViewMode(activeId) : 'terminal';
+  const isActiveExited = activeId ? exited.has(activeId) : false;
 
-  const activeHeader = activeId && (() => {
-    const sess = sessionMap.get(activeId);
-    const appId = selectedAppId.value;
-    const feedbackPath = sess?.feedbackId
-      ? appId ? `/app/${appId}/feedback/${sess.feedbackId}` : `/feedback/${sess.feedbackId}`
-      : null;
-    return (
-      <div class="terminal-active-header">
-        <span style="color:var(--pw-terminal-text-dim);font-size:12px;font-family:monospace;margin-right:8px">{activeId.slice(-8)}</span>
-        {feedbackPath && (
-          <a
-            href={`#${feedbackPath}`}
-            onClick={(e) => { e.preventDefault(); navigate(feedbackPath); }}
-            style="color:var(--pw-primary-text);font-size:12px;text-decoration:none;margin-right:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-            title={sess?.feedbackTitle || 'View feedback'}
-          >
-            {sess?.feedbackTitle ? (sess.feedbackTitle.length > 50 ? sess.feedbackTitle.slice(0, 50) + '\u2026' : sess.feedbackTitle) : 'View feedback'}
-          </a>
-        )}
-        {!feedbackPath && <span style="margin-right:auto" />}
-        {exited.has(activeId) ? (
-          <button class="resume-btn" onClick={() => resumeSession(activeId)}>Resume</button>
-        ) : (
-          <button class="kill-btn" onClick={() => killSession(activeId)}>Kill</button>
-        )}
-        <button class="terminal-collapse-btn" onClick={toggleMinimized}>
-          {minimized ? '▲' : '▼'}
-        </button>
-      </div>
-    );
-  })();
+  const collapseBtn = (
+    <button class="terminal-collapse-btn" onClick={toggleMinimized}>
+      {minimized ? '\u25B2' : '\u25BC'}
+    </button>
+  );
 
   return (
     <div
@@ -114,9 +118,51 @@ export function GlobalTerminalPanel() {
               );
             })}
           </div>
+          <div class="terminal-tab-actions">
+            {collapseBtn}
+          </div>
         </div>
       )}
-      {activeHeader}
+      <div class="terminal-active-header">
+        {activeId && (
+          <>
+            <span style="color:var(--pw-terminal-text-dim);font-size:12px;font-family:monospace;margin-right:8px">{activeId.slice(-8)}</span>
+            {feedbackPath && (
+              <a
+                href={`#${feedbackPath}`}
+                onClick={(e) => { e.preventDefault(); navigate(feedbackPath); }}
+                style="color:var(--pw-primary-text);font-size:12px;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                title={activeSess?.feedbackTitle || 'View feedback'}
+              >
+                {activeSess?.feedbackTitle ? (activeSess.feedbackTitle.length > 50 ? activeSess.feedbackTitle.slice(0, 50) + '\u2026' : activeSess.feedbackTitle) : 'View feedback'}
+              </a>
+            )}
+          </>
+        )}
+        <span style="flex:1" />
+        {activeId && (
+          <>
+            <select
+              class="view-mode-select"
+              value={activeViewMode}
+              onChange={(e) => setViewMode(activeId, (e.target as HTMLSelectElement).value as ViewMode)}
+            >
+              <option value="terminal">Term</option>
+              <option value="structured">Struct</option>
+              <option value="split">Split</option>
+            </select>
+            {!isActiveExited && activeSess?.feedbackId && (
+              <button class="resolve-btn" onClick={() => resolveSession(activeId, activeSess.feedbackId)}>Resolve</button>
+            )}
+            {isActiveExited ? (
+              <button class="resume-btn" onClick={() => resumeSession(activeId)}>Resume</button>
+            ) : (
+              <button class="kill-btn" onClick={() => killSession(activeId)}>Kill</button>
+            )}
+          </>
+        )}
+        {!hasTabs && collapseBtn}
+      </div>
       {!minimized && (
         <div class="terminal-body">
           {tabs.map((sid) => (
@@ -125,6 +171,8 @@ export function GlobalTerminalPanel() {
                 sessionId={sid}
                 isActive={sid === activeId}
                 onExit={() => markSessionExited(sid)}
+                permissionProfile={sessionMap.get(sid)?.permissionProfile}
+                mode={getViewMode(sid)}
               />
             </div>
           ))}

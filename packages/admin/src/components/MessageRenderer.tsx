@@ -1,5 +1,14 @@
-import { useState } from 'preact/hooks';
+import { useState, useEffect } from 'preact/hooks';
+import { marked } from 'marked';
 import type { ParsedMessage } from '../lib/output-parser.js';
+
+marked.setOptions({ gfm: true, breaks: false });
+
+function renderMarkdown(text: string): any {
+  const html = marked.parse(text);
+  if (typeof html !== 'string') return text;
+  return <div class="sm-md-rendered" dangerouslySetInnerHTML={{ __html: html }} />;
+}
 
 interface Props {
   message: ParsedMessage;
@@ -34,9 +43,14 @@ function toolCategory(name: string): string {
     case 'Glob':
     case 'Grep': return 'tool-search';
     case 'TodoWrite': return 'tool-todo';
-    case 'Task': return 'tool-task';
+    case 'Task':
+    case 'TaskCreate':
+    case 'TaskUpdate':
+    case 'TaskList':
+    case 'TaskGet': return 'tool-task';
     case 'WebFetch':
     case 'WebSearch': return 'tool-web';
+    case 'AskUserQuestion': return 'tool-ask';
     default: return 'tool-default';
   }
 }
@@ -50,9 +64,14 @@ function toolIcon(name: string): string {
     case 'Glob': return '🔍';
     case 'Grep': return '⌕';
     case 'TodoWrite': return '☑';
-    case 'Task': return '⚙';
-    case 'WebFetch':
-    case 'WebSearch': return '🌐';
+    case 'Task':
+    case 'TaskCreate':
+    case 'TaskUpdate':
+    case 'TaskList':
+    case 'TaskGet': return '⚙';
+    case 'WebFetch': return '🌐';
+    case 'WebSearch': return '🔎';
+    case 'AskUserQuestion': return '❓';
     default: return '▶';
   }
 }
@@ -77,6 +96,18 @@ function ToolUseMessage({ message }: Props) {
       return <SearchToolUse toolName={toolName} toolInput={toolInput} cat={cat} />;
     case 'TodoWrite':
       return <TodoToolUse toolInput={toolInput} cat={cat} />;
+    case 'WebSearch':
+      return <WebSearchToolUse toolInput={toolInput} cat={cat} />;
+    case 'WebFetch':
+      return <WebFetchToolUse toolInput={toolInput} cat={cat} />;
+    case 'AskUserQuestion':
+      return <AskUserQuestionToolUse toolInput={toolInput} cat={cat} />;
+    case 'TaskCreate':
+    case 'TaskUpdate':
+    case 'TaskList':
+    case 'TaskGet':
+    case 'Task':
+      return <TaskToolUse toolName={toolName} toolInput={toolInput} cat={cat} />;
     default:
       return <GenericToolUse toolName={toolName} toolInput={toolInput} cat={cat} />;
   }
@@ -229,6 +260,113 @@ function TodoToolUse({ toolInput, cat }: { toolInput?: Record<string, unknown>; 
   );
 }
 
+function WebSearchToolUse({ toolInput, cat }: { toolInput?: Record<string, unknown>; cat: string }) {
+  const query = String(toolInput?.query || '');
+  const allowed = toolInput?.allowed_domains as string[] | undefined;
+  const blocked = toolInput?.blocked_domains as string[] | undefined;
+
+  return (
+    <div class={`sm-message sm-tool-use ${cat}`}>
+      <div class="sm-tool-header">
+        <span class="sm-tool-icon">🔎</span>
+        <span class="sm-tool-name">WebSearch</span>
+      </div>
+      <div class="sm-web-query">{query}</div>
+      {(allowed?.length || blocked?.length) ? (
+        <div class="sm-web-filters">
+          {allowed?.map((d, i) => <span key={`a${i}`} class="sm-web-filter-badge allow">+{d}</span>)}
+          {blocked?.map((d, i) => <span key={`b${i}`} class="sm-web-filter-badge block">-{d}</span>)}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function WebFetchToolUse({ toolInput, cat }: { toolInput?: Record<string, unknown>; cat: string }) {
+  const url = String(toolInput?.url || '');
+  const prompt = toolInput?.prompt ? String(toolInput.prompt) : null;
+
+  return (
+    <div class={`sm-message sm-tool-use ${cat}`}>
+      <div class="sm-tool-header">
+        <span class="sm-tool-icon">🌐</span>
+        <span class="sm-tool-name">WebFetch</span>
+      </div>
+      <a class="sm-web-url" href={url} target="_blank" rel="noopener noreferrer">{url}</a>
+      {prompt && <div class="sm-tool-desc">{prompt}</div>}
+    </div>
+  );
+}
+
+function AskUserQuestionToolUse({ toolInput, cat }: { toolInput?: Record<string, unknown>; cat: string }) {
+  const questions = toolInput?.questions as Array<{
+    question: string;
+    header?: string;
+    multiSelect?: boolean;
+    options?: Array<{ label: string; description?: string }>;
+  }> | undefined;
+  const answers = toolInput?.answers as Record<string, string> | undefined;
+
+  return (
+    <div class={`sm-message sm-tool-use ${cat}`}>
+      <div class="sm-tool-header">
+        <span class="sm-tool-icon">❓</span>
+        <span class="sm-tool-name">AskUserQuestion</span>
+        {questions && <span class="sm-tool-badge">{questions.length} question{questions.length !== 1 ? 's' : ''}</span>}
+      </div>
+      {questions?.map((q, qi) => (
+        <div key={qi} class="sm-question-card">
+          {q.header && <span class="sm-question-badge">{q.header}</span>}
+          {q.multiSelect && <span class="sm-tool-badge">multi-select</span>}
+          <div class="sm-question-text">{q.question}</div>
+          {q.options && (
+            <div class="sm-question-options">
+              {q.options.map((opt, oi) => {
+                const selected = answers?.[q.question]?.split(',').map(s => s.trim()).includes(opt.label);
+                return (
+                  <div key={oi} class={`sm-question-option ${selected ? 'selected' : ''}`}>
+                    <span class="sm-option-icon">{selected ? '●' : '○'}</span>
+                    <div>
+                      <span class="sm-option-label">{opt.label}</span>
+                      {opt.description && <span class="sm-option-desc">{opt.description}</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TaskToolUse({ toolName, toolInput, cat }: { toolName: string; toolInput?: Record<string, unknown>; cat: string }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const taskId = toolInput?.taskId as string | undefined;
+  const subject = toolInput?.subject as string | undefined;
+  const status = toolInput?.status as string | undefined;
+  const description = toolInput?.description as string | undefined;
+
+  return (
+    <div class={`sm-message sm-tool-use ${cat}`}>
+      <div class="sm-tool-header" onClick={() => setExpanded(!expanded)} style={{ cursor: 'pointer' }}>
+        <span class="sm-tool-icon">⚙</span>
+        <span class="sm-tool-name">{toolName}</span>
+        {taskId && <span class="sm-task-id">#{taskId}</span>}
+        {status && <span class={`sm-task-status sm-task-status-${status}`}>{status}</span>}
+        <span class="sm-expand-indicator">{expanded ? '▾' : '▸'}</span>
+      </div>
+      {subject && <div class="sm-task-subject">{subject}</div>}
+      {expanded && description && <div class="sm-task-desc">{description}</div>}
+      {expanded && toolInput && !description && (
+        <pre class="sm-tool-summary">{JSON.stringify(toolInput, null, 2)}</pre>
+      )}
+    </div>
+  );
+}
+
 function GenericToolUse({ toolName, toolInput, cat }: { toolName: string; toolInput?: Record<string, unknown>; cat: string }) {
   const icon = toolIcon(toolName);
   const [expanded, setExpanded] = useState(false);
@@ -248,6 +386,18 @@ function GenericToolUse({ toolName, toolInput, cat }: { toolName: string; toolIn
   );
 }
 
+function extractImageUrls(content: string): string[] {
+  const urls: string[] = [];
+  // base64 data URIs
+  const b64re = /data:image\/[a-z+]+;base64,[A-Za-z0-9+/=]+/g;
+  let m;
+  while ((m = b64re.exec(content)) !== null) urls.push(m[0]);
+  // http image URLs
+  const urlre = /https?:\/\/[^\s"'<>]+\.(?:png|jpg|jpeg|gif|webp|svg|bmp)/gi;
+  while ((m = urlre.exec(content)) !== null) urls.push(m[0]);
+  return urls;
+}
+
 function ToolResultMessage({ message }: Props) {
   const isError = message.isError;
   const content = message.content;
@@ -255,6 +405,7 @@ function ToolResultMessage({ message }: Props) {
   const isLong = lines.length > 15 || content.length > 500;
   const [expanded, setExpanded] = useState(!isLong);
 
+  const imageUrls = extractImageUrls(content);
   const displayContent = expanded ? content : lines.slice(0, 10).join('\n') + (lines.length > 10 ? '\n...' : '');
 
   return (
@@ -264,6 +415,11 @@ function ToolResultMessage({ message }: Props) {
         <span class="sm-result-label">{isError ? 'Error' : 'Output'}</span>
         <span class="sm-result-meta">{lines.length} line{lines.length !== 1 ? 's' : ''}</span>
       </div>
+      {imageUrls.length > 0 && (
+        <div class="sm-result-images">
+          {imageUrls.map((url, i) => <ImageViewer key={i} src={url} />)}
+        </div>
+      )}
       {(expanded || !isLong) && (
         <pre class="sm-result-content">{displayContent}</pre>
       )}
@@ -274,10 +430,42 @@ function ToolResultMessage({ message }: Props) {
   );
 }
 
+function ImageViewer({ src }: { src: string }) {
+  const [lightbox, setLightbox] = useState(false);
+
+  useEffect(() => {
+    if (!lightbox) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setLightbox(false);
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [lightbox]);
+
+  return (
+    <>
+      <img
+        class="sm-image-thumb"
+        src={src}
+        alt="Image content"
+        onClick={() => setLightbox(true)}
+      />
+      {lightbox && (
+        <div class="sm-lightbox" onClick={() => setLightbox(false)}>
+          <div class="sm-lightbox-content" onClick={(e) => e.stopPropagation()}>
+            <img src={src} alt="Image content (full)" />
+            <button class="sm-lightbox-close" onClick={() => setLightbox(false)}>&times;</button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function AssistantMessage({ message }: Props) {
   return (
     <div class="sm-message sm-assistant">
-      <div class="sm-assistant-content">{renderMarkdownBasic(message.content)}</div>
+      <div class="sm-assistant-content">{renderMarkdown(message.content)}</div>
     </div>
   );
 }
@@ -293,7 +481,7 @@ function ThinkingMessage({ message }: Props) {
         <span class="sm-expand-indicator">{expanded ? '▾' : '▸'}</span>
       </div>
       {expanded && (
-        <div class="sm-thinking-content">{message.content}</div>
+        <div class="sm-thinking-content">{renderMarkdown(message.content)}</div>
       )}
     </div>
   );
@@ -392,111 +580,3 @@ function computeDiff(oldStr: string, newStr: string): DiffLine[] {
   return result;
 }
 
-// Basic markdown rendering — handles bold, italic, code, inline code, headers
-function renderMarkdownBasic(text: string): any {
-  const lines = text.split('\n');
-  const elements: any[] = [];
-  let inCodeBlock = false;
-  let codeLines: string[] = [];
-  let codeLang = '';
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
-    if (line.startsWith('```')) {
-      if (inCodeBlock) {
-        elements.push(
-          <pre key={`code-${i}`} class="sm-md-code-block">
-            <code>{codeLines.join('\n')}</code>
-          </pre>
-        );
-        codeLines = [];
-        inCodeBlock = false;
-      } else {
-        inCodeBlock = true;
-        codeLang = line.slice(3).trim();
-        codeLines = [];
-      }
-      continue;
-    }
-
-    if (inCodeBlock) {
-      codeLines.push(line);
-      continue;
-    }
-
-    if (line.startsWith('### ')) {
-      elements.push(<h4 key={i} class="sm-md-h3">{inlineFormat(line.slice(4))}</h4>);
-    } else if (line.startsWith('## ')) {
-      elements.push(<h3 key={i} class="sm-md-h2">{inlineFormat(line.slice(3))}</h3>);
-    } else if (line.startsWith('# ')) {
-      elements.push(<h2 key={i} class="sm-md-h1">{inlineFormat(line.slice(2))}</h2>);
-    } else if (line.startsWith('- ') || line.startsWith('* ')) {
-      elements.push(<div key={i} class="sm-md-li">• {inlineFormat(line.slice(2))}</div>);
-    } else if (/^\d+\.\s/.test(line)) {
-      const num = line.match(/^(\d+)\.\s/);
-      elements.push(<div key={i} class="sm-md-li">{num?.[1]}. {inlineFormat(line.replace(/^\d+\.\s/, ''))}</div>);
-    } else if (line.trim() === '') {
-      elements.push(<div key={i} class="sm-md-break" />);
-    } else {
-      elements.push(<p key={i} class="sm-md-p">{inlineFormat(line)}</p>);
-    }
-  }
-
-  if (inCodeBlock && codeLines.length > 0) {
-    elements.push(
-      <pre key="code-end" class="sm-md-code-block">
-        <code>{codeLines.join('\n')}</code>
-      </pre>
-    );
-  }
-
-  return elements;
-}
-
-function inlineFormat(text: string): any {
-  // Process inline code, bold, italic
-  const parts: any[] = [];
-  let remaining = text;
-  let key = 0;
-
-  while (remaining) {
-    // Inline code
-    const codeMatch = remaining.match(/^(.*?)`([^`]+)`(.*)/s);
-    if (codeMatch) {
-      if (codeMatch[1]) parts.push(processEmphasis(codeMatch[1], key++));
-      parts.push(<code key={key++} class="sm-md-inline-code">{codeMatch[2]}</code>);
-      remaining = codeMatch[3];
-      continue;
-    }
-
-    parts.push(processEmphasis(remaining, key++));
-    break;
-  }
-
-  return parts;
-}
-
-function processEmphasis(text: string, key: number): any {
-  // Bold
-  const boldMatch = text.match(/^(.*?)\*\*(.+?)\*\*(.*)/s);
-  if (boldMatch) {
-    const parts: any[] = [];
-    if (boldMatch[1]) parts.push(boldMatch[1]);
-    parts.push(<strong key={`b-${key}`}>{boldMatch[2]}</strong>);
-    if (boldMatch[3]) parts.push(processEmphasis(boldMatch[3], key + 100));
-    return parts;
-  }
-
-  // Italic
-  const italicMatch = text.match(/^(.*?)(?<!\*)\*([^*]+)\*(?!\*)(.*)/s);
-  if (italicMatch) {
-    const parts: any[] = [];
-    if (italicMatch[1]) parts.push(italicMatch[1]);
-    parts.push(<em key={`i-${key}`}>{italicMatch[2]}</em>);
-    if (italicMatch[3]) parts.push(processEmphasis(italicMatch[3], key + 200));
-    return parts;
-  }
-
-  return text;
-}

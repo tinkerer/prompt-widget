@@ -118,10 +118,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
         key: 'a',
         label: 'Go to Agents',
         category: 'Navigation',
-        action: () => {
-          const appId = selectedAppId.value || applications.value[0]?.id;
-          if (appId) navigate(`/app/${appId}/agents`);
-        },
+        action: () => navigate('/settings/agents'),
       }),
       registerShortcut({
         sequence: 'g g',
@@ -187,6 +184,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
   const runningSessions = sessions.filter((s: any) => s.status === 'running').length;
 
   const settingsItems = [
+    { path: '/settings/agents', label: 'Agents', icon: '\u{1F916}' },
     { path: '/settings/applications', label: 'Applications', icon: '\u{1F4E6}' },
     { path: '/settings/getting-started', label: 'Getting Started', icon: '\u{1F4D6}' },
     { path: '/settings/preferences', label: 'Preferences', icon: '\u2699' },
@@ -229,13 +227,6 @@ export function Layout({ children }: { children: ComponentChildren }) {
                     >
                       {'\u{1F4CB}'} Feedback
                       {fbCounts[app.id] > 0 && <span class="sidebar-count">{fbCounts[app.id]}</span>}
-                    </a>
-                    <a
-                      href={`#/app/${app.id}/agents`}
-                      class={route === `/app/${app.id}/agents` ? 'active' : ''}
-                      onClick={(e) => { e.preventDefault(); navigate(`/app/${app.id}/agents`); }}
-                    >
-                      {'\u{1F916}'} Agents
                     </a>
                     <a
                       href={`#/app/${app.id}/aggregate`}

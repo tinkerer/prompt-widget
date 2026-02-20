@@ -10,28 +10,23 @@ const formName = signal('');
 const formUrl = signal('');
 const formAuth = signal('');
 const formDefault = signal(false);
-const formAppId = signal('');
-const formMode = signal<'webhook' | 'headless' | 'interactive'>('webhook');
+const formMode = signal<'webhook' | 'headless' | 'interactive'>('interactive');
 const formPromptTemplate = signal('');
 const formPermissionProfile = signal<'interactive' | 'auto' | 'yolo'>('interactive');
 const formAllowedTools = signal('');
 const formAutoPlan = signal(false);
 const formError = signal('');
 const formLoading = signal(false);
+const showAdvanced = signal(false);
 
-let currentAppId: string | null = null;
-
-async function loadAgents(appId: string | null) {
+async function loadAgents() {
   loading.value = true;
-  currentAppId = appId;
   try {
     const [agentsList, appsList] = await Promise.all([
       api.getAgents(),
       api.getApplications(),
     ]);
-    agents.value = appId
-      ? agentsList.filter((a: any) => a.appId === appId)
-      : agentsList;
+    agents.value = agentsList;
     applications.value = appsList;
   } catch (err) {
     console.error('Failed to load agents:', err);
@@ -40,19 +35,21 @@ async function loadAgents(appId: string | null) {
   }
 }
 
+let loaded = false;
+
 function openCreate() {
   editingId.value = null;
   formName.value = '';
   formUrl.value = '';
   formAuth.value = '';
   formDefault.value = false;
-  formAppId.value = currentAppId || '';
-  formMode.value = 'webhook';
+  formMode.value = 'interactive';
   formPromptTemplate.value = '';
   formPermissionProfile.value = 'interactive';
   formAllowedTools.value = '';
   formAutoPlan.value = false;
   formError.value = '';
+  showAdvanced.value = false;
   showForm.value = true;
 }
 
@@ -62,13 +59,14 @@ function openEdit(agent: any) {
   formUrl.value = agent.url || '';
   formAuth.value = agent.authHeader || '';
   formDefault.value = agent.isDefault;
-  formAppId.value = agent.appId || '';
-  formMode.value = agent.mode || 'webhook';
+  formMode.value = agent.mode || 'interactive';
   formPromptTemplate.value = agent.promptTemplate || '';
   formPermissionProfile.value = agent.permissionProfile || 'interactive';
   formAllowedTools.value = agent.allowedTools || '';
   formAutoPlan.value = agent.autoPlan || false;
   formError.value = '';
+  // Show advanced if non-default settings are configured
+  showAdvanced.value = !!(agent.mode === 'webhook' || agent.promptTemplate || agent.allowedTools || agent.url);
   showForm.value = true;
 }
 
@@ -82,7 +80,6 @@ async function saveAgent(e: Event) {
     url: formUrl.value || undefined,
     authHeader: formAuth.value || undefined,
     isDefault: formDefault.value,
-    appId: formAppId.value || undefined,
     mode: formMode.value,
     promptTemplate: formPromptTemplate.value || undefined,
     permissionProfile: formPermissionProfile.value,
@@ -97,7 +94,7 @@ async function saveAgent(e: Event) {
       await api.createAgent(data);
     }
     showForm.value = false;
-    await loadAgents(currentAppId);
+    await loadAgents();
   } catch (err: any) {
     formError.value = err.message;
   } finally {
@@ -106,74 +103,59 @@ async function saveAgent(e: Event) {
 }
 
 async function deleteAgent(id: string) {
-  if (!confirm('Delete this agent endpoint?')) return;
+  if (!confirm('Delete this agent?')) return;
   await api.deleteAgent(id);
-  await loadAgents(currentAppId);
+  await loadAgents();
 }
 
-function getAppName(appId: string | null): string | null {
-  if (!appId) return null;
-  const app = applications.value.find((a) => a.id === appId);
-  return app?.name || null;
-}
-
-const MODE_LABELS: Record<string, string> = {
-  webhook: 'Webhook',
-  headless: 'Headless',
-  interactive: 'Interactive',
+const PROFILE_DESCRIPTIONS: Record<string, { label: string; desc: string }> = {
+  interactive: { label: 'Supervised', desc: 'You approve each tool use in real-time' },
+  auto: { label: 'Autonomous', desc: 'Pre-approved tools run automatically' },
+  yolo: { label: 'Full Auto', desc: 'No permission checks (sandboxed only)' },
 };
 
-const PROFILE_LABELS: Record<string, string> = {
-  interactive: 'Interactive',
-  auto: 'Auto',
-  yolo: 'YOLO',
-};
-
-export function AgentsPage({ appId }: { appId: string | null }) {
-  if (currentAppId !== appId) {
-    loadAgents(appId);
+export function AgentsPage() {
+  if (!loaded) {
+    loaded = true;
+    loadAgents();
   }
   return (
     <div>
       <div class="page-header">
-        <h2>Agent Endpoints</h2>
-        <button class="btn btn-primary" onClick={openCreate}>Add Endpoint</button>
+        <h2>Agents</h2>
+        <button class="btn btn-primary" onClick={openCreate}>Add Agent</button>
       </div>
 
+      <p style="font-size:13px;color:var(--pw-text-muted);margin:-8px 0 16px">
+        Agents are compute environments where Claude Code runs. Each application specifies its own project directory.
+      </p>
+
       <div class="agent-list">
-        {agents.value.map((agent) => (
-          <div class="agent-card" key={agent.id}>
-            <div class="agent-info">
-              <h4>
-                {agent.name}
-                {agent.isDefault && <span class="badge badge-resolved" style="margin-left:8px">default</span>}
-                <span class="badge" style="margin-left:8px;background:var(--pw-bg-raised)">{MODE_LABELS[agent.mode] || 'Webhook'}</span>
-                {agent.mode !== 'webhook' && (
-                  <span class="badge" style="margin-left:4px;background:#1e1b4b;color:#a5b4fc">
-                    {PROFILE_LABELS[agent.permissionProfile] || 'Interactive'}
-                  </span>
-                )}
-                {agent.autoPlan && (
-                  <span class="badge" style="margin-left:4px;background:#064e3b;color:#6ee7b7">
-                    Auto-plan
-                  </span>
-                )}
-              </h4>
-              {agent.mode === 'webhook' && <p>{agent.url}</p>}
-              {agent.authHeader && <p style="font-size:12px;color:var(--pw-text-faint)">Auth header configured</p>}
-              {getAppName(agent.appId) && (
-                <p style="font-size:12px;color:var(--pw-text-faint)">App: {getAppName(agent.appId)}</p>
-              )}
+        {agents.value.map((agent) => {
+          const profile = PROFILE_DESCRIPTIONS[agent.permissionProfile] || PROFILE_DESCRIPTIONS.interactive;
+          const isWebhook = agent.mode === 'webhook';
+          return (
+            <div class="agent-card" key={agent.id}>
+              <div class="agent-info">
+                <h4>
+                  {agent.name}
+                  {agent.isDefault && <span class="badge badge-resolved" style="margin-left:8px">default</span>}
+                </h4>
+                <p style="font-size:12px;color:var(--pw-text-muted);margin:2px 0">
+                  {isWebhook ? `Webhook: ${agent.url}` : profile.label}
+                  {!isWebhook && agent.autoPlan && ' + Auto-plan'}
+                </p>
+              </div>
+              <div style="display:flex;gap:8px">
+                <button class="btn btn-sm" onClick={() => openEdit(agent)}>Edit</button>
+                <button class="btn btn-sm btn-danger" onClick={() => deleteAgent(agent.id)}>Delete</button>
+              </div>
             </div>
-            <div style="display:flex;gap:8px">
-              <button class="btn btn-sm" onClick={() => openEdit(agent)}>Edit</button>
-              <button class="btn btn-sm btn-danger" onClick={() => deleteAgent(agent.id)}>Delete</button>
-            </div>
-          </div>
-        ))}
+          );
+        })}
         {agents.value.length === 0 && !loading.value && (
           <div style="text-align:center;padding:40px;color:var(--pw-text-faint)">
-            No agent endpoints configured yet
+            No agents configured. Add one to start dispatching feedback to Claude Code.
           </div>
         )}
       </div>
@@ -181,7 +163,7 @@ export function AgentsPage({ appId }: { appId: string | null }) {
       {showForm.value && (
         <div class="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) showForm.value = false; }}>
           <form class="modal" onSubmit={saveAgent}>
-            <h3>{editingId.value ? 'Edit' : 'Add'} Agent Endpoint</h3>
+            <h3>{editingId.value ? 'Edit' : 'Add'} Agent</h3>
             {formError.value && <div class="error-msg">{formError.value}</div>}
             <div class="form-group">
               <label>Name</label>
@@ -189,86 +171,25 @@ export function AgentsPage({ appId }: { appId: string | null }) {
                 type="text"
                 value={formName.value}
                 onInput={(e) => (formName.value = (e.target as HTMLInputElement).value)}
-                placeholder="e.g., Claude Code Agent"
+                placeholder="e.g., My Laptop, Cloud Server, Dev Box"
                 required
                 style="width:100%"
               />
+              <span style="font-size:11px;color:var(--pw-text-faint)">
+                Where Claude Code runs — a machine or environment name
+              </span>
             </div>
-            <div class="form-group">
-              <label>Mode</label>
-              <div style="display:flex;gap:16px">
-                {(['webhook', 'headless', 'interactive'] as const).map((m) => (
-                  <label key={m} style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:13px">
-                    <input
-                      type="radio"
-                      name="mode"
-                      value={m}
-                      checked={formMode.value === m}
-                      onChange={() => (formMode.value = m)}
-                    />
-                    {MODE_LABELS[m]}
-                  </label>
-                ))}
-              </div>
-            </div>
-            {!currentAppId && (
+            {formMode.value !== 'webhook' && (
               <div class="form-group">
-                <label>Application (optional)</label>
-                <select
-                  value={formAppId.value}
-                  onChange={(e) => (formAppId.value = (e.target as HTMLSelectElement).value)}
-                  style="width:100%"
-                >
-                  <option value="">None</option>
-                  {applications.value.map((app) => (
-                    <option value={app.id} key={app.id}>{app.name}</option>
-                  ))}
-                </select>
-              </div>
-            )}
-            {formMode.value === 'webhook' && (
-              <>
-                <div class="form-group">
-                  <label>URL</label>
-                  <input
-                    type="url"
-                    value={formUrl.value}
-                    onInput={(e) => (formUrl.value = (e.target as HTMLInputElement).value)}
-                    placeholder="https://agent.example.com/webhook"
-                    style="width:100%"
-                  />
-                </div>
-                <div class="form-group">
-                  <label>Authorization Header (optional)</label>
-                  <input
-                    type="text"
-                    value={formAuth.value}
-                    onInput={(e) => (formAuth.value = (e.target as HTMLInputElement).value)}
-                    placeholder="Bearer sk-..."
-                    style="width:100%"
-                  />
-                </div>
-              </>
-            )}
-            {(formMode.value === 'headless' || formMode.value === 'interactive') && (
-              <>
-                <div class="form-group">
-                  <label>Prompt Template</label>
-                  <textarea
-                    value={formPromptTemplate.value}
-                    onInput={(e) => (formPromptTemplate.value = (e.target as HTMLTextAreaElement).value)}
-                    placeholder={'{{feedback.title}}\n\n{{feedback.description}}\n\n{{instructions}}'}
-                    style="width:100%;min-height:120px;font-family:monospace;font-size:12px"
-                  />
-                  <span style="font-size:11px;color:var(--pw-text-faint)">
-                    Variables: {'{{feedback.title}}'}, {'{{feedback.description}}'}, {'{{feedback.consoleLogs}}'}, {'{{feedback.networkErrors}}'}, {'{{feedback.data}}'}, {'{{feedback.tags}}'}, {'{{app.name}}'}, {'{{app.projectDir}}'}, {'{{app.hooks}}'}, {'{{app.description}}'}, {'{{instructions}}'}, {'{{session.url}}'}, {'{{session.viewport}}'}
-                  </span>
-                </div>
-                <div class="form-group">
-                  <label>Permission Profile</label>
-                  <div style="display:flex;gap:16px">
-                    {(['interactive', 'auto', 'yolo'] as const).map((p) => (
-                      <label key={p} style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:13px">
+                <label>Permission Level</label>
+                <div style="display:flex;flex-direction:column;gap:8px">
+                  {(['interactive', 'auto', 'yolo'] as const).map((p) => {
+                    const info = PROFILE_DESCRIPTIONS[p];
+                    return (
+                      <label
+                        key={p}
+                        style={`display:flex;align-items:center;gap:8px;cursor:pointer;padding:8px 12px;border-radius:6px;border:1px solid ${formPermissionProfile.value === p ? 'var(--pw-primary)' : 'var(--pw-border)'};background:${formPermissionProfile.value === p ? 'var(--pw-primary-bg)' : 'transparent'}`}
+                      >
                         <input
                           type="radio"
                           name="permissionProfile"
@@ -276,49 +197,20 @@ export function AgentsPage({ appId }: { appId: string | null }) {
                           checked={formPermissionProfile.value === p}
                           onChange={() => (formPermissionProfile.value = p)}
                         />
-                        {PROFILE_LABELS[p]}
+                        <div>
+                          <div style="font-size:13px;font-weight:500">{info.label}</div>
+                          <div style="font-size:11px;color:var(--pw-text-faint)">{info.desc}</div>
+                        </div>
                       </label>
-                    ))}
-                  </div>
-                  <span style="font-size:11px;color:var(--pw-text-faint);margin-top:4px;display:block">
-                    {formPermissionProfile.value === 'interactive' && 'Admin watches and approves all tool uses in real-time.'}
-                    {formPermissionProfile.value === 'auto' && 'Pre-approved tools run automatically; admin sees output and handles remaining prompts.'}
-                    {formPermissionProfile.value === 'yolo' && 'Fully autonomous — skips all permission checks. Use only in sandboxed environments.'}
-                  </span>
+                    );
+                  })}
                 </div>
-                {formPermissionProfile.value === 'auto' && (
-                  <div class="form-group">
-                    <label>Allowed Tools</label>
-                    <textarea
-                      value={formAllowedTools.value}
-                      onInput={(e) => (formAllowedTools.value = (e.target as HTMLTextAreaElement).value)}
-                      placeholder={'Edit,Read,Bash(git *)'}
-                      style="width:100%;min-height:60px;font-family:monospace;font-size:12px"
-                    />
-                    <span style="font-size:11px;color:var(--pw-text-faint)">
-                      Comma-separated list of tools to auto-approve. e.g. Edit,Read,Write,Bash(git *),Bash(npm run *)
-                    </span>
-                  </div>
-                )}
                 {formPermissionProfile.value === 'yolo' && (
-                  <div style="background:var(--pw-danger-border);color:#fecaca;padding:8px 12px;border-radius:6px;font-size:12px;margin-top:-8px">
-                    Warning: YOLO mode skips ALL permission checks. The agent can execute any command, edit any file, and access any resource. Only use in sandboxed/Docker environments.
+                  <div style="background:var(--pw-danger-border);color:#fecaca;padding:8px 12px;border-radius:6px;font-size:12px;margin-top:8px">
+                    Full Auto skips ALL permission checks. Only use in sandboxed/Docker environments.
                   </div>
                 )}
-                <div class="form-group">
-                  <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-                    <input
-                      type="checkbox"
-                      checked={formAutoPlan.value}
-                      onChange={(e) => (formAutoPlan.value = (e.target as HTMLInputElement).checked)}
-                    />
-                    Auto-plan
-                  </label>
-                  <span style="font-size:11px;color:var(--pw-text-faint);margin-top:4px;display:block">
-                    Agent creates a plan and waits for approval before implementing. Resumed sessions continue with the plan context.
-                  </span>
-                </div>
-              </>
+              </div>
             )}
             <div class="form-group">
               <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
@@ -327,9 +219,108 @@ export function AgentsPage({ appId }: { appId: string | null }) {
                   checked={formDefault.value}
                   onChange={(e) => (formDefault.value = (e.target as HTMLInputElement).checked)}
                 />
-                Default endpoint
+                Default agent
               </label>
+              <span style="font-size:11px;color:var(--pw-text-faint);display:block;margin-top:2px">
+                Used automatically when dispatching feedback
+              </span>
             </div>
+
+            <div style="margin-top:8px">
+              <button
+                type="button"
+                class="btn btn-sm"
+                style="font-size:12px;padding:4px 10px"
+                onClick={() => (showAdvanced.value = !showAdvanced.value)}
+              >
+                {showAdvanced.value ? 'Hide' : 'Show'} advanced options
+              </button>
+            </div>
+
+            {showAdvanced.value && (
+              <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--pw-border)">
+                <div class="form-group">
+                  <label>Mode</label>
+                  <select
+                    value={formMode.value}
+                    onChange={(e) => (formMode.value = (e.target as HTMLSelectElement).value as any)}
+                    style="width:100%"
+                  >
+                    <option value="interactive">Claude Code (interactive)</option>
+                    <option value="headless">Claude Code (headless)</option>
+                    <option value="webhook">Webhook</option>
+                  </select>
+                </div>
+                {formMode.value === 'webhook' && (
+                  <>
+                    <div class="form-group">
+                      <label>URL</label>
+                      <input
+                        type="url"
+                        value={formUrl.value}
+                        onInput={(e) => (formUrl.value = (e.target as HTMLInputElement).value)}
+                        placeholder="https://agent.example.com/webhook"
+                        style="width:100%"
+                      />
+                    </div>
+                    <div class="form-group">
+                      <label>Authorization Header</label>
+                      <input
+                        type="text"
+                        value={formAuth.value}
+                        onInput={(e) => (formAuth.value = (e.target as HTMLInputElement).value)}
+                        placeholder="Bearer sk-..."
+                        style="width:100%"
+                      />
+                    </div>
+                  </>
+                )}
+                {formMode.value !== 'webhook' && (
+                  <>
+                    <div class="form-group">
+                      <label>Prompt Template</label>
+                      <textarea
+                        value={formPromptTemplate.value}
+                        onInput={(e) => (formPromptTemplate.value = (e.target as HTMLTextAreaElement).value)}
+                        placeholder="Optional custom prompt template. Leave blank for default."
+                        style="width:100%;min-height:80px;font-family:monospace;font-size:12px"
+                      />
+                      <span style="font-size:11px;color:var(--pw-text-faint)">
+                        Variables: {'{{feedback.title}}'}, {'{{feedback.description}}'}, {'{{app.name}}'}, {'{{app.projectDir}}'}, {'{{instructions}}'}
+                      </span>
+                    </div>
+                    {formPermissionProfile.value === 'auto' && (
+                      <div class="form-group">
+                        <label>Allowed Tools</label>
+                        <textarea
+                          value={formAllowedTools.value}
+                          onInput={(e) => (formAllowedTools.value = (e.target as HTMLTextAreaElement).value)}
+                          placeholder="Edit,Read,Bash(git *)"
+                          style="width:100%;min-height:60px;font-family:monospace;font-size:12px"
+                        />
+                        <span style="font-size:11px;color:var(--pw-text-faint)">
+                          Comma-separated. e.g. Edit,Read,Write,Bash(git *)
+                        </span>
+                      </div>
+                    )}
+                    <div class="form-group">
+                      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                        <input
+                          type="checkbox"
+                          checked={formAutoPlan.value}
+                          onChange={(e) => (formAutoPlan.value = (e.target as HTMLInputElement).checked)}
+                        />
+                        Auto-plan
+                      </label>
+                      <span style="font-size:11px;color:var(--pw-text-faint);display:block;margin-top:2px">
+                        Agent creates a plan and waits for approval before implementing
+                      </span>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
             <div class="modal-actions">
               <button type="button" class="btn" onClick={() => (showForm.value = false)}>Cancel</button>
               <button type="submit" class="btn btn-primary" disabled={formLoading.value}>

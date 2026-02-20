@@ -204,7 +204,7 @@ function ClusterDispatchButton({ cluster, appId }: { cluster: Cluster; appId: st
   }
 
   const appAgents = agents.value.filter(
-    (a: any) => (a.mode === 'headless' || a.mode === 'interactive') && (!a.appId || a.appId === appId)
+    (a: any) => a.mode === 'headless' || a.mode === 'interactive'
   );
 
   return (
@@ -351,7 +351,7 @@ function AnalyzeButton({ appId }: { appId: string }) {
   }
 
   const appAgents = agents.value.filter(
-    (a: any) => (a.mode === 'headless' || a.mode === 'interactive') && (!a.appId || a.appId === appId)
+    (a: any) => a.mode === 'headless' || a.mode === 'interactive'
   );
 
   return (
@@ -377,12 +377,12 @@ function AnalyzeButton({ appId }: { appId: string }) {
                   >
                     <option value="">Select agent...</option>
                     {appAgents.map((a: any) => (
-                      <option key={a.id} value={a.id}>{a.name} ({a.mode})</option>
+                      <option key={a.id} value={a.id}>{a.name}</option>
                     ))}
                   </select>
                   {appAgents.length === 0 && (
                     <span style="font-size:12px;color:var(--pw-warning);display:block;margin-top:4px">
-                      No headless/interactive agents configured. Create one in the Agents page first.
+                      No agents configured. Add one in Settings &gt; Agents first.
                     </span>
                   )}
                 </div>

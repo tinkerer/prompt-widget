@@ -79,7 +79,7 @@ function formatDate(iso: string) {
   return new Date(iso).toLocaleString();
 }
 
-function DispatchButton({ id, appId }: { id: string; appId: string | null }) {
+function DispatchButton({ id }: { id: string }) {
   const state = quickDispatchState.value[id] || 'idle';
   return (
     <button
@@ -87,7 +87,7 @@ function DispatchButton({ id, appId }: { id: string; appId: string | null }) {
       disabled={state === 'loading'}
       onClick={(e) => {
         e.stopPropagation();
-        quickDispatch(id, appId);
+        quickDispatch(id);
       }}
       title="Quick dispatch to default agent"
     >
@@ -130,7 +130,7 @@ export function FeedbackListPage({ appId }: { appId: string }) {
             <>
               <button
                 class="btn btn-sm btn-primary"
-                onClick={() => batchQuickDispatch(Array.from(selected.value), appId)}
+                onClick={() => batchQuickDispatch(Array.from(selected.value))}
               >
                 Dispatch ({selected.value.size})
               </button>
@@ -206,6 +206,7 @@ export function FeedbackListPage({ appId }: { appId: string }) {
                   onChange={toggleSelectAll}
                 />
               </th>
+              <th style="width:60px">ID</th>
               <th>Title</th>
               <th>Type</th>
               <th>Status</th>
@@ -224,6 +225,18 @@ export function FeedbackListPage({ appId }: { appId: string }) {
                     checked={selected.value.has(item.id)}
                     onChange={() => toggleSelect(item.id)}
                   />
+                </td>
+                <td>
+                  <code
+                    style="font-size:11px;color:var(--pw-text-faint);background:var(--pw-code-block-bg);padding:1px 5px;border-radius:3px;cursor:pointer"
+                    title={item.id}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      navigator.clipboard.writeText(item.id);
+                    }}
+                  >
+                    {item.id.slice(-6)}
+                  </code>
                 </td>
                 <td>
                   <a
@@ -252,13 +265,13 @@ export function FeedbackListPage({ appId }: { appId: string }) {
                 </td>
                 <td style="white-space:nowrap;color:var(--pw-text-muted);font-size:13px">{formatDate(item.createdAt)}</td>
                 <td>
-                  <DispatchButton id={item.id} appId={appId} />
+                  <DispatchButton id={item.id} />
                 </td>
               </tr>
             ))}
             {items.value.length === 0 && !loading.value && (
               <tr>
-                <td colSpan={7} style="text-align:center;padding:32px;color:#94a3b8">
+                <td colSpan={8} style="text-align:center;padding:32px;color:#94a3b8">
                   No feedback items found
                 </td>
               </tr>
