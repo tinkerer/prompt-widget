@@ -1,4 +1,4 @@
-import { signal, computed } from '@preact/signals';
+import { signal } from '@preact/signals';
 import { api } from './api.js';
 import type { ViewMode } from '../components/SessionViewToggle.js';
 
@@ -17,16 +17,51 @@ export const panelMinimized = signal(loadJson('pw-panel-minimized', false));
 export const panelHeight = signal(loadJson('pw-panel-height', 400));
 export const exitedSessions = signal<Set<string>>(new Set(loadJson<string[]>('pw-exited-sessions', [])));
 
-export const poppedOutTabIds = signal<string[]>(loadJson('pw-popout-tab-ids', []));
-export const activePopoutTabId = signal<string | null>(loadJson('pw-popout-active', null));
-export const popoutVisible = signal<boolean>(loadJson('pw-popout-visible', true));
-export const popoutFloatingRect = signal<{ x: number; y: number; w: number; h: number }>(
-  loadJson('pw-popout-rect', { x: 200, y: 100, w: 700, h: 500 })
-);
-export const popoutDocked = signal<boolean>(loadJson('pw-popout-docked', true));
-export const popoutDockedRect = signal<{ top: number; height: number; width: number }>(
-  loadJson('pw-popout-docked-rect', { top: 60, height: 500, width: 500 })
-);
+export interface PopoutPanelState {
+  id: string;
+  sessionIds: string[];
+  activeSessionId: string;
+  docked: boolean;
+  visible: boolean;
+  floatingRect: { x: number; y: number; w: number; h: number };
+  dockedHeight: number;
+  dockedWidth: number;
+}
+
+function migrateOldPopoutState(): PopoutPanelState[] {
+  const oldIds = loadJson<string[]>('pw-popout-tab-ids', []);
+  if (oldIds.length === 0) return loadJson<PopoutPanelState[]>('pw-popout-panels', []);
+  const oldActive = loadJson<string | null>('pw-popout-active', null);
+  const oldVisible = loadJson<boolean>('pw-popout-visible', true);
+  const oldDocked = loadJson<boolean>('pw-popout-docked', true);
+  const oldRect = loadJson('pw-popout-rect', { x: 200, y: 100, w: 700, h: 500 });
+  const oldDockedRect = loadJson('pw-popout-docked-rect', { top: 60, height: 500, width: 500 });
+  const panel: PopoutPanelState = {
+    id: 'p-migrated',
+    sessionIds: oldIds,
+    activeSessionId: oldActive || oldIds[0],
+    docked: oldDocked,
+    visible: oldVisible,
+    floatingRect: oldRect,
+    dockedHeight: oldDockedRect.height,
+    dockedWidth: oldDockedRect.width,
+  };
+  localStorage.removeItem('pw-popout-tab-ids');
+  localStorage.removeItem('pw-popout-active');
+  localStorage.removeItem('pw-popout-visible');
+  localStorage.removeItem('pw-popout-rect');
+  localStorage.removeItem('pw-popout-docked');
+  localStorage.removeItem('pw-popout-docked-rect');
+  localStorage.removeItem('pw-docked-panel-width');
+  localStorage.setItem('pw-popout-panels', JSON.stringify([panel]));
+  return [panel];
+}
+
+function ensurePanelWidth(panels: PopoutPanelState[]): PopoutPanelState[] {
+  return panels.map((p) => p.dockedWidth ? p : { ...p, dockedWidth: 500 });
+}
+
+export const popoutPanels = signal<PopoutPanelState[]>(ensurePanelWidth(migrateOldPopoutState()));
 
 export const viewModes = signal<Record<string, ViewMode>>({});
 
@@ -53,12 +88,7 @@ export function persistPanelState() {
 }
 
 export function persistPopoutState() {
-  localStorage.setItem('pw-popout-tab-ids', JSON.stringify(poppedOutTabIds.value));
-  localStorage.setItem('pw-popout-active', JSON.stringify(activePopoutTabId.value));
-  localStorage.setItem('pw-popout-visible', JSON.stringify(popoutVisible.value));
-  localStorage.setItem('pw-popout-rect', JSON.stringify(popoutFloatingRect.value));
-  localStorage.setItem('pw-popout-docked', JSON.stringify(popoutDocked.value));
-  localStorage.setItem('pw-popout-docked-rect', JSON.stringify(popoutDockedRect.value));
+  localStorage.setItem('pw-popout-panels', JSON.stringify(popoutPanels.value));
 }
 
 function nudgeResize() {
@@ -67,35 +97,97 @@ function nudgeResize() {
   }
 }
 
+export function allNumberedSessions(): string[] {
+  const result = [...openTabs.value];
+  for (const panel of popoutPanels.value) {
+    for (const sid of panel.sessionIds) {
+      if (!result.includes(sid)) result.push(sid);
+    }
+  }
+  return result;
+}
+
+export function findPanelForSession(sessionId: string): PopoutPanelState | undefined {
+  return popoutPanels.value.find((p) => p.sessionIds.includes(sessionId));
+}
+
+export function updatePanel(panelId: string, updates: Partial<PopoutPanelState>) {
+  popoutPanels.value = popoutPanels.value.map((p) =>
+    p.id === panelId ? { ...p, ...updates } : p
+  );
+}
+
+export function removePanel(panelId: string) {
+  popoutPanels.value = popoutPanels.value.filter((p) => p.id !== panelId);
+}
+
+export function getDockedPanels(): PopoutPanelState[] {
+  return popoutPanels.value.filter((p) => p.docked && p.visible);
+}
+
+const COLLAPSED_HANDLE_H = 48;
+
+export function getDockedPanelTop(panelId: string): number {
+  const docked = popoutPanels.value.filter((p) => p.docked);
+  let top = 40;
+  for (const p of docked) {
+    if (p.id === panelId) return top;
+    top += (p.visible ? p.dockedHeight : COLLAPSED_HANDLE_H) + 4;
+  }
+  return top;
+}
+
 export function popOutTab(sessionId: string) {
   openTabs.value = openTabs.value.filter((id) => id !== sessionId);
   if (activeTabId.value === sessionId) {
     const tabs = openTabs.value;
     activeTabId.value = tabs.length > 0 ? tabs[tabs.length - 1] : null;
   }
-  if (!poppedOutTabIds.value.includes(sessionId)) {
-    poppedOutTabIds.value = [...poppedOutTabIds.value, sessionId];
+  // If already in a panel, just make sure it's visible
+  const existing = findPanelForSession(sessionId);
+  if (existing) {
+    updatePanel(existing.id, { activeSessionId: sessionId, visible: true });
+    persistTabs();
+    persistPopoutState();
+    nudgeResize();
+    return;
   }
-  activePopoutTabId.value = sessionId;
-  popoutVisible.value = true;
+  const panel: PopoutPanelState = {
+    id: 'p-' + Math.random().toString(36).slice(2, 8),
+    sessionIds: [sessionId],
+    activeSessionId: sessionId,
+    docked: true,
+    visible: true,
+    floatingRect: { x: 200, y: 100, w: 700, h: 500 },
+    dockedHeight: 400,
+    dockedWidth: 500,
+  };
+  popoutPanels.value = [...popoutPanels.value, panel];
   persistTabs();
   persistPopoutState();
   nudgeResize();
 }
 
-export function popBackIn(sessionId?: string) {
-  const sid = sessionId || activePopoutTabId.value;
-  if (!sid) return;
-  poppedOutTabIds.value = poppedOutTabIds.value.filter((id) => id !== sid);
-  if (activePopoutTabId.value === sid) {
-    activePopoutTabId.value = poppedOutTabIds.value.length > 0
-      ? poppedOutTabIds.value[poppedOutTabIds.value.length - 1]
-      : null;
+export function popBackIn(sessionId: string) {
+  if (!sessionId) return;
+  const panel = findPanelForSession(sessionId);
+  if (panel) {
+    const remaining = panel.sessionIds.filter((id) => id !== sessionId);
+    if (remaining.length === 0) {
+      removePanel(panel.id);
+    } else {
+      updatePanel(panel.id, {
+        sessionIds: remaining,
+        activeSessionId: panel.activeSessionId === sessionId
+          ? remaining[remaining.length - 1]
+          : panel.activeSessionId,
+      });
+    }
   }
-  if (!openTabs.value.includes(sid)) {
-    openTabs.value = [...openTabs.value, sid];
+  if (!openTabs.value.includes(sessionId)) {
+    openTabs.value = [...openTabs.value, sessionId];
   }
-  activeTabId.value = sid;
+  activeTabId.value = sessionId;
   panelMinimized.value = false;
   persistTabs();
   persistPopoutState();
@@ -104,15 +196,17 @@ export function popBackIn(sessionId?: string) {
 }
 
 export function popBackInAll() {
-  const ids = [...poppedOutTabIds.value];
-  poppedOutTabIds.value = [];
-  activePopoutTabId.value = null;
-  for (const sid of ids) {
+  const allIds: string[] = [];
+  for (const panel of popoutPanels.value) {
+    allIds.push(...panel.sessionIds);
+  }
+  popoutPanels.value = [];
+  for (const sid of allIds) {
     if (!openTabs.value.includes(sid)) {
       openTabs.value = [...openTabs.value, sid];
     }
   }
-  if (ids.length > 0) activeTabId.value = ids[ids.length - 1];
+  if (allIds.length > 0) activeTabId.value = allIds[allIds.length - 1];
   panelMinimized.value = false;
   persistTabs();
   persistPopoutState();
@@ -120,21 +214,81 @@ export function popBackInAll() {
   nudgeResize();
 }
 
+export function moveSessionToPanel(sessionId: string, targetPanelId: string) {
+  // Remove from main tabs
+  if (openTabs.value.includes(sessionId)) {
+    openTabs.value = openTabs.value.filter((id) => id !== sessionId);
+    if (activeTabId.value === sessionId) {
+      activeTabId.value = openTabs.value.length > 0 ? openTabs.value[openTabs.value.length - 1] : null;
+    }
+  }
+  // Remove from source panel
+  const srcPanel = findPanelForSession(sessionId);
+  if (srcPanel && srcPanel.id !== targetPanelId) {
+    const remaining = srcPanel.sessionIds.filter((id) => id !== sessionId);
+    if (remaining.length === 0) {
+      removePanel(srcPanel.id);
+    } else {
+      updatePanel(srcPanel.id, {
+        sessionIds: remaining,
+        activeSessionId: srcPanel.activeSessionId === sessionId
+          ? remaining[remaining.length - 1]
+          : srcPanel.activeSessionId,
+      });
+    }
+  }
+  // Add to target panel
+  const target = popoutPanels.value.find((p) => p.id === targetPanelId);
+  if (target && !target.sessionIds.includes(sessionId)) {
+    updatePanel(targetPanelId, {
+      sessionIds: [...target.sessionIds, sessionId],
+      activeSessionId: sessionId,
+    });
+  }
+  persistTabs();
+  persistPopoutState();
+  nudgeResize();
+}
+
+export function splitFromPanel(sessionId: string) {
+  const srcPanel = findPanelForSession(sessionId);
+  if (!srcPanel) return;
+  const remaining = srcPanel.sessionIds.filter((id) => id !== sessionId);
+  if (remaining.length === 0) {
+    removePanel(srcPanel.id);
+  } else {
+    updatePanel(srcPanel.id, {
+      sessionIds: remaining,
+      activeSessionId: srcPanel.activeSessionId === sessionId
+        ? remaining[remaining.length - 1]
+        : srcPanel.activeSessionId,
+    });
+  }
+  const panel: PopoutPanelState = {
+    id: 'p-' + Math.random().toString(36).slice(2, 8),
+    sessionIds: [sessionId],
+    activeSessionId: sessionId,
+    docked: true,
+    visible: true,
+    floatingRect: { x: 200, y: 100, w: 700, h: 500 },
+    dockedHeight: 400,
+    dockedWidth: 500,
+  };
+  popoutPanels.value = [...popoutPanels.value, panel];
+  persistPopoutState();
+  nudgeResize();
+}
+
 export function togglePopoutVisibility() {
-  if (poppedOutTabIds.value.length === 0) {
+  if (popoutPanels.value.length === 0) {
     const active = activeTabId.value;
     if (active) popOutTab(active);
     return;
   }
-  popoutVisible.value = !popoutVisible.value;
+  const anyVisible = popoutPanels.value.some((p) => p.visible);
+  popoutPanels.value = popoutPanels.value.map((p) => ({ ...p, visible: !anyVisible }));
   persistPopoutState();
-  if (popoutVisible.value) nudgeResize();
-}
-
-export function setPopoutDocked(docked: boolean) {
-  popoutDocked.value = docked;
-  persistPopoutState();
-  nudgeResize();
+  if (!anyVisible) nudgeResize();
 }
 
 export function togglePopOutActive() {
@@ -246,8 +400,10 @@ export async function loadAllSessions(includeDeleted = false) {
   sessionsLoading.value = true;
   try {
     const tabs = [...openTabs.value];
-    for (const pid of poppedOutTabIds.value) {
-      if (!tabs.includes(pid)) tabs.push(pid);
+    for (const panel of popoutPanels.value) {
+      for (const sid of panel.sessionIds) {
+        if (!tabs.includes(sid)) tabs.push(sid);
+      }
     }
     allSessions.value = await api.getAgentSessions(undefined, tabs.length > 0 ? tabs : undefined, includeDeleted);
   } catch {
@@ -273,11 +429,18 @@ export function openSession(sessionId: string) {
 }
 
 export function closeTab(sessionId: string) {
-  if (poppedOutTabIds.value.includes(sessionId)) {
-    poppedOutTabIds.value = poppedOutTabIds.value.filter((id) => id !== sessionId);
-    if (activePopoutTabId.value === sessionId) {
-      activePopoutTabId.value = poppedOutTabIds.value.length > 0
-        ? poppedOutTabIds.value[poppedOutTabIds.value.length - 1] : null;
+  const panel = findPanelForSession(sessionId);
+  if (panel) {
+    const remaining = panel.sessionIds.filter((id) => id !== sessionId);
+    if (remaining.length === 0) {
+      removePanel(panel.id);
+    } else {
+      updatePanel(panel.id, {
+        sessionIds: remaining,
+        activeSessionId: panel.activeSessionId === sessionId
+          ? remaining[remaining.length - 1]
+          : panel.activeSessionId,
+      });
     }
     persistPopoutState();
     return;
@@ -338,9 +501,12 @@ export function markSessionExited(sessionId: string) {
 export async function resumeSession(sessionId: string): Promise<string | null> {
   try {
     const { sessionId: newId } = await api.resumeAgentSession(sessionId);
-    if (poppedOutTabIds.value.includes(sessionId)) {
-      poppedOutTabIds.value = poppedOutTabIds.value.map((id) => id === sessionId ? newId : id);
-      if (activePopoutTabId.value === sessionId) activePopoutTabId.value = newId;
+    const panel = findPanelForSession(sessionId);
+    if (panel) {
+      updatePanel(panel.id, {
+        sessionIds: panel.sessionIds.map((id) => id === sessionId ? newId : id),
+        activeSessionId: panel.activeSessionId === sessionId ? newId : panel.activeSessionId,
+      });
       persistPopoutState();
     } else {
       const tabs = openTabs.value.map((id) => (id === sessionId ? newId : id));
@@ -426,22 +592,48 @@ function clearPending() {
   if (pendingTabTimer) { clearTimeout(pendingTabTimer); pendingTabTimer = null; }
 }
 
+function activateGlobalSession(all: string[], num: number) {
+  if (num === 0) {
+    togglePopoutVisibility();
+    return;
+  }
+  const idx = num - 1;
+  if (idx < 0 || idx >= all.length) return;
+  const sid = all[idx];
+  if (openTabs.value.includes(sid)) {
+    openSession(sid);
+    return;
+  }
+  const panel = findPanelForSession(sid);
+  if (panel) {
+    if (panel.activeSessionId === sid && panel.visible) {
+      updatePanel(panel.id, { visible: false });
+    } else {
+      updatePanel(panel.id, { activeSessionId: sid, visible: true });
+    }
+    persistPopoutState();
+    nudgeResize();
+  }
+}
+
 export function handleTabDigit(digit: number) {
-  const tabs = openTabs.value;
+  const all = allNumberedSessions();
 
   if (pendingFirstDigit.value !== null) {
     const combined = pendingFirstDigit.value * 10 + digit;
     clearPending();
-    if (combined >= 1 && combined - 1 < tabs.length) openSession(tabs[combined - 1]);
+    activateGlobalSession(all, combined);
     return;
   }
 
-  // Jump immediately to single-digit tab
-  if (digit >= 1 && digit - 1 < tabs.length) openSession(tabs[digit - 1]);
+  activateGlobalSession(all, digit);
 
-  // Always start pending window for second digit
-  pendingFirstDigit.value = digit;
-  pendingTabTimer = setTimeout(clearPending, 500);
+  if (digit !== 0) {
+    if (all.length >= digit * 10 + 1) {
+      pendingFirstDigit.value = digit;
+      pendingTabTimer = setTimeout(clearPending, 500);
+    }
+  }
 }
 
 export function handleTabDigit0to9(digit: number) {

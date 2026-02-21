@@ -20,7 +20,9 @@ import {
   getViewMode,
   setViewMode,
   pendingFirstDigit,
+  allNumberedSessions,
 } from '../lib/sessions.js';
+import { startTabDrag } from '../lib/tab-drag.js';
 import { navigate, selectedAppId } from '../lib/state.js';
 import { showTabs } from '../lib/settings.js';
 import { ctrlShiftHeld } from '../lib/shortcuts.js';
@@ -134,19 +136,29 @@ export function GlobalTerminalPanel() {
       {hasTabs && (
         <div class="terminal-tab-bar">
           <div ref={tabsRef} class="terminal-tabs" onWheel={(e) => { e.preventDefault(); (e.currentTarget as HTMLElement).scrollLeft += e.deltaY; }}>
-            {tabs.map((sid, idx) => {
+            {tabs.map((sid) => {
               const isExited = exited.has(sid);
               const isActive = sid === activeId;
               const sess = sessionMap.get(sid);
               const isPlain = sess?.permissionProfile === 'plain';
               const raw = isPlain ? `Terminal ${sid.slice(-6)}` : (sess?.feedbackTitle || sess?.agentName || `Session ${sid.slice(-6)}`);
               const tabLabel = raw.length > 24 ? raw.slice(0, 24) + '\u2026' : raw;
-              const tabNum = idx + 1;
+              const globalSessions = allNumberedSessions();
+              const globalIdx = globalSessions.indexOf(sid);
+              const tabNum = globalIdx >= 0 ? globalIdx + 1 : null;
               return (
                 <button
                   key={sid}
                   class={`terminal-tab ${isActive ? 'active' : ''}`}
-                  onClick={() => openSession(sid)}
+                  onMouseDown={(e) => {
+                    if (e.button !== 0) return;
+                    startTabDrag(e, {
+                      sessionId: sid,
+                      source: 'main',
+                      label: tabLabel,
+                      onClickFallback: () => openSession(sid),
+                    });
+                  }}
                   title={sess?.feedbackTitle || sess?.agentName || sid}
                 >
                   <span
@@ -157,7 +169,7 @@ export function GlobalTerminalPanel() {
                       statusMenuOpen.value = { sessionId: sid, x: rect.left, y: rect.bottom + 4 };
                     }}
                   >
-                    {ctrlShiftHeld.value && (
+                    {ctrlShiftHeld.value && tabNum !== null && (
                       <TabBadge tabNum={tabNum} />
                     )}
                   </span>
@@ -223,10 +235,13 @@ export function GlobalTerminalPanel() {
           <>
             <button
               class="open-terminal-btn"
-              onClick={() => api.openSessionInTerminal(activeId).catch((e: any) => console.error('Open terminal failed:', e))}
-              title="Open this tmux session in Terminal.app"
+              onClick={() => {
+                const cmd = `TMUX= tmux -L prompt-widget attach-session -t pw-${activeId}`;
+                navigator.clipboard.writeText(cmd);
+              }}
+              title="Copy tmux attach command to clipboard"
             >
-              {'\u2386'} Terminal
+              {'\u2386'} Copy tmux
             </button>
             <select
               class="view-mode-select"

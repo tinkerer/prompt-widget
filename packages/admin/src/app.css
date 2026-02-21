@@ -3711,7 +3711,6 @@ kbd {
 .popout-grab-tab {
   position: fixed;
   width: 20px;
-  height: 100px;
   background: #312e81;
   border: 2px solid #6366f1;
   border-right: none;
@@ -3752,6 +3751,13 @@ kbd {
 @keyframes badge-glow {
   from { box-shadow: 0 0 4px rgba(99, 102, 241, 0.5); }
   to { box-shadow: 0 0 12px rgba(99, 102, 241, 0.9); }
+}
+
+/* Badge floating above top-left corner of floating panels */
+.popout-floating-badge {
+  position: fixed;
+  z-index: 960;
+  pointer-events: none;
 }
 
 /* Popout panel tab bar (multi-session) */
@@ -3798,6 +3804,59 @@ kbd {
 .popout-tab-close:hover {
   opacity: 1;
   color: #f87171;
+}
+
+/* Tab drag ghost */
+.tab-drag-ghost {
+  position: fixed;
+  z-index: 10000;
+  pointer-events: none;
+  padding: 4px 12px;
+  background: var(--pw-terminal-bg);
+  border: 2px solid #6366f1;
+  border-radius: 4px;
+  color: #e2e8f0;
+  font-size: 12px;
+  white-space: nowrap;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  opacity: 0.9;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.tab-drag-ghost.will-drop {
+  border-color: #22c55e;
+  box-shadow: 0 4px 16px rgba(34, 197, 94, 0.3);
+}
+
+/* Dimmed source tab during drag */
+.terminal-tab.tab-dragging,
+.popout-tab.tab-dragging {
+  opacity: 0.3;
+}
+
+/* Drop zone highlights */
+.terminal-tab-bar.drop-target {
+  box-shadow: inset 0 -2px 0 #22c55e;
+}
+[data-panel-id].drop-target {
+  box-shadow: 0 0 0 2px #22c55e;
+}
+
+/* Sidebar session in panel indicator */
+.sidebar-session-item.in-panel {
+  border-left: 2px solid #6366f1;
+}
+
+/* Docked panel gap resize */
+.docked-panel-resize-gap {
+  height: 4px;
+  cursor: ns-resize;
+  position: fixed;
+  right: 0;
+  z-index: 951;
+  background: transparent;
+}
+.docked-panel-resize-gap:hover {
+  background: rgba(99, 102, 241, 0.4);
 }
 
 /* ==================== Spotlight Search ==================== */

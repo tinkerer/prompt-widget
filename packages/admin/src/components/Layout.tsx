@@ -40,6 +40,9 @@ import {
   toggleTypeFilter,
   toggleSessionFiltersOpen,
   sessionPassesFilters,
+  allNumberedSessions,
+  popoutPanels,
+  findPanelForSession,
 } from '../lib/sessions.js';
 
 const liveConnectionCounts = signal<Record<string, number>>({});
@@ -120,7 +123,15 @@ export function Layout({ children }: { children: ComponentChildren }) {
       }),
       registerShortcut({
         key: ' ',
+        code: 'Space',
         modifiers: { ctrl: true, shift: true },
+        label: 'Spotlight search',
+        category: 'General',
+        action: () => setShowSpotlight((v) => !v),
+      }),
+      registerShortcut({
+        key: 'k',
+        modifiers: { meta: true },
         label: 'Spotlight search',
         category: 'General',
         action: () => setShowSpotlight((v) => !v),
@@ -264,6 +275,9 @@ export function Layout({ children }: { children: ComponentChildren }) {
   const sessions = allSessions.value;
   const tabs = openTabs.value;
   const tabSet = new Set(tabs);
+  for (const panel of popoutPanels.value) {
+    for (const sid of panel.sessionIds) tabSet.add(sid);
+  }
   const visibleSessions = sessions.filter((s: any) => sessionPassesFilters(s, tabSet));
   const recentSessions = [...visibleSessions]
     .sort((a, b) => {
@@ -559,6 +573,8 @@ export function Layout({ children }: { children: ComponentChildren }) {
                       })
                       .map((s, i, arr) => {
                         const isTabbed = tabSet.has(s.id);
+                        const isInPanel = !!findPanelForSession(s.id);
+                        const isNumbered = isTabbed || isInPanel;
                         const prevTabbed = i > 0 && tabSet.has(arr[i - 1].id);
                         const isPlain = s.permissionProfile === 'plain';
                         const raw = isPlain ? `Terminal ${s.id.slice(-6)}` : (s.feedbackTitle || s.agentName || `Session ${s.id.slice(-6)}`);
@@ -567,18 +583,21 @@ export function Layout({ children }: { children: ComponentChildren }) {
                           : s.feedbackTitle
                             ? `${s.feedbackTitle} \u2014 ${s.status}`
                             : `${s.agentName || 'Session'} \u2014 ${s.status}`;
+                        const globalSessions = allNumberedSessions();
+                        const globalIdx = globalSessions.indexOf(s.id);
+                        const globalNum = globalIdx >= 0 ? globalIdx + 1 : null;
                         return (
                           <div key={s.id}>
                             {i > 0 && prevTabbed && !isTabbed && (
                               <div class="sidebar-divider" style={{ margin: '4px 0' }} />
                             )}
                             <div
-                              class={`sidebar-session-item ${isTabbed ? 'tabbed' : ''}`}
+                              class={`sidebar-session-item ${isTabbed ? 'tabbed' : ''} ${isInPanel ? 'in-panel' : ''}`}
                               onClick={() => openSession(s.id)}
                               title={tooltip}
                             >
-                              {ctrlShiftHeld.value && isTabbed ? (
-                                <SidebarTabBadge tabNum={tabs.indexOf(s.id) + 1} />
+                              {ctrlShiftHeld.value && isNumbered && globalNum !== null ? (
+                                <SidebarTabBadge tabNum={globalNum} />
                               ) : (
                                 <span class={`session-status-dot ${s.status}`} title={s.status} />
                               )}
