@@ -274,12 +274,12 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
             {docked ? '\u25A1 Float' : '\u25E8 Dock'}
           </button>
           {activeId && !isExited && session?.feedbackId && (
-            <button onClick={() => resolveSession(activeId, session.feedbackId)} title="Resolve">Resolve</button>
+            <button class="btn-resolve" onClick={() => resolveSession(activeId, session.feedbackId)} title="Resolve">Resolve</button>
           )}
           {activeId && (isExited ? (
             <button onClick={() => resumeSession(activeId)} title="Resume">Resume</button>
           ) : (
-            <button onClick={() => killSession(activeId)} title="Kill">Kill</button>
+            <button class="btn-kill" onClick={() => killSession(activeId)} title="Kill">Kill</button>
           ))}
           <button onClick={() => popBackIn(activeId)} title="Pop back into tab bar">{'\u2199'} Pop in</button>
         </div>

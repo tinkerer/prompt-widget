@@ -20,9 +20,13 @@ import {
   sidebarWidth,
   toggleSidebar,
   allSessions,
+  exitedSessions,
   startSessionPolling,
   openSession,
   deleteSession,
+  killSession,
+  resumeSession,
+  closeTab,
   sessionsDrawerOpen,
   sessionSearchQuery,
   toggleSessionsDrawer,
@@ -47,6 +51,19 @@ import {
 
 const liveConnectionCounts = signal<Record<string, number>>({});
 const totalLiveConnections = signal(0);
+const sidebarStatusMenu = signal<{ sessionId: string; x: number; y: number } | null>(null);
+
+async function sidebarResolveSession(sessionId: string, feedbackId?: string) {
+  await killSession(sessionId);
+  if (feedbackId) {
+    try {
+      await api.updateFeedback(feedbackId, { status: 'resolved' });
+    } catch (err: any) {
+      console.error('Resolve feedback failed:', err.message);
+    }
+  }
+  closeTab(sessionId);
+}
 
 async function pollLiveConnections() {
   try {
@@ -100,6 +117,13 @@ export function Layout({ children }: { children: ComponentChildren }) {
       stopSessionPolling();
     };
   }, []);
+
+  useEffect(() => {
+    if (!sidebarStatusMenu.value) return;
+    const close = () => { sidebarStatusMenu.value = null; };
+    document.addEventListener('click', close);
+    return () => document.removeEventListener('click', close);
+  }, [sidebarStatusMenu.value]);
 
   useEffect(() => {
     const cleanups = [
@@ -599,7 +623,15 @@ export function Layout({ children }: { children: ComponentChildren }) {
                               {ctrlShiftHeld.value && isNumbered && globalNum !== null ? (
                                 <SidebarTabBadge tabNum={globalNum} />
                               ) : (
-                                <span class={`session-status-dot ${s.status}`} title={s.status} />
+                                <span
+                                  class={`session-status-dot ${s.status}`}
+                                  title={s.status}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                    sidebarStatusMenu.value = { sessionId: s.id, x: rect.right + 4, y: rect.top };
+                                  }}
+                                />
                               )}
                               <span class="session-label">{raw}</span>
                               <button
@@ -649,6 +681,31 @@ export function Layout({ children }: { children: ComponentChildren }) {
       <PopoutPanel />
       {showShortcutHelp && <ShortcutHelpModal onClose={() => setShowShortcutHelp(false)} />}
       {showSpotlight && <SpotlightSearch onClose={() => setShowSpotlight(false)} />}
+      {sidebarStatusMenu.value && (() => {
+        const menuSid = sidebarStatusMenu.value!.sessionId;
+        const menuSess = allSessions.value.find((s: any) => s.id === menuSid);
+        const menuExited = exitedSessions.value.has(menuSid);
+        const isRunning = menuSess?.status === 'running';
+        return (
+          <div
+            class="status-dot-menu"
+            style={{ left: `${sidebarStatusMenu.value!.x}px`, top: `${sidebarStatusMenu.value!.y}px` }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {isRunning && !menuExited && (
+              <button onClick={() => { sidebarStatusMenu.value = null; killSession(menuSid); }}>Kill</button>
+            )}
+            {isRunning && !menuExited && menuSess?.feedbackId && (
+              <button onClick={() => { sidebarStatusMenu.value = null; sidebarResolveSession(menuSid, menuSess.feedbackId); }}>Resolve</button>
+            )}
+            {menuExited && (
+              <button onClick={() => { sidebarStatusMenu.value = null; resumeSession(menuSid); }}>Resume</button>
+            )}
+            <button onClick={() => { sidebarStatusMenu.value = null; closeTab(menuSid); }}>Close tab</button>
+            <button onClick={() => { sidebarStatusMenu.value = null; deleteSession(menuSid); }}>Archive</button>
+          </div>
+        );
+      })()}
     </div>
   );
 }
