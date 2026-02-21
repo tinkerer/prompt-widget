@@ -52,23 +52,22 @@ function buildClaudeArgs(
   prompt: string,
   permissionProfile: string,
   allowedTools?: string | null,
-): { command: string; args: string[]; sendPromptAfterSpawn: boolean } {
+): { command: string; args: string[] } {
   switch (permissionProfile) {
     case 'interactive':
-      return { command: 'claude', args: [], sendPromptAfterSpawn: true };
+      return { command: 'claude', args: prompt ? [prompt] : [] };
     case 'auto': {
       const args = ['-p', prompt];
       if (allowedTools) args.push('--allowedTools', allowedTools);
-      return { command: 'claude', args, sendPromptAfterSpawn: false };
+      return { command: 'claude', args };
     }
     case 'yolo':
       return {
         command: 'claude',
         args: ['-p', prompt, '--dangerously-skip-permissions'],
-        sendPromptAfterSpawn: false,
       };
     default:
-      return { command: 'claude', args: [], sendPromptAfterSpawn: true };
+      return { command: 'claude', args: prompt ? [prompt] : [] };
   }
 }
 
@@ -112,7 +111,7 @@ function spawnSession(params: {
     return;
   }
 
-  const { command, args, sendPromptAfterSpawn } = buildClaudeArgs(prompt, permissionProfile, allowedTools);
+  const { command, args } = buildClaudeArgs(prompt, permissionProfile, allowedTools);
   const useTmux = isTmuxAvailable();
 
   console.log(`[launcher] Spawning session ${sessionId}: profile=${permissionProfile}, cwd=${cwd}, tmux=${useTmux}`);
@@ -176,26 +175,6 @@ function spawnSession(params: {
     sessions.delete(sessionId);
   });
 
-  if (sendPromptAfterSpawn) {
-    let sent = false;
-    let outputSoFar = '';
-
-    const trySend = () => {
-      if (sent) return;
-      sent = true;
-      try { ptyProcess.write(prompt + '\r'); } catch {}
-    };
-
-    const disposable = ptyProcess.onData((data: string) => {
-      if (sent) return;
-      outputSoFar += data;
-      if (outputSoFar.includes('>') || outputSoFar.includes('Type your') || outputSoFar.length > 500) {
-        setTimeout(() => { trySend(); disposable.dispose(); }, 300);
-      }
-    });
-
-    setTimeout(() => { disposable.dispose(); trySend(); }, 5000);
-  }
 }
 
 function handleServerMessage(msg: ServerToLauncherMessage): void {
