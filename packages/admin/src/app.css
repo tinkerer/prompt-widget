@@ -1969,6 +1969,11 @@ input:focus, select:focus, textarea:focus {
   flex-shrink: 0;
   position: relative;
   overflow: visible;
+  cursor: pointer;
+}
+
+.session-status-dot:hover {
+  box-shadow: 0 0 0 3px rgba(255,255,255,0.2);
 }
 
 .session-status-dot.running { background: #22c55e; }
@@ -3657,6 +3662,24 @@ kbd {
 .popout-header-actions button:hover {
   color: #e2e8f0;
   border-color: #64748b;
+}
+.popout-header-actions button.btn-resolve {
+  color: #4ade80;
+  border-color: #166534;
+}
+.popout-header-actions button.btn-resolve:hover {
+  color: #22c55e;
+  border-color: #15803d;
+  background: rgba(34, 197, 94, 0.1);
+}
+.popout-header-actions button.btn-kill {
+  color: #f87171;
+  border-color: #7f1d1d;
+}
+.popout-header-actions button.btn-kill:hover {
+  color: #ef4444;
+  border-color: #991b1b;
+  background: rgba(239, 68, 68, 0.1);
 }
 
 .popout-body {

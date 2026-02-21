@@ -112,15 +112,17 @@ agentSessionRoutes.post('/:id/archive', async (c) => {
 agentSessionRoutes.post('/:id/open-terminal', async (c) => {
   const id = c.req.param('id');
   const tmuxName = `pw-${id}`;
-  const { execSync } = await import('node:child_process');
+  const { execFileSync } = await import('node:child_process');
+  const { resolve, dirname } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
   try {
-    // Check session exists on the prompt-widget socket
-    execSync(`tmux -L prompt-widget has-session -t ${tmuxName}`, { stdio: 'pipe' });
+    execFileSync('tmux', ['-L', 'prompt-widget', 'has-session', '-t', tmuxName], { stdio: 'pipe' });
   } catch {
     return c.json({ error: 'Tmux session not found' }, 404);
   }
   try {
-    execSync(`osascript -e 'tell application "Terminal"' -e 'activate' -e 'do script "tmux -L prompt-widget attach-session -t ${tmuxName}"' -e 'end tell'`, { stdio: 'pipe' });
+    const scriptPath = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'open-in-terminal.sh');
+    execFileSync(scriptPath, [tmuxName], { stdio: 'pipe' });
     return c.json({ ok: true, tmuxName });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);

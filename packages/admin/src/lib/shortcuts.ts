@@ -63,15 +63,17 @@ function normalizeCode(code: string): string {
 function handleKeyDown(e: KeyboardEvent) {
   if (!shortcutsEnabled.value) return;
   const code = normalizeCode(e.code);
-  if (isInputFocused() && e.key !== 'Escape') {
-    // Ctrl+Shift+Space (spotlight) works from any context
-    if (e.ctrlKey && e.shiftKey && e.code === 'Space') { /* allow through */ }
+  const ctrlOrMeta = e.ctrlKey || e.metaKey;
+  const inXterm = !!document.activeElement?.closest?.('.xterm');
+  if (isInputFocused() && (e.key !== 'Escape' || inXterm)) {
+    // Spotlight shortcut works from any context
+    if (ctrlOrMeta && e.shiftKey && e.code === 'Space') { /* allow through */ }
+    else if (ctrlOrMeta && e.key === 'k') { /* allow through */ }
     else {
-      const inXterm = !!document.activeElement?.closest?.('.xterm');
       const isArrow = e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown';
       const isDigit = /^Digit[0-9]$/.test(code);
       const isMinusEqual = code === 'Minus' || code === 'Equal';
-      if (!(inXterm && e.ctrlKey && e.shiftKey && (isArrow || isDigit || isMinusEqual))) return;
+      if (!(inXterm && ctrlOrMeta && e.shiftKey && (isArrow || isDigit || isMinusEqual))) return;
     }
   }
 
