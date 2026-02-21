@@ -1,9 +1,211 @@
 import { ulid } from 'ulidx';
-import { eq } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import type { FeedbackItem, PermissionProfile, LaunchSession } from '@prompt-widget/shared';
 import { db, schema } from './db/index.js';
 import { spawnAgentSession } from './agent-sessions.js';
 import { getLauncher, addSessionToLauncher } from './launcher-registry.js';
+
+export function hydrateFeedback(row: typeof schema.feedbackItems.$inferSelect, tags: string[], screenshots: (typeof schema.feedbackScreenshots.$inferSelect)[]): FeedbackItem {
+  return {
+    ...row,
+    type: row.type as FeedbackItem['type'],
+    status: row.status as FeedbackItem['status'],
+    data: row.data ? JSON.parse(row.data) : null,
+    context: row.context ? JSON.parse(row.context) : null,
+    appId: row.appId || null,
+    tags,
+    screenshots,
+  };
+}
+
+export const DEFAULT_PROMPT_TEMPLATE = `do feedback item {{feedback.id}}
+
+Title: {{feedback.title}}
+{{feedback.description}}
+URL: {{feedback.sourceUrl}}
+
+App: {{app.name}}
+Project dir: {{app.projectDir}}
+App description: {{app.description}}
+
+{{feedback.consoleLogs}}
+{{feedback.networkErrors}}
+{{feedback.data}}
+{{instructions}}
+
+consider screenshot`;
+
+export function renderPromptTemplate(
+  template: string,
+  fb: FeedbackItem,
+  app: { name: string; projectDir: string; description?: string; [key: string]: unknown } | null,
+  instructions?: string
+): string {
+  let consoleLogs = '';
+  if (fb.context?.consoleLogs?.length) {
+    consoleLogs = 'Console logs:\n' + fb.context.consoleLogs.map(
+      (l) => `  [${l.level.toUpperCase()}] ${l.message}`
+    ).join('\n');
+  }
+
+  let networkErrors = '';
+  if (fb.context?.networkErrors?.length) {
+    networkErrors = 'Network errors:\n' + fb.context.networkErrors.map(
+      (e) => `  ${e.method} ${e.url} → ${e.status} ${e.statusText}`
+    ).join('\n');
+  }
+
+  let customData = '';
+  if (fb.data) {
+    customData = `Custom data: ${JSON.stringify(fb.data, null, 2)}`;
+  }
+
+  const vars: Record<string, string> = {
+    'feedback.id': fb.id,
+    'feedback.title': fb.title || '',
+    'feedback.description': fb.description || '',
+    'feedback.sourceUrl': fb.sourceUrl || '',
+    'feedback.tags': fb.tags?.join(', ') || '',
+    'feedback.consoleLogs': consoleLogs,
+    'feedback.networkErrors': networkErrors,
+    'feedback.data': customData,
+    'app.name': app?.name || '',
+    'app.projectDir': app?.projectDir || '',
+    'app.description': app?.description || '',
+    'instructions': instructions || '',
+  };
+
+  let result = template;
+  for (const [key, value] of Object.entries(vars)) {
+    result = result.replaceAll(`{{${key}}}`, value);
+  }
+
+  result = result.replace(/\n{3,}/g, '\n\n');
+  return result.trim();
+}
+
+export async function dispatchFeedbackToAgent(params: {
+  feedbackId: string;
+  agentEndpointId: string;
+  instructions?: string;
+}): Promise<{ dispatched: boolean; sessionId?: string; status: number; response: string; existing?: boolean }> {
+  const { feedbackId, agentEndpointId, instructions } = params;
+
+  const [feedback, agent] = await Promise.all([
+    db.query.feedbackItems.findFirst({
+      where: eq(schema.feedbackItems.id, feedbackId),
+    }),
+    db.query.agentEndpoints.findFirst({
+      where: eq(schema.agentEndpoints.id, agentEndpointId),
+    }),
+  ]);
+  if (!feedback) throw new Error('Feedback not found');
+  if (!agent) throw new Error('Agent endpoint not found');
+
+  const tags = db
+    .select()
+    .from(schema.feedbackTags)
+    .where(eq(schema.feedbackTags.feedbackId, feedbackId))
+    .all()
+    .map((t) => t.tag);
+  const screenshots = db
+    .select()
+    .from(schema.feedbackScreenshots)
+    .where(eq(schema.feedbackScreenshots.feedbackId, feedbackId))
+    .all();
+
+  const hydratedFeedback = hydrateFeedback(feedback, tags, screenshots);
+
+  let app = null;
+  if (feedback.appId) {
+    const appRow = await db.query.applications.findFirst({
+      where: eq(schema.applications.id, feedback.appId),
+    });
+    if (appRow) {
+      app = { ...appRow, hooks: JSON.parse(appRow.hooks) };
+    }
+  }
+
+  const mode = (agent.mode || 'webhook') as 'webhook' | 'headless' | 'interactive';
+
+  if (mode !== 'webhook') {
+    const existing = db
+      .select()
+      .from(schema.agentSessions)
+      .where(
+        and(
+          eq(schema.agentSessions.feedbackId, feedbackId),
+          sql`${schema.agentSessions.status} IN ('pending', 'running')`
+        )
+      )
+      .get();
+
+    if (existing) {
+      return {
+        dispatched: true,
+        sessionId: existing.id,
+        status: 200,
+        response: `Existing active session: ${existing.id}`,
+        existing: true,
+      };
+    }
+  }
+
+  if (mode === 'webhook') {
+    const result = await dispatchWebhook(agent.url, agent.authHeader, {
+      feedback: hydratedFeedback,
+      instructions,
+    });
+
+    const now = new Date().toISOString();
+    await db.update(schema.feedbackItems).set({
+      status: 'dispatched',
+      dispatchedTo: agent.name,
+      dispatchedAt: now,
+      dispatchStatus: result.status >= 200 && result.status < 300 ? 'success' : 'error',
+      dispatchResponse: result.response.slice(0, 5000),
+      updatedAt: now,
+    }).where(eq(schema.feedbackItems.id, feedbackId));
+
+    return {
+      dispatched: true,
+      status: result.status,
+      response: result.response.slice(0, 1000),
+    };
+  } else {
+    const cwd = app?.projectDir || process.cwd();
+    const permissionProfile = (agent.permissionProfile || 'interactive') as PermissionProfile;
+
+    const template = agent.promptTemplate || DEFAULT_PROMPT_TEMPLATE;
+    const prompt = renderPromptTemplate(template, hydratedFeedback, app, instructions);
+
+    const { sessionId } = await dispatchAgentSession({
+      feedbackId,
+      agentEndpointId,
+      prompt,
+      cwd,
+      permissionProfile,
+      allowedTools: agent.allowedTools,
+    });
+
+    const now = new Date().toISOString();
+    db.update(schema.feedbackItems).set({
+      status: 'dispatched',
+      dispatchedTo: agent.name,
+      dispatchedAt: now,
+      dispatchStatus: 'running',
+      dispatchResponse: `Agent session started: ${sessionId}`,
+      updatedAt: now,
+    }).where(eq(schema.feedbackItems.id, feedbackId)).run();
+
+    return {
+      dispatched: true,
+      sessionId,
+      status: 200,
+      response: `Agent session started: ${sessionId}`,
+    };
+  }
+}
 
 export async function dispatchWebhook(
   url: string,

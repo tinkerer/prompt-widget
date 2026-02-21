@@ -73,7 +73,8 @@ function handleKeyDown(e: KeyboardEvent) {
       const isArrow = e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown';
       const isDigit = /^Digit[0-9]$/.test(code);
       const isMinusEqual = code === 'Minus' || code === 'Equal';
-      if (!(inXterm && ctrlOrMeta && e.shiftKey && (isArrow || isDigit || isMinusEqual))) return;
+      const isCloseTab = code === 'KeyW';
+      if (!(inXterm && ctrlOrMeta && e.shiftKey && (isArrow || isDigit || isMinusEqual || isCloseTab))) return;
     }
   }
 

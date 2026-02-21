@@ -308,6 +308,7 @@ export const sidebarCollapsed = signal(localStorage.getItem('pw-sidebar-collapse
 export const sidebarWidth = signal(
   sidebarCollapsed.value ? SIDEBAR_WIDTH_COLLAPSED : loadJson('pw-sidebar-width', SIDEBAR_DEFAULT_WIDTH)
 );
+export const sidebarAnimating = signal(false);
 
 export const allSessions = signal<any[]>([]);
 export const sessionsLoading = signal(false);
@@ -367,11 +368,13 @@ export function sessionPassesFilters(s: any, tabSet: Set<string>): boolean {
 }
 
 export function toggleSidebar() {
+  sidebarAnimating.value = true;
   sidebarCollapsed.value = !sidebarCollapsed.value;
   localStorage.setItem('pw-sidebar-collapsed', String(sidebarCollapsed.value));
   sidebarWidth.value = sidebarCollapsed.value
     ? SIDEBAR_WIDTH_COLLAPSED
     : loadJson('pw-sidebar-width', SIDEBAR_DEFAULT_WIDTH);
+  setTimeout(() => { sidebarAnimating.value = false; }, 220);
 }
 
 export function setSidebarWidth(w: number) {

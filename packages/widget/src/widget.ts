@@ -16,11 +16,13 @@ import { installCollectors, collectContext } from './collectors.js';
 import { captureScreenshot } from './screenshot.js';
 import { SessionBridge } from './session.js';
 import { startPicker, type SelectedElementInfo } from './element-picker.js';
+import { OverlayPanelManager, type PanelType } from './overlay-panels.js';
 
 type EventHandler = (data: unknown) => void;
 
 const HISTORY_KEY = 'pw-history';
 const MAX_HISTORY = 50;
+const LONG_PRESS_MS = 500;
 
 export class PromptWidgetElement {
   private shadow: ShadowRoot;
@@ -36,6 +38,11 @@ export class PromptWidgetElement {
   private currentDraft = '';
   private selectedElement: SelectedElementInfo | null = null;
   private pickerCleanup: (() => void) | null = null;
+  private overlayManager: OverlayPanelManager;
+  private adminMode: boolean;
+  private longPressTimer: ReturnType<typeof setTimeout> | null = null;
+  private menuOpen = false;
+  private appId: string;
 
   constructor() {
     this.host = document.createElement('prompt-widget-host');
@@ -57,6 +64,9 @@ export class PromptWidgetElement {
       appKey: script?.dataset.appKey || undefined,
     };
 
+    this.adminMode = script?.dataset.admin === 'true';
+    this.appId = this.extractAppId(this.config.appKey) || '__default__';
+
     this.loadHistory();
     installCollectors(this.config.collectors);
     this.render();
@@ -64,6 +74,15 @@ export class PromptWidgetElement {
 
     this.sessionBridge = new SessionBridge(this.config.endpoint, this.getSessionId(), this.config.collectors, this.config.appKey);
     this.sessionBridge.connect();
+
+    this.overlayManager = new OverlayPanelManager(this.shadow, this.config.endpoint, this.appId);
+  }
+
+  private extractAppId(appKey?: string): string | null {
+    if (!appKey) return null;
+    // appKey is like pw_XXXX, the server resolves this to an appId
+    // For overlay URLs we need appId; use appKey as fallback
+    return appKey;
   }
 
   private loadHistory() {
@@ -93,8 +112,133 @@ export class PromptWidgetElement {
     const btn = document.createElement('button');
     btn.className = `pw-trigger ${this.config.position}`;
     btn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.2L4 17.2V4h16v12z"/></svg>`;
-    btn.addEventListener('click', () => this.toggle());
+
+    if (this.adminMode) {
+      const badge = document.createElement('span');
+      badge.className = 'pw-trigger-badge';
+      badge.textContent = '\u2699';
+      btn.appendChild(badge);
+    }
+
+    // Admin mode: single click opens menu. Normal mode: click opens feedback, long-press/right-click opens menu
+    if (this.adminMode) {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.toggleAdminMenu();
+      });
+    } else {
+      let didLongPress = false;
+
+      btn.addEventListener('mousedown', () => {
+        didLongPress = false;
+        this.longPressTimer = setTimeout(() => {
+          didLongPress = true;
+          this.showAdminMenu();
+        }, LONG_PRESS_MS);
+      });
+
+      btn.addEventListener('mouseup', () => {
+        if (this.longPressTimer) {
+          clearTimeout(this.longPressTimer);
+          this.longPressTimer = null;
+        }
+      });
+
+      btn.addEventListener('click', (e) => {
+        if (didLongPress) {
+          didLongPress = false;
+          return;
+        }
+        this.toggle();
+      });
+
+      btn.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        if (this.longPressTimer) {
+          clearTimeout(this.longPressTimer);
+          this.longPressTimer = null;
+        }
+        this.showAdminMenu();
+      });
+    }
+
     this.shadow.appendChild(btn);
+  }
+
+  private toggleAdminMenu() {
+    if (this.menuOpen) {
+      this.closeAdminMenu();
+    } else {
+      this.showAdminMenu();
+    }
+  }
+
+  private showAdminMenu() {
+    this.closeAdminMenu();
+    this.menuOpen = true;
+
+    const menu = document.createElement('div');
+    menu.className = 'pw-admin-menu';
+
+    const trigger = this.shadow.querySelector('.pw-trigger') as HTMLElement;
+    const rect = trigger.getBoundingClientRect();
+
+    // Position relative to trigger
+    const pos = this.config.position;
+    if (pos.includes('right')) {
+      menu.style.right = `${window.innerWidth - rect.right}px`;
+    } else {
+      menu.style.left = `${rect.left}px`;
+    }
+    if (pos.includes('bottom')) {
+      menu.style.bottom = `${window.innerHeight - rect.top + 8}px`;
+    } else {
+      menu.style.top = `${rect.bottom + 8}px`;
+    }
+
+    const items: Array<{ icon: string; label: string; action: () => void }> = [
+      { icon: '\u{1F4CB}', label: 'Feedback', action: () => { this.closeAdminMenu(); this.overlayManager.openPanel('feedback'); } },
+      { icon: '\u26A1', label: 'Sessions', action: () => { this.closeAdminMenu(); this.overlayManager.openPanel('sessions'); } },
+      { icon: '\u{1F4CA}', label: 'Aggregate', action: () => { this.closeAdminMenu(); this.overlayManager.openPanel('aggregate'); } },
+      { icon: '\u{1F4BB}', label: 'Terminal', action: () => { this.closeAdminMenu(); this.overlayManager.openPanel('terminal'); } },
+      { icon: '\u2699', label: 'Settings', action: () => { this.closeAdminMenu(); this.overlayManager.openPanel('settings'); } },
+    ];
+
+    for (const item of items) {
+      const btn = document.createElement('button');
+      btn.className = 'pw-admin-menu-item';
+      btn.innerHTML = `<span class="pw-admin-menu-item-icon">${item.icon}</span>${item.label}`;
+      btn.addEventListener('click', (e) => { e.stopPropagation(); item.action(); });
+      menu.appendChild(btn);
+    }
+
+    // Divider + feedback form
+    const divider = document.createElement('div');
+    divider.className = 'pw-admin-menu-divider';
+    menu.appendChild(divider);
+
+    const feedbackBtn = document.createElement('button');
+    feedbackBtn.className = 'pw-admin-menu-item';
+    feedbackBtn.innerHTML = `<span class="pw-admin-menu-item-icon">\u2709</span>Send Feedback`;
+    feedbackBtn.addEventListener('click', (e) => { e.stopPropagation(); this.closeAdminMenu(); this.open(); });
+    menu.appendChild(feedbackBtn);
+
+    this.shadow.appendChild(menu);
+
+    // Close on outside click
+    const closeHandler = (e: Event) => {
+      if (!menu.contains(e.target as Node)) {
+        this.closeAdminMenu();
+        document.removeEventListener('click', closeHandler);
+      }
+    };
+    setTimeout(() => document.addEventListener('click', closeHandler), 0);
+  }
+
+  private closeAdminMenu() {
+    const existing = this.shadow.querySelector('.pw-admin-menu');
+    if (existing) existing.remove();
+    this.menuOpen = false;
   }
 
   private renderPanel() {
@@ -115,6 +259,7 @@ export class PromptWidgetElement {
           <label class="pw-check"><input type="checkbox" value="environment" checked /><span>Page info</span></label>
           <label class="pw-check"><input type="checkbox" value="network" checked /><span>Network</span></label>
           <label class="pw-check"><input type="checkbox" value="performance" checked /><span>Perf</span></label>
+          ${this.sessionBridge.autoDispatch ? '<label class="pw-check"><input type="checkbox" id="pw-auto-dispatch" checked /><span>Auto-dispatch</span></label>' : ''}
         </div>
         <div class="pw-toolbar">
           <button class="pw-camera-btn" id="pw-capture-btn" title="Capture screenshot">
@@ -440,6 +585,11 @@ export class PromptWidgetElement {
     return Array.from(checkboxes).map((cb) => (cb as HTMLInputElement).value as Collector);
   }
 
+  private getAutoDispatchChecked(): boolean {
+    const cb = this.shadow.querySelector('#pw-auto-dispatch') as HTMLInputElement | null;
+    return cb ? cb.checked : false;
+  }
+
   private async handleSubmit() {
     const input = this.shadow.querySelector('#pw-chat-input') as HTMLTextAreaElement;
     const errorEl = this.shadow.querySelector('#pw-error') as HTMLElement;
@@ -452,8 +602,10 @@ export class PromptWidgetElement {
     errorEl.classList.add('pw-hidden');
     input.disabled = true;
 
+    const autoDispatch = this.getAutoDispatchChecked();
+
     try {
-      await this.submitFeedback({ type: 'manual', title: '', description }, this.getCheckedCollectors());
+      await this.submitFeedback({ type: 'manual', title: '', description, autoDispatch }, this.getCheckedCollectors());
 
       if (description) {
         this.history.push(description);
@@ -486,7 +638,7 @@ export class PromptWidgetElement {
     setTimeout(() => this.close(), 1000);
   }
 
-  private async submitFeedback(opts: { type: string; title: string; description: string }, collectors?: Collector[]) {
+  private async submitFeedback(opts: { type: string; title: string; description: string; autoDispatch?: boolean }, collectors?: Collector[]) {
     const context = collectContext(collectors ?? this.config.collectors);
 
     const feedbackPayload: Record<string, unknown> = {
@@ -500,6 +652,9 @@ export class PromptWidgetElement {
       sessionId: this.getSessionId(),
       userId: this.identity?.id,
     };
+    if (opts.autoDispatch) {
+      feedbackPayload.autoDispatch = true;
+    }
     if (this.selectedElement) {
       feedbackPayload.data = { selectedElement: this.selectedElement };
     }
@@ -656,8 +811,26 @@ export class PromptWidgetElement {
     this.eventHandlers.get(event)!.add(handler);
   }
 
+  openAdmin(panel?: PanelType, opts?: { param?: string }) {
+    if (panel) {
+      this.overlayManager.openPanel(panel, opts);
+    } else {
+      this.showAdminMenu();
+    }
+  }
+
+  closeAdmin() {
+    this.overlayManager.closeAll();
+  }
+
+  setAdminToken(token: string) {
+    sessionStorage.setItem('pw-admin-token-overlay', token);
+  }
+
   destroy() {
     this.close();
+    this.closeAdminMenu();
+    this.overlayManager.destroy();
     this.sessionBridge.disconnect();
     this.host.remove();
   }

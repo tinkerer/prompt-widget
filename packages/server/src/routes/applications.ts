@@ -88,6 +88,7 @@ applicationRoutes.patch('/:id', async (c) => {
   if ('defaultAllowedTools' in body) updates.defaultAllowedTools = body.defaultAllowedTools || null;
   if ('agentPath' in body) updates.agentPath = body.agentPath || null;
   if ('screenshotIncludeWidget' in body) updates.screenshotIncludeWidget = !!body.screenshotIncludeWidget;
+  if ('autoDispatch' in body) updates.autoDispatch = !!body.autoDispatch;
 
   await db.update(schema.applications).set(updates).where(eq(schema.applications.id, id));
 

@@ -1,8 +1,9 @@
 import { signal, effect } from '@preact/signals';
-import { useEffect } from 'preact/hooks';
+import { useEffect, useRef } from 'preact/hooks';
 import { api } from '../lib/api.js';
 import { navigate, currentRoute } from '../lib/state.js';
 import { quickDispatch, quickDispatchState, batchQuickDispatch } from '../lib/sessions.js';
+import { copyWithTooltip } from '../lib/clipboard.js';
 
 const items = signal<any[]>([]);
 const total = signal(0);
@@ -20,6 +21,7 @@ const createDescription = signal('');
 const createType = signal('manual');
 const createTags = signal('');
 const createLoading = signal(false);
+const isStuck = signal(false);
 
 const TYPES = ['', 'manual', 'ab_test', 'analytics', 'error_report', 'programmatic'];
 const STATUSES = ['', 'new', 'reviewed', 'dispatched', 'resolved', 'archived', 'deleted'];
@@ -176,6 +178,19 @@ export function FeedbackListPage({ appId }: { appId: string }) {
   const basePath = `/app/${appId}/feedback`;
 
   const viewingDeleted = filterStatuses.value.has('deleted');
+  const hasSelection = selected.value.size > 0;
+  const sentinelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      ([entry]) => { isStuck.value = !entry.isIntersecting; },
+      { threshold: 0 }
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [appId]);
 
   return (
     <div>
@@ -187,50 +202,6 @@ export function FeedbackListPage({ appId }: { appId: string }) {
           </button>
         </div>
       </div>
-
-      {selected.value.size > 0 && (
-        <div class="selection-bar">
-          <span class="selection-bar-count">{selected.value.size} selected</span>
-          {viewingDeleted ? (
-            <>
-              <button class="btn btn-sm btn-primary" onClick={batchRestore}>
-                Restore
-              </button>
-              <button class="btn btn-sm btn-danger" onClick={batchPermanentDelete}>
-                Permanently Delete
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                class="btn btn-sm btn-primary"
-                onClick={async () => {
-                  await batchQuickDispatch(Array.from(selected.value), currentAppId.value);
-                  loadFeedback();
-                }}
-              >
-                Dispatch
-              </button>
-              <select
-                class="btn btn-sm"
-                onChange={(e) => {
-                  const v = (e.target as HTMLSelectElement).value;
-                  if (v) batchUpdateStatus(v);
-                  (e.target as HTMLSelectElement).value = '';
-                }}
-              >
-                <option value="">Set status...</option>
-                {STATUSES.filter((s) => s && s !== 'deleted').map((s) => (
-                  <option value={s}>{s}</option>
-                ))}
-              </select>
-              <button class="btn btn-sm btn-danger" onClick={batchDelete}>
-                Delete
-              </button>
-            </>
-          )}
-        </div>
-      )}
 
       {showCreateForm.value && (
         <div class="detail-card" style="margin-bottom:16px">
@@ -282,7 +253,8 @@ export function FeedbackListPage({ appId }: { appId: string }) {
         </div>
       )}
 
-      <div class="filters">
+      <div ref={sentinelRef} class="filters-sentinel" />
+      <div class={`filters ${hasSelection ? 'has-selection' : ''} ${hasSelection && isStuck.value ? 'stuck' : ''}`}>
         <input
           type="text"
           placeholder="Search..."
@@ -307,7 +279,7 @@ export function FeedbackListPage({ appId }: { appId: string }) {
             <option value={t}>{t.replace(/_/g, ' ')}</option>
           ))}
         </select>
-        <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
+        <div class={`filter-pills ${hasSelection ? 'collapsed' : ''}`}>
           {STATUSES.filter(Boolean).map((s) => {
             const active = filterStatuses.value.has(s);
             return (
@@ -327,6 +299,49 @@ export function FeedbackListPage({ appId }: { appId: string }) {
             );
           })}
         </div>
+        {hasSelection && (
+          <div class="selection-actions">
+            <span class="selection-bar-count">{selected.value.size} selected</span>
+            {viewingDeleted ? (
+              <>
+                <button class="btn btn-sm btn-primary" onClick={batchRestore}>
+                  Restore
+                </button>
+                <button class="btn btn-sm btn-danger" onClick={batchPermanentDelete}>
+                  Permanently Delete
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  class="btn btn-sm btn-primary"
+                  onClick={async () => {
+                    await batchQuickDispatch(Array.from(selected.value), currentAppId.value);
+                    loadFeedback();
+                  }}
+                >
+                  Dispatch
+                </button>
+                <select
+                  class="btn btn-sm"
+                  onChange={(e) => {
+                    const v = (e.target as HTMLSelectElement).value;
+                    if (v) batchUpdateStatus(v);
+                    (e.target as HTMLSelectElement).value = '';
+                  }}
+                >
+                  <option value="">Set status...</option>
+                  {STATUSES.filter((s) => s && s !== 'deleted').map((s) => (
+                    <option value={s}>{s}</option>
+                  ))}
+                </select>
+                <button class="btn btn-sm btn-danger" onClick={batchDelete}>
+                  Delete
+                </button>
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       <div class="table-wrap">
@@ -364,11 +379,8 @@ export function FeedbackListPage({ appId }: { appId: string }) {
                 <td>
                   <code
                     style="font-size:11px;color:var(--pw-text-faint);background:var(--pw-code-block-bg);padding:1px 5px;border-radius:3px;cursor:pointer"
-                    title={item.id}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      navigator.clipboard.writeText(item.id);
-                    }}
+                    title={`Click to copy: ${item.id}`}
+                    onClick={(e) => { e.stopPropagation(); copyWithTooltip(item.id, e as any); }}
                   >
                     {item.id.slice(-6)}
                   </code>

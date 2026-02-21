@@ -238,10 +238,13 @@ body {
   background: var(--pw-sidebar-bg);
   color: var(--pw-sidebar-text-bright);
   flex-shrink: 0;
-  transition: width 0.2s ease;
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+.sidebar.animating {
+  transition: width 0.2s ease;
 }
 
 .sidebar-header {
@@ -834,6 +837,13 @@ input:focus, select:focus, textarea:focus {
   box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
 }
 
+/* Sentinel for sticky detection */
+.filters-sentinel {
+  height: 0;
+  margin: 0;
+  padding: 0;
+}
+
 /* Filters bar */
 .filters {
   display: flex;
@@ -841,6 +851,33 @@ input:focus, select:focus, textarea:focus {
   margin-bottom: 16px;
   flex-wrap: wrap;
   align-items: center;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: transparent;
+  transition: background 0.3s ease, box-shadow 0.3s ease, border-radius 0.3s ease;
+}
+
+.filters.has-selection {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.filters.has-selection.stuck {
+  background: var(--pw-primary);
+  box-shadow: var(--pw-shadow-md);
+  border-radius: 0 0 8px 8px;
+}
+
+.filters.has-selection.stuck input,
+.filters.has-selection.stuck > select {
+  background: rgba(255, 255, 255, 0.15);
+  color: white;
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.filters.has-selection.stuck input::placeholder {
+  color: rgba(255, 255, 255, 0.6);
 }
 
 .filters input, .filters select {
@@ -848,63 +885,88 @@ input:focus, select:focus, textarea:focus {
   font-size: 13px;
 }
 
-/* Floating selection action bar */
-.selection-bar {
-  position: sticky;
-  top: 0;
-  z-index: 20;
+/* Filter pills - collapsible */
+.filter-pills {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  max-height: 200px;
+  overflow: hidden;
+  opacity: 1;
+  transition: max-height 0.3s ease, opacity 0.2s ease;
+}
+
+.filter-pills.collapsed {
+  max-height: 0;
+  opacity: 0;
+  gap: 0;
+  pointer-events: none;
+}
+
+/* Selection actions (inline in filters bar) */
+.selection-actions {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 16px;
-  margin-bottom: 12px;
-  background: var(--pw-primary);
-  border-radius: 8px;
-  box-shadow: var(--pw-shadow-md);
+  margin-left: auto;
+  animation: fadeSlideIn 0.2s ease;
 }
 
-.selection-bar .btn {
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateX(10px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.selection-bar-count {
+  font-size: 13px;
+  font-weight: 600;
+  margin-right: 4px;
+  white-space: nowrap;
+  color: var(--pw-text-primary);
+  transition: color 0.3s ease;
+}
+
+/* Stuck state: white-on-blue for action buttons */
+.filters.stuck .selection-actions .btn {
   border-color: rgba(255, 255, 255, 0.3);
   color: white;
   background: rgba(255, 255, 255, 0.15);
 }
 
-.selection-bar .btn:hover {
+.filters.stuck .selection-actions .btn:hover {
   background: rgba(255, 255, 255, 0.25);
 }
 
-.selection-bar .btn-danger {
+.filters.stuck .selection-actions .btn-danger {
   background: rgba(220, 38, 38, 0.6);
   border-color: rgba(220, 38, 38, 0.8);
 }
 
-.selection-bar .btn-danger:hover {
+.filters.stuck .selection-actions .btn-danger:hover {
   background: rgba(220, 38, 38, 0.8);
 }
 
-.selection-bar .btn-primary {
+.filters.stuck .selection-actions .btn-primary {
   background: rgba(255, 255, 255, 0.25);
   border-color: rgba(255, 255, 255, 0.4);
 }
 
-.selection-bar .btn-primary:hover {
+.filters.stuck .selection-actions .btn-primary:hover {
   background: rgba(255, 255, 255, 0.35);
 }
 
-.selection-bar-count {
+.filters.stuck .selection-bar-count {
   color: white;
-  font-size: 13px;
-  font-weight: 600;
-  margin-right: 4px;
 }
 
-.selection-bar select {
+.filters.stuck .selection-actions select {
   background: rgba(255, 255, 255, 0.15);
   color: white;
   border-color: rgba(255, 255, 255, 0.3);
 }
 
-.selection-bar select option {
+.filters.stuck .selection-actions select option {
   background: var(--pw-bg-surface);
   color: var(--pw-text-primary);
 }
@@ -1612,6 +1674,10 @@ input:focus, select:focus, textarea:focus {
   display: flex;
   flex-direction: column;
   border-top: 2px solid var(--pw-terminal-border);
+}
+
+.global-terminal-panel.animating {
+  transition: left 0.2s ease;
 }
 
 .terminal-resize-handle {
@@ -3235,6 +3301,29 @@ input:focus, select:focus, textarea:focus {
   transform: translateY(-50%);
 }
 
+/* Copy tooltip */
+.copy-tooltip {
+  position: fixed;
+  z-index: 9999;
+  padding: 4px 10px;
+  background: var(--pw-bg-surface);
+  color: var(--pw-primary);
+  border: 1px solid var(--pw-border);
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: var(--pw-shadow-sm);
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, -100%);
+  transition: opacity 0.15s, transform 0.15s;
+}
+.copy-tooltip.visible {
+  opacity: 1;
+  transform: translate(-50%, calc(-100% - 4px));
+}
+
 /* Keyboard shortcut badges */
 kbd {
   display: inline-block;
@@ -4046,4 +4135,38 @@ kbd {
   text-align: center;
   color: var(--pw-text-muted);
   font-size: 13px;
+}
+
+/* ==================== Embed Mode ==================== */
+body.pw-embed {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  overflow: auto;
+}
+
+body.pw-embed .pw-embed-root {
+  padding: 8px 12px;
+  min-height: 100vh;
+  background: var(--pw-bg-body);
+}
+
+body.pw-embed .page-header {
+  font-size: 15px;
+  padding: 4px 0 8px;
+  margin-bottom: 8px;
+}
+
+body.pw-embed .page-header h1 {
+  font-size: 15px;
+}
+
+body.pw-embed .login-page {
+  min-height: 100vh;
+  background: var(--pw-bg-body);
+}
+
+body.pw-embed .login-card {
+  box-shadow: none;
+  border: 1px solid var(--pw-border);
 }

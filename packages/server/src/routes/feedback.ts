@@ -98,7 +98,7 @@ feedbackRoutes.post('/', async (c) => {
     }
   }
 
-  feedbackEvents.emit('new', { id, appId });
+  feedbackEvents.emit('new', { id, appId, autoDispatch: !!input.autoDispatch });
   return c.json({ id, status: 'new', createdAt: now }, 201);
 });
 
@@ -144,6 +144,6 @@ feedbackRoutes.post('/programmatic', async (c) => {
     );
   }
 
-  feedbackEvents.emit('new', { id, appId: progAppId });
+  feedbackEvents.emit('new', { id, appId: progAppId, autoDispatch: !!input.autoDispatch });
   return c.json({ id, status: 'new', createdAt: now }, 201);
 });

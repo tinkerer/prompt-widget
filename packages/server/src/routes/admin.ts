@@ -12,14 +12,15 @@ import {
   agentEndpointSchema,
   dispatchSchema,
 } from '@prompt-widget/shared';
-import type { FeedbackItem, PermissionProfile } from '@prompt-widget/shared';
 import { db, schema } from '../db/index.js';
 import {
-  dispatchWebhook,
-  dispatchAgentSession,
   dispatchTerminalSession,
+  hydrateFeedback,
+  DEFAULT_PROMPT_TEMPLATE,
+  dispatchFeedbackToAgent,
 } from '../dispatch.js';
-import { inputSessionRemote } from '../session-service-client.js';
+import { inputSessionRemote, getSessionStatus } from '../session-service-client.js';
+import { killSession } from '../agent-sessions.js';
 import { feedbackEvents } from '../events.js';
 import { verifyAdminToken } from '../auth.js';
 
@@ -63,19 +64,6 @@ adminRoutes.get('/feedback/events', async (c) => {
     }
   );
 });
-
-function hydrateFeedback(row: typeof schema.feedbackItems.$inferSelect, tags: string[], screenshots: (typeof schema.feedbackScreenshots.$inferSelect)[]): FeedbackItem {
-  return {
-    ...row,
-    type: row.type as FeedbackItem['type'],
-    status: row.status as FeedbackItem['status'],
-    data: row.data ? JSON.parse(row.data) : null,
-    context: row.context ? JSON.parse(row.context) : null,
-    appId: row.appId || null,
-    tags,
-    screenshots,
-  };
-}
 
 adminRoutes.post('/feedback', async (c) => {
   const body = await c.req.json();
@@ -536,73 +524,6 @@ adminRoutes.delete('/agents/:id', async (c) => {
   return c.json({ id, deleted: true });
 });
 
-const DEFAULT_PROMPT_TEMPLATE = `do feedback item {{feedback.id}}
-
-Title: {{feedback.title}}
-{{feedback.description}}
-URL: {{feedback.sourceUrl}}
-
-App: {{app.name}}
-Project dir: {{app.projectDir}}
-App description: {{app.description}}
-
-{{feedback.consoleLogs}}
-{{feedback.networkErrors}}
-{{feedback.data}}
-{{instructions}}
-
-consider screenshot`;
-
-function renderPromptTemplate(
-  template: string,
-  fb: FeedbackItem,
-  app: { name: string; projectDir: string; description?: string; [key: string]: unknown } | null,
-  instructions?: string
-): string {
-  let consoleLogs = '';
-  if (fb.context?.consoleLogs?.length) {
-    consoleLogs = 'Console logs:\n' + fb.context.consoleLogs.map(
-      (l) => `  [${l.level.toUpperCase()}] ${l.message}`
-    ).join('\n');
-  }
-
-  let networkErrors = '';
-  if (fb.context?.networkErrors?.length) {
-    networkErrors = 'Network errors:\n' + fb.context.networkErrors.map(
-      (e) => `  ${e.method} ${e.url} → ${e.status} ${e.statusText}`
-    ).join('\n');
-  }
-
-  let customData = '';
-  if (fb.data) {
-    customData = `Custom data: ${JSON.stringify(fb.data, null, 2)}`;
-  }
-
-  const vars: Record<string, string> = {
-    'feedback.id': fb.id,
-    'feedback.title': fb.title || '',
-    'feedback.description': fb.description || '',
-    'feedback.sourceUrl': fb.sourceUrl || '',
-    'feedback.tags': fb.tags?.join(', ') || '',
-    'feedback.consoleLogs': consoleLogs,
-    'feedback.networkErrors': networkErrors,
-    'feedback.data': customData,
-    'app.name': app?.name || '',
-    'app.projectDir': app?.projectDir || '',
-    'app.description': app?.description || '',
-    'instructions': instructions || '',
-  };
-
-  let result = template;
-  for (const [key, value] of Object.entries(vars)) {
-    result = result.replaceAll(`{{${key}}}`, value);
-  }
-
-  // Clean up blank lines from empty variables (collapse 3+ newlines to 2)
-  result = result.replace(/\n{3,}/g, '\n\n');
-  return result.trim();
-}
-
 // Dispatch
 adminRoutes.post('/dispatch', async (c) => {
   const body = await c.req.json();
@@ -613,142 +534,64 @@ adminRoutes.post('/dispatch', async (c) => {
 
   const { feedbackId, agentEndpointId, instructions } = parsed.data;
 
-  const [feedback, agent] = await Promise.all([
-    db.query.feedbackItems.findFirst({
-      where: eq(schema.feedbackItems.id, feedbackId),
-    }),
-    db.query.agentEndpoints.findFirst({
-      where: eq(schema.agentEndpoints.id, agentEndpointId),
-    }),
-  ]);
-  if (!feedback) {
-    return c.json({ error: 'Feedback not found' }, 404);
-  }
-  if (!agent) {
-    return c.json({ error: 'Agent endpoint not found' }, 404);
-  }
-
-  const tags = db
-    .select()
-    .from(schema.feedbackTags)
-    .where(eq(schema.feedbackTags.feedbackId, feedbackId))
-    .all()
-    .map((t) => t.tag);
-  const screenshots = db
-    .select()
-    .from(schema.feedbackScreenshots)
-    .where(eq(schema.feedbackScreenshots.feedbackId, feedbackId))
-    .all();
-
-  const hydratedFeedback = hydrateFeedback(feedback, tags, screenshots);
-
-  // Look up associated application from the feedback item
-  let app = null;
-  const appIdForCwd = feedback.appId;
-  if (appIdForCwd) {
-    const appRow = await db.query.applications.findFirst({
-      where: eq(schema.applications.id, appIdForCwd),
-    });
-    if (appRow) {
-      app = { ...appRow, hooks: JSON.parse(appRow.hooks) };
-    }
-  }
-
-  const mode = (agent.mode || 'webhook') as 'webhook' | 'headless' | 'interactive';
-
-  // For PTY-based sessions, check for existing active session to prevent duplicates
-  if (mode !== 'webhook') {
-    const existing = db
-      .select()
-      .from(schema.agentSessions)
-      .where(
-        and(
-          eq(schema.agentSessions.feedbackId, feedbackId),
-          sql`${schema.agentSessions.status} IN ('pending', 'running')`
+  // Admin-specific: detect and kill stuck sessions before dispatching
+  const agent = await db.query.agentEndpoints.findFirst({
+    where: eq(schema.agentEndpoints.id, agentEndpointId),
+  });
+  if (agent) {
+    const mode = (agent.mode || 'webhook') as string;
+    if (mode !== 'webhook') {
+      const existing = db
+        .select()
+        .from(schema.agentSessions)
+        .where(
+          and(
+            eq(schema.agentSessions.feedbackId, feedbackId),
+            sql`${schema.agentSessions.status} IN ('pending', 'running')`
+          )
         )
-      )
-      .get();
+        .get();
 
-    if (existing) {
-      return c.json({
-        dispatched: true,
-        sessionId: existing.id,
-        status: 200,
-        response: `Existing active session: ${existing.id}`,
-        existing: true,
-      });
+      if (existing) {
+        const ageMs = Date.now() - new Date(existing.createdAt).getTime();
+
+        if (ageMs > 30_000) {
+          const status = await getSessionStatus(existing.id);
+          const stuck = !status || status.healthy === false || (status.totalBytes ?? 0) < 15_000;
+
+          if (stuck) {
+            console.log(`[admin] Stuck session detected: ${existing.id} (age=${Math.round(ageMs / 1000)}s, bytes=${status?.totalBytes ?? 0}, healthy=${status?.healthy}) — killing`);
+            await killSession(existing.id);
+          } else {
+            return c.json({
+              dispatched: true,
+              sessionId: existing.id,
+              status: 200,
+              response: `Existing active session: ${existing.id}`,
+              existing: true,
+            });
+          }
+        } else {
+          return c.json({
+            dispatched: true,
+            sessionId: existing.id,
+            status: 200,
+            response: `Existing active session: ${existing.id}`,
+            existing: true,
+          });
+        }
+      }
     }
   }
 
   try {
-    if (mode === 'webhook') {
-      const result = await dispatchWebhook(agent.url, agent.authHeader, {
-        feedback: hydratedFeedback,
-        instructions,
-      });
-
-      const now = new Date().toISOString();
-      await db.update(schema.feedbackItems).set({
-        status: 'dispatched',
-        dispatchedTo: agent.name,
-        dispatchedAt: now,
-        dispatchStatus: result.status >= 200 && result.status < 300 ? 'success' : 'error',
-        dispatchResponse: result.response.slice(0, 5000),
-        updatedAt: now,
-      }).where(eq(schema.feedbackItems.id, feedbackId));
-
-      return c.json({
-        dispatched: true,
-        status: result.status,
-        response: result.response.slice(0, 1000),
-      });
-    } else {
-      // headless or interactive → PTY-based agent session
-      const cwd = app?.projectDir || process.cwd();
-      const permissionProfile = (agent.permissionProfile || 'interactive') as PermissionProfile;
-
-      const template = agent.promptTemplate || DEFAULT_PROMPT_TEMPLATE;
-      const prompt = renderPromptTemplate(template, hydratedFeedback, app, instructions);
-
-      const { sessionId } = await dispatchAgentSession({
-        feedbackId,
-        agentEndpointId,
-        prompt,
-        cwd,
-        permissionProfile,
-        allowedTools: agent.allowedTools,
-      });
-
-      // Update feedback status in the background — don't block the response
-      const now = new Date().toISOString();
-      db.update(schema.feedbackItems).set({
-        status: 'dispatched',
-        dispatchedTo: agent.name,
-        dispatchedAt: now,
-        dispatchStatus: 'running',
-        dispatchResponse: `Agent session started: ${sessionId}`,
-        updatedAt: now,
-      }).where(eq(schema.feedbackItems.id, feedbackId)).run();
-
-      return c.json({
-        dispatched: true,
-        sessionId,
-        status: 200,
-        response: `Agent session started: ${sessionId}`,
-      });
-    }
+    const result = await dispatchFeedbackToAgent({ feedbackId, agentEndpointId, instructions });
+    return c.json(result);
   } catch (err) {
-    const now = new Date().toISOString();
     const errorMsg = err instanceof Error ? err.message : 'Unknown error';
-
-    await db.update(schema.feedbackItems).set({
-      dispatchedTo: agent.name,
-      dispatchedAt: now,
-      dispatchStatus: 'error',
-      dispatchResponse: errorMsg,
-      updatedAt: now,
-    }).where(eq(schema.feedbackItems.id, feedbackId));
-
+    if (errorMsg === 'Feedback not found' || errorMsg === 'Agent endpoint not found') {
+      return c.json({ error: errorMsg }, 404);
+    }
     return c.json({ dispatched: false, error: errorMsg }, 502);
   }
 });

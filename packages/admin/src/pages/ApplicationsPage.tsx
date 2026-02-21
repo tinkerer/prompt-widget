@@ -2,6 +2,7 @@ import { signal } from '@preact/signals';
 import { api } from '../lib/api.js';
 import { loadApplications as refreshSidebarApps } from '../lib/state.js';
 import { spawnTerminal } from '../lib/sessions.js';
+import { copyWithTooltip } from '../lib/clipboard.js';
 
 const apps = signal<any[]>([]);
 const loading = signal(true);
@@ -17,9 +18,9 @@ const formPermissionProfile = signal('interactive');
 const formAllowedTools = signal('');
 const formAgentPath = signal('');
 const formScreenshotIncludeWidget = signal(false);
+const formAutoDispatch = signal(false);
 const formError = signal('');
 const formLoading = signal(false);
-const copiedKey = signal<string | null>(null);
 const tmuxConfigs = signal<any[]>([]);
 
 async function loadApps() {
@@ -52,6 +53,7 @@ function openCreate() {
   formAllowedTools.value = '';
   formAgentPath.value = '';
   formScreenshotIncludeWidget.value = false;
+  formAutoDispatch.value = false;
   formError.value = '';
   showForm.value = true;
 }
@@ -68,6 +70,7 @@ function openEdit(app: any) {
   formAllowedTools.value = app.defaultAllowedTools || '';
   formAgentPath.value = app.agentPath || '';
   formScreenshotIncludeWidget.value = !!app.screenshotIncludeWidget;
+  formAutoDispatch.value = !!app.autoDispatch;
   formError.value = '';
   showForm.value = true;
 }
@@ -93,6 +96,7 @@ async function saveApp(e: Event) {
     defaultAllowedTools: formAllowedTools.value || null,
     agentPath: formAgentPath.value || null,
     screenshotIncludeWidget: formScreenshotIncludeWidget.value,
+    autoDispatch: formAutoDispatch.value,
   };
 
   try {
@@ -122,15 +126,9 @@ async function regenerateKey(id: string) {
   if (!confirm('Regenerate API key? The old key will stop working immediately.')) return;
   const result = await api.regenerateApplicationKey(id);
   await loadApps();
-  copyToClipboard(result.apiKey);
+  navigator.clipboard.writeText(result.apiKey);
 }
 
-function copyToClipboard(text: string) {
-  navigator.clipboard.writeText(text).then(() => {
-    copiedKey.value = text;
-    setTimeout(() => { copiedKey.value = null; }, 2000);
-  });
-}
 
 export function ApplicationsPage() {
   return (
@@ -153,10 +151,10 @@ export function ApplicationsPage() {
                 </code>
                 <button
                   class="btn btn-sm"
-                  onClick={() => copyToClipboard(app.apiKey)}
+                  onClick={(e) => copyWithTooltip(app.apiKey, e as any)}
                   style="font-size:11px;padding:2px 8px"
                 >
-                  {copiedKey.value === app.apiKey ? 'Copied!' : 'Copy'}
+                  Copy
                 </button>
                 <button
                   class="btn btn-sm"
@@ -308,6 +306,17 @@ export function ApplicationsPage() {
                     Include widget in screenshots
                   </label>
                   <span style="font-size:11px;color:var(--pw-text-faint)">When enabled, the prompt-widget overlay will appear in captured screenshots</span>
+                </div>
+                <div class="form-group">
+                  <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                    <input
+                      type="checkbox"
+                      checked={formAutoDispatch.value}
+                      onChange={(e) => (formAutoDispatch.value = (e.target as HTMLInputElement).checked)}
+                    />
+                    Auto-dispatch to default agent
+                  </label>
+                  <span style="font-size:11px;color:var(--pw-text-faint)">Automatically dispatch new feedback to the default agent endpoint</span>
                 </div>
               </>
             )}

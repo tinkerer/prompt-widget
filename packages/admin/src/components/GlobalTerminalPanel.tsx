@@ -21,12 +21,14 @@ import {
   setViewMode,
   pendingFirstDigit,
   allNumberedSessions,
+  sidebarDragging,
 } from '../lib/sessions.js';
 import { startTabDrag } from '../lib/tab-drag.js';
 import { navigate, selectedAppId } from '../lib/state.js';
 import { showTabs } from '../lib/settings.js';
 import { ctrlShiftHeld } from '../lib/shortcuts.js';
 import { api } from '../lib/api.js';
+import { copyWithTooltip } from '../lib/clipboard.js';
 
 const statusMenuOpen = signal<{ sessionId: string; x: number; y: number } | null>(null);
 
@@ -129,7 +131,7 @@ export function GlobalTerminalPanel() {
 
   return (
     <div
-      class="global-terminal-panel"
+      class={`global-terminal-panel${sidebarDragging.value ? ' no-transition' : ''}`}
       style={{ height: minimized ? (hasTabs ? '66px' : '32px') : `${height}px`, left: `${sidebarWidth.value}px` }}
     >
       <div class="terminal-resize-handle" onMouseDown={onResizeMouseDown} />
@@ -213,8 +215,8 @@ export function GlobalTerminalPanel() {
           <>
             <span
               class="tmux-id-label"
-              title={`tmux: pw-${activeId}`}
-              onClick={() => { navigator.clipboard.writeText(`pw-${activeId}`); }}
+              title="Copy tmux attach command to clipboard"
+              onClick={(e) => { copyWithTooltip(`TMUX= tmux -L prompt-widget attach-session -t pw-${activeId}`, e as any); }}
             >
               pw-{activeId.slice(-6)}
             </span>
@@ -233,17 +235,7 @@ export function GlobalTerminalPanel() {
         <span style="flex:1" />
         {activeId && (
           <>
-            <button
-              class="open-terminal-btn"
-              onClick={() => {
-                const cmd = `TMUX= tmux -L prompt-widget attach-session -t pw-${activeId}`;
-                navigator.clipboard.writeText(cmd);
-              }}
-              title="Copy tmux attach command to clipboard"
-            >
-              {'\u2386'} Copy tmux
-            </button>
-            <select
+<select
               class="view-mode-select"
               value={activeViewMode}
               onChange={(e) => setViewMode(activeId, (e.target as HTMLSelectElement).value as ViewMode)}

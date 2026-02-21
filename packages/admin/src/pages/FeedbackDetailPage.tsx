@@ -2,6 +2,7 @@ import { signal } from '@preact/signals';
 import { api } from '../lib/api.js';
 import { navigate } from '../lib/state.js';
 import { openSession, resumeSession } from '../lib/sessions.js';
+import { copyWithTooltip } from '../lib/clipboard.js';
 
 const feedback = signal<any>(null);
 const loading = signal(true);
@@ -179,7 +180,7 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
             &larr; Back to list
           </a>
           <h2 style="margin-top:4px">
-            <code style="font-size:14px;color:var(--pw-text-faint);background:var(--pw-code-block-bg);padding:2px 6px;border-radius:4px;margin-right:8px;cursor:pointer" title={`Click to copy: ${fb.id}`} onClick={() => navigator.clipboard.writeText(fb.id)}>{fb.id.slice(-6)}</code>
+            <code style="font-size:14px;color:var(--pw-text-faint);background:var(--pw-code-block-bg);padding:2px 6px;border-radius:4px;margin-right:8px;cursor:pointer" title={`Click to copy: ${fb.id}`} onClick={(e) => copyWithTooltip(fb.id, e as any)}>{fb.id.slice(-6)}</code>
             {editingTitle.value ? (
               <input
                 type="text"

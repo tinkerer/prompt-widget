@@ -23,6 +23,7 @@ export class SessionBridge {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 1000;
   public screenshotIncludeWidget = false;
+  public autoDispatch = false;
 
   constructor(endpoint: string, sessionId: string, collectors: Collector[], apiKey?: string) {
     this.endpoint = endpoint;
@@ -57,6 +58,9 @@ export class SessionBridge {
         if (msg.type === 'config') {
           if ('screenshotIncludeWidget' in msg) {
             this.screenshotIncludeWidget = !!msg.screenshotIncludeWidget;
+          }
+          if ('autoDispatch' in msg) {
+            this.autoDispatch = !!msg.autoDispatch;
           }
         } else if (msg.type === 'command') {
           this.handleCommand(msg as CommandMessage);
@@ -287,6 +291,28 @@ export class SessionBridge {
         case 'typeText': {
           const result = await dispatchTypeText(params.text as string, params.selector as string | undefined, params.charDelayMs as number | undefined);
           this.respond(requestId, result);
+          break;
+        }
+
+        case 'openAdmin': {
+          const panel = (params.panel as string) || 'feedback';
+          const param = params.param as string | undefined;
+          if (window.promptWidget) {
+            window.promptWidget.openAdmin(panel as any, { param });
+            this.respond(requestId, { opened: true, panel });
+          } else {
+            this.respondError(requestId, 'Widget not initialized');
+          }
+          break;
+        }
+
+        case 'closeAdmin': {
+          if (window.promptWidget) {
+            window.promptWidget.closeAdmin();
+            this.respond(requestId, { closed: true });
+          } else {
+            this.respondError(requestId, 'Widget not initialized');
+          }
           break;
         }
 

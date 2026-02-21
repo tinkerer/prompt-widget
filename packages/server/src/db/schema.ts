@@ -13,6 +13,7 @@ export const applications = sqliteTable('applications', {
   defaultAllowedTools: text('default_allowed_tools'),
   agentPath: text('agent_path'),
   screenshotIncludeWidget: integer('screenshot_include_widget', { mode: 'boolean' }).notNull().default(false),
+  autoDispatch: integer('auto_dispatch', { mode: 'boolean' }).notNull().default(false),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });

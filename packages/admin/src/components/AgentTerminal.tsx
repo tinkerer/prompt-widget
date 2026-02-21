@@ -378,15 +378,27 @@ export function AgentTerminal({ sessionId, isActive, onExit }: AgentTerminalProp
 
   useEffect(() => {
     if (!isActive || !fitRef.current || !termRef.current || !containerRef.current) return;
-    // Stagger fit+resize — sends dimensions to server so tmux knows the real size
+    const term = termRef.current;
+    // Wait for the browser to lay out the newly-visible container before fitting.
+    // FitAddon.fit() skips resize when dimensions haven't changed, so we also
+    // call term.refresh() to force xterm.js to re-render the canvas (content
+    // written while the tab was hidden may leave the canvas stale).
     const timers: ReturnType<typeof setTimeout>[] = [];
-    for (const delay of [0, 50, 150, 300]) {
-      timers.push(setTimeout(() => safeFitAndResizeRef.current(), delay));
-    }
-    timers.push(setTimeout(() => termRef.current?.focus(), 50));
+    const rafId = requestAnimationFrame(() => {
+      safeFitAndResizeRef.current();
+      term.refresh(0, term.rows - 1);
+      for (const delay of [50, 150, 300]) {
+        timers.push(setTimeout(() => {
+          safeFitAndResizeRef.current();
+          term.refresh(0, term.rows - 1);
+        }, delay));
+      }
+    });
+    timers.push(setTimeout(() => term.focus(), 50));
     // Periodic resize nudge to fix tmux sizing weirdness
     const nudge = setInterval(() => safeFitAndResizeRef.current(), 15_000);
     return () => {
+      cancelAnimationFrame(rafId);
       timers.forEach(clearTimeout);
       clearInterval(nudge);
     };

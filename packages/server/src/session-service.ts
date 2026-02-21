@@ -47,29 +47,28 @@ function buildClaudeArgs(
   prompt: string,
   permissionProfile: PermissionProfile,
   allowedTools?: string | null,
-): { command: string; args: string[]; sendPromptAfterSpawn: boolean } {
+): { command: string; args: string[] } {
   switch (permissionProfile) {
     case 'interactive':
-      return { command: 'claude', args: [], sendPromptAfterSpawn: true };
+      return { command: 'claude', args: prompt ? [prompt] : [] };
     case 'auto': {
       const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose'];
       if (allowedTools) {
         args.push('--allowedTools', allowedTools);
       }
-      return { command: 'claude', args, sendPromptAfterSpawn: false };
+      return { command: 'claude', args };
     }
     case 'yolo':
       return {
         command: 'claude',
         args: ['-p', prompt, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'],
-        sendPromptAfterSpawn: false,
       };
     case 'plain': {
       const shell = process.env.SHELL || '/bin/bash';
-      return { command: shell, args: [], sendPromptAfterSpawn: false };
+      return { command: shell, args: [] };
     }
     default:
-      return { command: 'claude', args: [], sendPromptAfterSpawn: true };
+      return { command: 'claude', args: prompt ? [prompt] : [] };
   }
 }
 
@@ -123,7 +122,7 @@ function spawnSession(params: {
     throw new Error(`Session ${sessionId} is already running`);
   }
 
-  const { command, args, sendPromptAfterSpawn } = buildClaudeArgs(
+  const { command, args } = buildClaudeArgs(
     prompt,
     permissionProfile,
     allowedTools,
@@ -228,38 +227,34 @@ function spawnSession(params: {
     activeSessions.delete(sessionId);
   });
 
-  if (sendPromptAfterSpawn) {
-    let sent = false;
-    let outputSoFar = '';
-
-    const trySend = () => {
-      if (sent) return;
-      sent = true;
-      try {
-        // Wrap in bracketed paste so Claude's REPL treats multi-line
-        // content as a single pasted input instead of submitting on each newline
-        ptyProcess.write('\x1b[200~' + prompt + '\x1b[201~' + '\r');
-      } catch {
-        // PTY may have already exited
-      }
-    };
-
-    const disposable = ptyProcess.onData((data: string) => {
-      if (sent) return;
-      outputSoFar += data;
-      if (outputSoFar.includes('>') || outputSoFar.includes('Type your') || outputSoFar.length > 500) {
-        setTimeout(() => {
-          trySend();
-          disposable.dispose();
-        }, 300);
-      }
-    });
-
-    setTimeout(() => {
-      disposable.dispose();
-      trySend();
-    }, 5000);
+  // Schedule startup health check for Claude sessions
+  if (permissionProfile !== 'plain') {
+    scheduleStartupCheck(sessionId);
   }
+}
+
+const STARTUP_CHECK_DELAY = 45_000; // 45 seconds
+
+function isSessionHealthy(proc: AgentProcess): boolean {
+  // Strip ANSI escape sequences to get visible text
+  const visible = proc.outputBuffer.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
+  if (visible.length > 200) return true;
+  if (/Claude|>|Type your/i.test(visible)) return true;
+  return false;
+}
+
+function scheduleStartupCheck(sessionId: string): void {
+  setTimeout(() => {
+    const proc = activeSessions.get(sessionId);
+    if (!proc || proc.status !== 'running') return;
+
+    if (!isSessionHealthy(proc)) {
+      console.log(`[session-service] Startup check failed for ${sessionId}: ${proc.totalBytes} bytes, no meaningful output — killing`);
+      killSessionProcess(sessionId);
+    } else {
+      console.log(`[session-service] Startup check passed for ${sessionId}: ${proc.totalBytes} bytes`);
+    }
+  }, STARTUP_CHECK_DELAY);
 }
 
 function killSessionProcess(sessionId: string): boolean {
@@ -570,7 +565,13 @@ app.get('/status/:id', (c) => {
   const id = c.req.param('id');
   const proc = activeSessions.get(id);
   if (proc) {
-    return c.json({ status: proc.status, active: true, outputSeq: proc.outputSeq });
+    return c.json({
+      status: proc.status,
+      active: true,
+      outputSeq: proc.outputSeq,
+      totalBytes: proc.totalBytes,
+      healthy: isSessionHealthy(proc),
+    });
   }
   const session = db
     .select()
@@ -578,7 +579,13 @@ app.get('/status/:id', (c) => {
     .where(eq(schema.agentSessions.id, id))
     .get();
   if (session) {
-    return c.json({ status: session.status, active: false, outputSeq: session.lastOutputSeq });
+    return c.json({
+      status: session.status,
+      active: false,
+      outputSeq: session.lastOutputSeq,
+      totalBytes: session.outputBytes || 0,
+      healthy: session.status === 'running' ? false : null,
+    });
   }
   return c.json({ error: 'Not found' }, 404);
 });

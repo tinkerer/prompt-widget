@@ -1,5 +1,5 @@
 import { useEffect } from 'preact/hooks';
-import { isAuthenticated, currentRoute, navigate, selectedAppId, applications, loadApplications } from '../lib/state.js';
+import { isAuthenticated, currentRoute, navigate, selectedAppId, applications, loadApplications, isEmbedded } from '../lib/state.js';
 import { Layout } from './Layout.js';
 import { LoginPage } from '../pages/LoginPage.js';
 import { FeedbackListPage } from '../pages/FeedbackListPage.js';
@@ -22,6 +22,8 @@ function parseAppRoute(route: string): { appId: string; sub: string; param?: str
 }
 
 export function App() {
+  const embedded = isEmbedded.value;
+
   if (!isAuthenticated.value) {
     return <LoginPage />;
   }
@@ -90,6 +92,10 @@ export function App() {
       navigate('/settings/applications');
     }
     return null;
+  }
+
+  if (embedded) {
+    return <div class="pw-embed-root">{page}</div>;
   }
 
   return <Layout>{page}</Layout>;

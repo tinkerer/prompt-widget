@@ -59,6 +59,24 @@ export async function getSessionServiceActiveSessions(): Promise<string[] | null
   }
 }
 
+export interface SessionStatus {
+  status: string;
+  active: boolean;
+  outputSeq: number;
+  totalBytes: number;
+  healthy: boolean | null;
+}
+
+export async function getSessionStatus(sessionId: string): Promise<SessionStatus | null> {
+  try {
+    const res = await fetch(`${SESSION_SERVICE_URL}/status/${sessionId}`);
+    if (!res.ok) return null;
+    return await res.json() as SessionStatus;
+  } catch {
+    return null;
+  }
+}
+
 export function getSessionServiceWsUrl(sessionId: string): string {
   const wsBase = SESSION_SERVICE_URL.replace(/^http/, 'ws');
   return `${wsBase}/ws/agent-session?sessionId=${sessionId}`;

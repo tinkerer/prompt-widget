@@ -32,6 +32,7 @@ async function resolveSession(sessionId: string, feedbackId?: string) {
       console.error('Resolve feedback failed:', err.message);
     }
   }
+  closeTab(sessionId);
 }
 
 const SNAP_THRESHOLD = 20;
@@ -279,7 +280,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
           {activeId && (isExited ? (
             <button onClick={() => resumeSession(activeId)} title="Resume">Resume</button>
           ) : (
-            <button class="btn-kill" onClick={() => killSession(activeId)} title="Kill">Kill</button>
+            <button class="btn-kill" onClick={() => { killSession(activeId); closeTab(activeId); }} title="Kill">Kill</button>
           ))}
           <button onClick={() => popBackIn(activeId)} title="Pop back into tab bar">{'\u2199'} Pop in</button>
         </div>

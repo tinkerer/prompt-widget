@@ -47,6 +47,7 @@ import {
   allNumberedSessions,
   popoutPanels,
   findPanelForSession,
+  sidebarAnimating,
 } from '../lib/sessions.js';
 
 const liveConnectionCounts = signal<Record<string, number>>({});
@@ -277,6 +278,24 @@ export function Layout({ children }: { children: ComponentChildren }) {
         action: () => handleTabDigit0to9(i),
       })),
       registerShortcut({
+        key: 'W',
+        code: 'KeyW',
+        modifiers: { ctrl: true, shift: true },
+        label: 'Close tab / panel',
+        category: 'Panels',
+        action: () => {
+          if (activeTabId.value) {
+            closeTab(activeTabId.value);
+            return;
+          }
+          const visible = popoutPanels.value.filter((p) => p.visible);
+          if (visible.length > 0) {
+            const panel = visible[visible.length - 1];
+            closeTab(panel.activeSessionId);
+          }
+        },
+      }),
+      registerShortcut({
         key: '_',
         code: 'Minus',
         modifiers: { ctrl: true, shift: true },
@@ -373,7 +392,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
 
   return (
     <div class="layout">
-      <div class={`sidebar ${collapsed ? 'collapsed' : ''}`} style={{ width: `${width}px` }}>
+      <div class={`sidebar ${collapsed ? 'collapsed' : ''}${sidebarAnimating.value ? ' animating' : ''}`} style={{ width: `${width}px` }}>
         <div class="sidebar-header">
           <Tooltip text={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} shortcut="Ctrl+\" position="right">
             <button class="sidebar-toggle" onClick={toggleSidebar}>

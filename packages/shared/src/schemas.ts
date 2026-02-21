@@ -56,6 +56,7 @@ export const feedbackSubmitSchema = z.object({
   sessionId: z.string().optional(),
   userId: z.string().optional(),
   tags: z.array(z.string().max(50)).max(20).optional(),
+  autoDispatch: z.boolean().optional(),
 });
 
 export type FeedbackSubmitInput = z.infer<typeof feedbackSubmitSchema>;

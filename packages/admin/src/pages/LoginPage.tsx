@@ -1,6 +1,6 @@
 import { signal } from '@preact/signals';
 import { api } from '../lib/api.js';
-import { setToken, navigate } from '../lib/state.js';
+import { setToken, navigate, isEmbedded } from '../lib/state.js';
 
 const username = signal('');
 const password = signal('');
@@ -15,6 +15,9 @@ export function LoginPage() {
     try {
       const result = await api.login(username.value, password.value);
       setToken(result.token);
+      if (isEmbedded.value) {
+        window.parent.postMessage({ type: 'pw-embed-auth', token: result.token }, '*');
+      }
       navigate('/');
     } catch (err: any) {
       error.value = err.message || 'Login failed';

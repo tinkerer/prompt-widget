@@ -22,11 +22,13 @@ import {
   stopPruneTimer,
 } from './launcher-registry.js';
 import type { LauncherToServerMessage, LauncherRegistered } from '@prompt-widget/shared';
+import { registerAutoDispatch } from './auto-dispatch.js';
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
 const LAUNCHER_AUTH_TOKEN = process.env.LAUNCHER_AUTH_TOKEN || '';
 
 runMigrations();
+registerAutoDispatch();
 startPruneTimer();
 
 // Delay orphan cleanup so the session-service has time to recover tmux sessions
@@ -62,6 +64,7 @@ wss.on('connection', (ws, req) => {
 
   let appId: string | undefined;
   let screenshotIncludeWidget = false;
+  let autoDispatch = false;
   if (apiKey) {
     const application = db
       .select()
@@ -71,10 +74,11 @@ wss.on('connection', (ws, req) => {
     if (application) {
       appId = application.id;
       screenshotIncludeWidget = !!application.screenshotIncludeWidget;
+      autoDispatch = !!application.autoDispatch;
     }
   }
 
-  ws.send(JSON.stringify({ type: 'config', screenshotIncludeWidget }));
+  ws.send(JSON.stringify({ type: 'config', screenshotIncludeWidget, autoDispatch }));
 
   const session = registerSession(sessionId, ws, {
     userAgent: req.headers['user-agent'],

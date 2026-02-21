@@ -144,6 +144,7 @@ export function runMigrations() {
     `ALTER TABLE applications ADD COLUMN default_allowed_tools TEXT`,
     `ALTER TABLE applications ADD COLUMN agent_path TEXT`,
     `ALTER TABLE applications ADD COLUMN screenshot_include_widget INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE applications ADD COLUMN auto_dispatch INTEGER NOT NULL DEFAULT 0`,
   ];
 
   for (const stmt of alterStatements) {
