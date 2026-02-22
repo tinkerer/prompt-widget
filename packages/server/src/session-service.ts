@@ -28,49 +28,21 @@ const messageBuffer = new MessageBuffer();
 
 // ---------- PTY process management ----------
 
-const PROMPT_CHECK_INTERVAL = 5_000; // check every 5s
+// Strip ANSI escape sequences to measure visible content length
+const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][0-9A-B]|\x1b\[[\?]?[0-9;]*[hlm]/g;
 
-// Check if visible pane content shows a yes/no or permission prompt
-function looksLikePrompt(text: string): boolean {
-  const lower = text.toLowerCase();
+// Minimum visible bytes after a bell to consider "real output" (clears waiting)
+const BELL_CLEAR_THRESHOLD = 80;
 
-  // Yes/No style prompts
-  if (/\[y\/n\]|\(y\/n\)|\(yes\/no\)|\[yes\/no\]/.test(lower)) return true;
-
-  // Claude Code permission prompts — "Allow" / "Deny" options
-  if (/\ballow\b.*\bdeny\b|\bdeny\b.*\ballow\b/.test(lower)) return true;
-  if (/\ballow once\b|\ballow always\b/.test(lower)) return true;
-
-  // Claude Code plan confirmation — "Would you like to proceed?"
-  if (/would you like to proceed/.test(lower)) return true;
-
-  // "Do you want to proceed" style
-  if (/do you want to (proceed|continue)\?/.test(lower)) return true;
-
+// Check bottom of pane text for interactive prompts (used on recovery to seed state)
+function looksLikePrompt(paneText: string): boolean {
+  const bottom = paneText.split('\n').slice(-10).join('\n').toLowerCase();
+  if (/\[y\/n\]|\(y\/n\)|\(yes\/no\)|\[yes\/no\]/.test(bottom)) return true;
+  if (/\ballow\b.*\bdeny\b|\bdeny\b.*\ballow\b/.test(bottom)) return true;
+  if (/\ballow once\b|\ballow always\b/.test(bottom)) return true;
+  if (/would you like to proceed/.test(bottom)) return true;
+  if (/do you want to (proceed|continue)\?/.test(bottom)) return true;
   return false;
-}
-
-function startPromptChecker(sessionId: string): ReturnType<typeof setInterval> {
-  return setInterval(() => {
-    const proc = activeSessions.get(sessionId);
-    if (!proc || proc.status !== 'running' || !proc.hasStarted) return;
-
-    // Capture the visible tmux pane — only check the bottom 10 lines
-    // where the actual interactive prompt renders, not scrollback content
-    const paneText = captureTmuxPane(sessionId);
-    if (!paneText) return;
-    const bottomLines = paneText.split('\n').slice(-10).join('\n');
-
-    const isPrompt = looksLikePrompt(bottomLines);
-
-    if (isPrompt && !proc.waitingForInput) {
-      proc.waitingForInput = true;
-      sendSequenced(proc, { kind: 'waiting_state', waiting: true });
-    } else if (!isPrompt && proc.waitingForInput) {
-      proc.waitingForInput = false;
-      sendSequenced(proc, { kind: 'waiting_state', waiting: false });
-    }
-  }, PROMPT_CHECK_INTERVAL);
 }
 
 interface AgentProcess {
@@ -84,7 +56,7 @@ interface AgentProcess {
   status: 'running' | 'completed' | 'failed' | 'killed';
   flushTimer: ReturnType<typeof setInterval>;
   waitingForInput: boolean;
-  promptChecker: ReturnType<typeof setInterval> | null;
+  bytesSinceBell: number;
   hasStarted: boolean;
 }
 
@@ -269,7 +241,7 @@ function spawnSession(params: {
     status: 'running',
     flushTimer: setInterval(() => flushOutput(sessionId), FLUSH_INTERVAL),
     waitingForInput: false,
-    promptChecker: useTmux ? startPromptChecker(sessionId) : null,
+    bytesSinceBell: 0,
     hasStarted: false,
   };
 
@@ -309,6 +281,23 @@ function spawnSession(params: {
       proc.hasStarted = true;
     }
 
+    // Bell detection: Claude Code emits \a when waiting for input
+    if (data.includes('\x07')) {
+      if (!proc.waitingForInput) {
+        proc.waitingForInput = true;
+        proc.bytesSinceBell = 0;
+        sendSequenced(proc, { kind: 'waiting_state', waiting: true });
+      }
+    } else if (proc.waitingForInput) {
+      const visible = data.replace(ANSI_RE, '').length;
+      proc.bytesSinceBell += visible;
+      if (proc.bytesSinceBell >= BELL_CLEAR_THRESHOLD) {
+        proc.waitingForInput = false;
+        proc.bytesSinceBell = 0;
+        sendSequenced(proc, { kind: 'waiting_state', waiting: false });
+      }
+    }
+
     sendSequenced(proc, { kind: 'output', data });
   });
 
@@ -318,7 +307,6 @@ function spawnSession(params: {
 
     proc.status = exitCode === 0 ? 'completed' : 'failed';
     clearInterval(proc.flushTimer);
-    if (proc.promptChecker) { clearInterval(proc.promptChecker); proc.promptChecker = null; }
 
     sendSequenced(proc, { kind: 'exit', exitCode, status: proc.status });
 
@@ -377,8 +365,6 @@ function killSessionProcess(sessionId: string): boolean {
   proc.ptyProcess.kill();
   killTmuxSession(sessionId);
   clearInterval(proc.flushTimer);
-  if (proc.promptChecker) { clearInterval(proc.promptChecker); proc.promptChecker = null; }
-
   sendSequenced(proc, { kind: 'exit', exitCode: -1, status: 'killed' });
 
   const now = new Date().toISOString();
@@ -420,6 +406,9 @@ function tryRecoverSession(session: typeof schema.agentSessions.$inferSelect): b
     const captured = captureTmuxPane(session.id);
     const ptyProcess = reattachTmux({ sessionId: session.id, cols: 120, rows: 40 });
 
+    // Seed waiting state from visible pane content
+    const isWaiting = captured ? looksLikePrompt(captured) : false;
+
     const proc: AgentProcess = {
       sessionId: session.id,
       ptyProcess,
@@ -430,14 +419,11 @@ function tryRecoverSession(session: typeof schema.agentSessions.$inferSelect): b
       adminSockets: new Set(),
       status: 'running',
       flushTimer: setInterval(() => flushOutput(session.id), FLUSH_INTERVAL),
-      waitingForInput: false,
-      promptChecker: null,
+      waitingForInput: isWaiting,
+      bytesSinceBell: 0,
       hasStarted: (session.outputBytes || 0) > 100,
     };
     activeSessions.set(session.id, proc);
-
-    // Start periodic prompt checker
-    proc.promptChecker = startPromptChecker(session.id);
 
     // Restore DB status to running (may have been wrongly marked as failed)
     db.update(schema.agentSessions)
@@ -452,6 +438,23 @@ function tryRecoverSession(session: typeof schema.agentSessions.$inferSelect): b
         proc.outputBuffer = proc.outputBuffer.slice(-MAX_OUTPUT_LOG);
       }
       if (!proc.hasStarted && proc.totalBytes > 100) proc.hasStarted = true;
+
+      if (data.includes('\x07')) {
+        if (!proc.waitingForInput) {
+          proc.waitingForInput = true;
+          proc.bytesSinceBell = 0;
+          sendSequenced(proc, { kind: 'waiting_state', waiting: true });
+        }
+      } else if (proc.waitingForInput) {
+        const visible = data.replace(ANSI_RE, '').length;
+        proc.bytesSinceBell += visible;
+        if (proc.bytesSinceBell >= BELL_CLEAR_THRESHOLD) {
+          proc.waitingForInput = false;
+          proc.bytesSinceBell = 0;
+          sendSequenced(proc, { kind: 'waiting_state', waiting: false });
+        }
+      }
+
       sendSequenced(proc, { kind: 'output', data });
     });
 
@@ -460,7 +463,6 @@ function tryRecoverSession(session: typeof schema.agentSessions.$inferSelect): b
 
       proc.status = exitCode === 0 ? 'completed' : 'failed';
       clearInterval(proc.flushTimer);
-      if (proc.promptChecker) { clearInterval(proc.promptChecker); proc.promptChecker = null; }
       sendSequenced(proc, { kind: 'exit', exitCode, status: proc.status });
       const completedAt = new Date().toISOString();
       db.update(schema.agentSessions)
