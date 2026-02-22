@@ -10,6 +10,22 @@ import { feedbackEvents } from '../events.js';
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR || 'uploads';
 
+function resolveAppId(apiKey: string | undefined, sessionId: string | undefined): string | null {
+  if (sessionId) {
+    const session = getSession(sessionId);
+    if (session?.appId) return session.appId;
+  }
+  if (apiKey) {
+    const app = db
+      .select({ id: schema.applications.id })
+      .from(schema.applications)
+      .where(eq(schema.applications.apiKey, apiKey))
+      .get();
+    if (app) return app.id;
+  }
+  return null;
+}
+
 export const feedbackRoutes = new Hono();
 
 feedbackRoutes.post('/', async (c) => {
@@ -50,10 +66,10 @@ feedbackRoutes.post('/', async (c) => {
   const input = parsed.data;
   const title = input.title || input.description.slice(0, 80) || 'Untitled';
 
-  let appId: string | null = null;
-  if (input.sessionId) {
-    const session = getSession(input.sessionId);
-    if (session?.appId) appId = session.appId;
+  const apiKey = c.req.header('x-api-key');
+  const appId = resolveAppId(apiKey, input.sessionId);
+  if (!appId) {
+    return c.json({ error: 'Could not resolve application. Provide a valid X-API-Key header or sessionId.' }, 400);
   }
 
   await db.insert(schema.feedbackItems).values({
@@ -114,10 +130,10 @@ feedbackRoutes.post('/programmatic', async (c) => {
   const input = parsed.data;
   const progTitle = input.title || input.description.slice(0, 80) || 'Untitled';
 
-  let progAppId: string | null = null;
-  if (input.sessionId) {
-    const session = getSession(input.sessionId);
-    if (session?.appId) progAppId = session.appId;
+  const progApiKey = c.req.header('x-api-key');
+  const progAppId = resolveAppId(progApiKey, input.sessionId);
+  if (!progAppId) {
+    return c.json({ error: 'Could not resolve application. Provide a valid X-API-Key header or sessionId.' }, 400);
   }
 
   await db.insert(schema.feedbackItems).values({

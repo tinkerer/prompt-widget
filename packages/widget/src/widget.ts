@@ -585,6 +585,7 @@ export class PromptWidgetElement {
 
       const res = await fetch(this.config.endpoint, {
         method: 'POST',
+        headers: this.apiHeaders(),
         body: formData,
       });
 
@@ -596,7 +597,7 @@ export class PromptWidgetElement {
     } else {
       const res = await fetch(this.config.endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...this.apiHeaders() },
         body: JSON.stringify(feedbackPayload),
       });
 
@@ -606,6 +607,10 @@ export class PromptWidgetElement {
       }
       return res.json();
     }
+  }
+
+  private apiHeaders(): Record<string, string> {
+    return this.config.appKey ? { 'X-API-Key': this.config.appKey } : {};
   }
 
   private getSessionId(): string {
@@ -694,7 +699,7 @@ export class PromptWidgetElement {
       for (const blob of screenshots) {
         formData.append('screenshots', blob, `screenshot-${Date.now()}.png`);
       }
-      const res = await fetch(this.config.endpoint, { method: 'POST', body: formData });
+      const res = await fetch(this.config.endpoint, { method: 'POST', headers: this.apiHeaders(), body: formData });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const result = await res.json();
       this.emit('submit', { ...opts, id: result.id });
@@ -702,7 +707,7 @@ export class PromptWidgetElement {
     } else {
       const res = await fetch(this.config.endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...this.apiHeaders() },
         body: JSON.stringify(payload),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
