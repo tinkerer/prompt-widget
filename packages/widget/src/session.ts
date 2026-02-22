@@ -50,6 +50,7 @@ export class SessionBridge {
     this.ws.onopen = () => {
       this.reconnectDelay = 1000;
       this.sendMeta();
+      this.listenForNavigation();
     };
 
     this.ws.onmessage = (event) => {
@@ -57,7 +58,7 @@ export class SessionBridge {
         const msg = JSON.parse(event.data);
         if (msg.type === 'config') {
           if ('screenshotIncludeWidget' in msg) {
-            this.screenshotIncludeWidget = !!msg.screenshotIncludeWidget;
+            this.screenshotIncludeWidget = this.screenshotIncludeWidget || !!msg.screenshotIncludeWidget;
           }
           if ('autoDispatch' in msg) {
             this.autoDispatch = !!msg.autoDispatch;
@@ -86,6 +87,23 @@ export class SessionBridge {
       this.reconnectDelay = Math.min(this.reconnectDelay * 1.5, 30_000);
       this.connect();
     }, this.reconnectDelay);
+  }
+
+  private navHandler: (() => void) | null = null;
+
+  private listenForNavigation() {
+    this.stopListeningForNavigation();
+    this.navHandler = () => this.sendMeta();
+    window.addEventListener('hashchange', this.navHandler);
+    window.addEventListener('popstate', this.navHandler);
+  }
+
+  private stopListeningForNavigation() {
+    if (this.navHandler) {
+      window.removeEventListener('hashchange', this.navHandler);
+      window.removeEventListener('popstate', this.navHandler);
+      this.navHandler = null;
+    }
   }
 
   private sendMeta() {
@@ -325,6 +343,7 @@ export class SessionBridge {
   }
 
   disconnect() {
+    this.stopListeningForNavigation();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;

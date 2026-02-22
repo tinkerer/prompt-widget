@@ -396,7 +396,7 @@ export const WIDGET_CSS = `
 .pw-annotator-toolbar {
   display: flex;
   gap: 8px;
-  margin-bottom: 12px;
+  margin-top: 12px;
 }
 
 .pw-annotator-toolbar button {
@@ -519,5 +519,35 @@ export const WIDGET_CSS = `
 
 .pw-admin-option-icon {
   font-size: 13px;
+}
+
+.pw-session-id-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: #94a3b8;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+
+.pw-session-id-row:hover {
+  background: #334155;
+}
+
+.pw-session-id-label {
+  flex-shrink: 0;
+}
+
+.pw-session-id-value {
+  font-family: monospace;
+  font-size: 10px;
+  color: #cbd5e1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 `;

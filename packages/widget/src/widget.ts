@@ -68,6 +68,9 @@ export class PromptWidgetElement {
     this.bindShortcut();
 
     this.sessionBridge = new SessionBridge(this.config.endpoint, this.getSessionId(), this.config.collectors, this.config.appKey);
+    if (script?.dataset.screenshotIncludeWidget === 'true') {
+      this.sessionBridge.screenshotIncludeWidget = true;
+    }
     this.sessionBridge.connect();
 
     this.overlayManager = new OverlayPanelManager(this.shadow, this.config.endpoint, this.appId);
@@ -140,10 +143,23 @@ export class PromptWidgetElement {
       btn.innerHTML = `<span class="pw-admin-option-icon">${item.icon}</span>${item.label}`;
       btn.addEventListener('click', () => {
         this.overlayManager.openPanel(item.type);
-        options.remove();
       });
       options.appendChild(btn);
     }
+
+    // Session ID row
+    const sidRow = document.createElement('div');
+    sidRow.className = 'pw-session-id-row';
+    const sid = this.getSessionId();
+    sidRow.innerHTML = `<span class="pw-session-id-label">Session:</span><code class="pw-session-id-value">${sid}</code>`;
+    sidRow.addEventListener('click', () => {
+      navigator.clipboard.writeText(sid).then(() => {
+        const val = sidRow.querySelector('.pw-session-id-value') as HTMLElement;
+        val.textContent = 'Copied!';
+        setTimeout(() => { val.textContent = sid; }, 1200);
+      });
+    });
+    options.appendChild(sidRow);
 
     // Insert before the error div at the bottom
     const errorEl = panel.querySelector('#pw-error');
@@ -381,15 +397,19 @@ export class PromptWidgetElement {
     hint.className = 'pw-annotator-hint';
     hint.textContent = 'Click and drag to highlight areas';
 
-    overlay.append(toolbar, canvasWrap, hint);
+    overlay.append(canvasWrap, toolbar, hint);
     canvasWrap.append(img, canvas);
     this.shadow.appendChild(overlay);
 
     type Rect = { x: number; y: number; w: number; h: number };
     const rects: Rect[] = [];
     let drawing = false;
+    let didDraw = false;
     let startX = 0;
     let startY = 0;
+
+    const clampX = (v: number) => Math.max(0, Math.min(v, canvas.width));
+    const clampY = (v: number) => Math.max(0, Math.min(v, canvas.height));
 
     img.onload = () => {
       const displayW = img.clientWidth;
@@ -411,18 +431,23 @@ export class PromptWidgetElement {
       }
     };
 
+    const getCanvasCoords = (e: MouseEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      return { x: clampX(e.clientX - rect.left), y: clampY(e.clientY - rect.top) };
+    };
+
     canvas.addEventListener('mousedown', (e) => {
       drawing = true;
-      const rect = canvas.getBoundingClientRect();
-      startX = e.clientX - rect.left;
-      startY = e.clientY - rect.top;
+      didDraw = false;
+      const { x, y } = getCanvasCoords(e);
+      startX = x;
+      startY = y;
     });
 
-    canvas.addEventListener('mousemove', (e) => {
+    // Listen on overlay so dragging outside the canvas still tracks
+    overlay.addEventListener('mousemove', (e) => {
       if (!drawing) return;
-      const rect = canvas.getBoundingClientRect();
-      const curX = e.clientX - rect.left;
-      const curY = e.clientY - rect.top;
+      const { x: curX, y: curY } = getCanvasCoords(e);
       redraw();
       ctx.fillStyle = 'rgba(255, 220, 40, 0.3)';
       ctx.fillRect(startX, startY, curX - startX, curY - startY);
@@ -431,12 +456,11 @@ export class PromptWidgetElement {
       ctx.strokeRect(startX, startY, curX - startX, curY - startY);
     });
 
-    canvas.addEventListener('mouseup', (e) => {
+    overlay.addEventListener('mouseup', (e) => {
       if (!drawing) return;
       drawing = false;
-      const rect = canvas.getBoundingClientRect();
-      const endX = e.clientX - rect.left;
-      const endY = e.clientY - rect.top;
+      didDraw = true;
+      const { x: endX, y: endY } = getCanvasCoords(e);
       const w = endX - startX;
       const h = endY - startY;
       if (Math.abs(w) > 4 && Math.abs(h) > 4) {
@@ -450,15 +474,21 @@ export class PromptWidgetElement {
       redraw();
     });
 
-    cancelBtn.addEventListener('click', () => {
+    const dismiss = () => {
       overlay.remove();
+      document.removeEventListener('keydown', escHandler);
+    };
+
+    cancelBtn.addEventListener('click', dismiss);
+
+    // Click outside the canvas/toolbar dismisses — but not after a drag
+    overlay.addEventListener('click', (e) => {
+      if (didDraw) { didDraw = false; return; }
+      if (e.target === overlay) dismiss();
     });
 
     const escHandler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        overlay.remove();
-        document.removeEventListener('keydown', escHandler);
-      }
+      if (e.key === 'Escape') dismiss();
     };
     document.addEventListener('keydown', escHandler);
 
