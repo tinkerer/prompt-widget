@@ -104,6 +104,7 @@ export const agentSessions = sqliteTable('agent_sessions', {
   lastInputSeq: integer('last_input_seq').notNull().default(0),
   tmuxSessionName: text('tmux_session_name'),
   launcherId: text('launcher_id'),
+  claudeSessionId: text('claude_session_id'),
   createdAt: text('created_at').notNull(),
   startedAt: text('started_at'),
   completedAt: text('completed_at'),

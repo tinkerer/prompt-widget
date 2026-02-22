@@ -2,7 +2,7 @@ import { signal, effect } from '@preact/signals';
 import { useEffect, useRef } from 'preact/hooks';
 import { api } from '../lib/api.js';
 import { navigate, currentRoute } from '../lib/state.js';
-import { quickDispatch, quickDispatchState, batchQuickDispatch } from '../lib/sessions.js';
+import { quickDispatch, quickDispatchState, batchQuickDispatch, openSession } from '../lib/sessions.js';
 import { copyWithTooltip } from '../lib/clipboard.js';
 
 const items = signal<any[]>([]);
@@ -22,7 +22,8 @@ const createType = signal('manual');
 const createTags = signal('');
 const createLoading = signal(false);
 const isStuck = signal(false);
-
+const dispatchDropdownOpen = signal(false);
+const filtersCollapsed = signal(false);
 const TYPES = ['', 'manual', 'ab_test', 'analytics', 'error_report', 'programmatic'];
 const STATUSES = ['', 'new', 'reviewed', 'dispatched', 'resolved', 'archived', 'deleted'];
 
@@ -129,27 +130,103 @@ function formatDate(iso: string) {
   return new Date(iso).toLocaleString();
 }
 
-function DispatchButton({ id }: { id: string }) {
-  const state = quickDispatchState.value[id] || 'idle';
+function StatusCell({ item }: { item: any }) {
+  const isDispatched = item.status === 'dispatched';
+  const dispatchStatus = item.dispatchStatus;
+
+  if (isDispatched && dispatchStatus && dispatchStatus !== 'running') {
+    return (
+      <div class="status-cell-compound">
+        <span class={`badge badge-dispatch-${dispatchStatus}`}>
+          {dispatchStatus}
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div class="status-cell-compound">
+      <span class={`badge badge-${item.status}`}>{item.status}</span>
+      {isDispatched && dispatchStatus === 'running' && (
+        <span class="dispatch-running-dot" title="Agent session running" />
+      )}
+    </div>
+  );
+}
+
+function ActionCell({ item }: { item: any }) {
+  const hasSession = !!item.latestSessionId;
+  const sessionStatus = item.latestSessionStatus;
+  const isRunning = hasSession && sessionStatus === 'running';
+  const isCompleted = hasSession && !isRunning;
+  const dispatchState = quickDispatchState.value[item.id] || 'idle';
+
+  if (isRunning) {
+    return (
+      <div class="action-cell-group">
+        <button
+          class="btn-action-live"
+          title="Open running session"
+          onClick={(e) => { e.stopPropagation(); openSession(item.latestSessionId); }}
+        >
+          <span class="live-pulse" />
+          Live
+          {item.sessionCount > 1 && <span class="session-count">{item.sessionCount}</span>}
+        </button>
+      </div>
+    );
+  }
+
+  if (isCompleted) {
+    return (
+      <div class="action-cell-group">
+        <button
+          class="btn-action-view"
+          title={`View session (${sessionStatus})`}
+          onClick={(e) => { e.stopPropagation(); openSession(item.latestSessionId); }}
+        >
+          View
+          {item.sessionCount > 1 && <span class="session-count">{item.sessionCount}</span>}
+        </button>
+        <button
+          class="btn-dispatch-mini"
+          title="Re-dispatch to agent"
+          disabled={dispatchState === 'loading'}
+          onClick={async (e) => {
+            e.stopPropagation();
+            await quickDispatch(item.id, currentAppId.value);
+            if (quickDispatchState.value[item.id] === 'success') {
+              items.value = items.value.map((i) =>
+                i.id === item.id ? { ...i, status: 'dispatched' } : i
+              );
+            }
+          }}
+        >
+          {dispatchState === 'loading' ? <span class="spinner-sm" /> : '↻'}
+        </button>
+      </div>
+    );
+  }
+
   return (
     <button
       class="btn-dispatch-quick"
-      disabled={state === 'loading'}
+      disabled={dispatchState === 'loading'}
       onClick={async (e) => {
         e.stopPropagation();
-        await quickDispatch(id, currentAppId.value);
-        if (quickDispatchState.value[id] === 'success') {
-          items.value = items.value.map((item) =>
-            item.id === id ? { ...item, status: 'dispatched' } : item
+        await quickDispatch(item.id, currentAppId.value);
+        if (quickDispatchState.value[item.id] === 'success') {
+          items.value = items.value.map((i) =>
+            i.id === item.id ? { ...i, status: 'dispatched' } : i
           );
         }
       }}
-      title="Quick dispatch to default agent"
+      title="Dispatch to agent"
     >
-      {state === 'loading' && <span class="spinner-sm" />}
-      {state === 'success' && <span style="color:#22c55e">&#10003;</span>}
-      {state === 'error' && <span style="color:#ef4444">&#10005;</span>}
-      {state === 'idle' && <span>&#9654;</span>}
+      {dispatchState === 'loading' && <span class="spinner-sm" />}
+      {dispatchState === 'success' && <span style="color:#22c55e">&#10003;</span>}
+      {dispatchState === 'error' && <span style="color:#ef4444">&#10005;</span>}
+      {dispatchState === 'idle' && <span>→</span>}
     </button>
   );
 }
@@ -166,14 +243,22 @@ export function FeedbackListPage({ appId }: { appId: string }) {
     const token = localStorage.getItem('pw-admin-token');
     if (!token) return;
     const es = new EventSource(`/api/v1/admin/feedback/events?token=${encodeURIComponent(token)}`);
-    es.addEventListener('new-feedback', (e) => {
+    const onEvent = (e: MessageEvent) => {
       const data = JSON.parse(e.data);
       if (!currentAppId.value || data.appId === currentAppId.value) {
         loadFeedback();
       }
-    });
+    };
+    es.addEventListener('new-feedback', onEvent);
+    es.addEventListener('feedback-updated', onEvent);
     return () => es.close();
   }, [appId]);
+
+  useEffect(() => {
+    const close = () => (dispatchDropdownOpen.value = false);
+    document.addEventListener('click', close);
+    return () => document.removeEventListener('click', close);
+  }, []);
 
   const basePath = `/app/${appId}/feedback`;
 
@@ -196,11 +281,9 @@ export function FeedbackListPage({ appId }: { appId: string }) {
     <div>
       <div class="page-header">
         <h2>Feedback ({total.value})</h2>
-        <div style="display:flex;gap:8px">
-          <button class="btn btn-sm btn-primary" onClick={() => (showCreateForm.value = !showCreateForm.value)}>
-            + New
-          </button>
-        </div>
+        <button class="btn btn-sm btn-primary" onClick={() => (showCreateForm.value = !showCreateForm.value)}>
+          + New
+        </button>
       </div>
 
       {showCreateForm.value && (
@@ -279,7 +362,15 @@ export function FeedbackListPage({ appId }: { appId: string }) {
             <option value={t}>{t.replace(/_/g, ' ')}</option>
           ))}
         </select>
-        <div class={`filter-pills ${hasSelection ? 'collapsed' : ''}`}>
+        <button
+          class="btn-filter-toggle"
+          onClick={() => (filtersCollapsed.value = !filtersCollapsed.value)}
+          title={filtersCollapsed.value ? 'Show status filters' : 'Hide status filters'}
+        >
+          {filterStatuses.value.size > 0 && <span class="filter-count">{filterStatuses.value.size}</span>}
+          <span class={`filter-toggle-chevron ${filtersCollapsed.value ? 'collapsed' : ''}`}>&#9662;</span>
+        </button>
+        <div class={`filter-pills ${filtersCollapsed.value || hasSelection ? 'collapsed' : ''}`}>
           {STATUSES.filter(Boolean).map((s) => {
             const active = filterStatuses.value.has(s);
             return (
@@ -313,15 +404,28 @@ export function FeedbackListPage({ appId }: { appId: string }) {
               </>
             ) : (
               <>
-                <button
-                  class="btn btn-sm btn-primary"
-                  onClick={async () => {
-                    await batchQuickDispatch(Array.from(selected.value), currentAppId.value);
-                    loadFeedback();
-                  }}
-                >
-                  Dispatch
-                </button>
+                <div class="dispatch-dropdown-wrap" style="position:relative" onClick={(e) => e.stopPropagation()}>
+                  <button
+                    class="btn btn-sm btn-primary"
+                    onClick={() => (dispatchDropdownOpen.value = !dispatchDropdownOpen.value)}
+                  >
+                    Dispatch &#9662;
+                  </button>
+                  {dispatchDropdownOpen.value && (
+                    <div class="dispatch-dropdown" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        class="dispatch-dropdown-item"
+                        onClick={async () => {
+                          dispatchDropdownOpen.value = false;
+                          await batchQuickDispatch(Array.from(selected.value), currentAppId.value);
+                          loadFeedback();
+                        }}
+                      >
+                        &#9654; Dispatch selected
+                      </button>
+                    </div>
+                  )}
+                </div>
                 <select
                   class="btn btn-sm"
                   onChange={(e) => {
@@ -345,7 +449,7 @@ export function FeedbackListPage({ appId }: { appId: string }) {
       </div>
 
       <div class="table-wrap">
-        <table>
+        <table class={hasSelection ? 'has-selection' : ''}>
           <thead>
             <tr>
               <th>
@@ -362,7 +466,7 @@ export function FeedbackListPage({ appId }: { appId: string }) {
               <th>Status</th>
               <th>Tags</th>
               <th>Created</th>
-              <th style="width:80px">Actions</th>
+              <th style="width:120px">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -401,7 +505,7 @@ export function FeedbackListPage({ appId }: { appId: string }) {
                   <span class={`badge badge-${item.type}`}>{item.type.replace(/_/g, ' ')}</span>
                 </td>
                 <td>
-                  <span class={`badge badge-${item.status}`}>{item.status}</span>
+                  <StatusCell item={item} />
                 </td>
                 <td>
                   <div class="tags">
@@ -412,7 +516,7 @@ export function FeedbackListPage({ appId }: { appId: string }) {
                 </td>
                 <td style="white-space:nowrap;color:var(--pw-text-muted);font-size:13px">{formatDate(item.createdAt)}</td>
                 <td>
-                  <DispatchButton id={item.id} />
+                  <ActionCell item={item} />
                 </td>
               </tr>
             ))}

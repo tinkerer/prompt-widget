@@ -23,6 +23,7 @@ import {
 } from './launcher-registry.js';
 import type { LauncherToServerMessage, LauncherRegistered } from '@prompt-widget/shared';
 import { registerAutoDispatch } from './auto-dispatch.js';
+import { updateFeedbackOnSessionEnd, fixStaleDispatchStatuses } from './feedback-status.js';
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
 const LAUNCHER_AUTH_TOKEN = process.env.LAUNCHER_AUTH_TOKEN || '';
@@ -30,6 +31,9 @@ const LAUNCHER_AUTH_TOKEN = process.env.LAUNCHER_AUTH_TOKEN || '';
 runMigrations();
 registerAutoDispatch();
 startPruneTimer();
+
+const staleFixed = fixStaleDispatchStatuses();
+if (staleFixed > 0) console.log(`[startup] Fixed ${staleFixed} stale dispatch statuses`);
 
 // Delay orphan cleanup so the session-service has time to recover tmux sessions
 setTimeout(() => {
@@ -221,6 +225,8 @@ launcherWss.on('connection', (ws, req) => {
             })
             .where(eq(schema.agentSessions.id, msg.sessionId))
             .run();
+
+          updateFeedbackOnSessionEnd(msg.sessionId, msg.status);
 
           if (launcherId) {
             removeSessionFromLauncher(launcherId, msg.sessionId);

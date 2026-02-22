@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { ulid } from 'ulidx';
 import { eq } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
-import { applicationSchema } from '@prompt-widget/shared';
+import { applicationSchema, applicationUpdateSchema } from '@prompt-widget/shared';
 import { db, schema } from '../db/index.js';
 
 export const applicationRoutes = new Hono();
@@ -61,7 +61,7 @@ applicationRoutes.post('/', async (c) => {
 applicationRoutes.patch('/:id', async (c) => {
   const id = c.req.param('id');
   const body = await c.req.json();
-  const parsed = applicationSchema.safeParse(body);
+  const parsed = applicationUpdateSchema.safeParse(body);
   if (!parsed.success) {
     return c.json({ error: 'Validation failed', details: parsed.error.flatten() }, 400);
   }
@@ -74,21 +74,20 @@ applicationRoutes.patch('/:id', async (c) => {
   }
 
   const now = new Date().toISOString();
-  const updates: Record<string, unknown> = {
-    name: parsed.data.name,
-    projectDir: parsed.data.projectDir,
-    serverUrl: parsed.data.serverUrl || null,
-    hooks: JSON.stringify(parsed.data.hooks),
-    description: parsed.data.description,
-    updatedAt: now,
-  };
+  const updates: Record<string, unknown> = { updatedAt: now };
+  const d = parsed.data;
 
-  if ('tmuxConfigId' in body) updates.tmuxConfigId = body.tmuxConfigId || null;
-  if ('defaultPermissionProfile' in body) updates.defaultPermissionProfile = body.defaultPermissionProfile || 'interactive';
-  if ('defaultAllowedTools' in body) updates.defaultAllowedTools = body.defaultAllowedTools || null;
-  if ('agentPath' in body) updates.agentPath = body.agentPath || null;
-  if ('screenshotIncludeWidget' in body) updates.screenshotIncludeWidget = !!body.screenshotIncludeWidget;
-  if ('autoDispatch' in body) updates.autoDispatch = !!body.autoDispatch;
+  if (d.name !== undefined) updates.name = d.name;
+  if (d.projectDir !== undefined) updates.projectDir = d.projectDir;
+  if ('serverUrl' in d) updates.serverUrl = d.serverUrl || null;
+  if (d.hooks !== undefined) updates.hooks = JSON.stringify(d.hooks);
+  if (d.description !== undefined) updates.description = d.description;
+  if ('tmuxConfigId' in d) updates.tmuxConfigId = d.tmuxConfigId || null;
+  if (d.defaultPermissionProfile !== undefined) updates.defaultPermissionProfile = d.defaultPermissionProfile;
+  if ('defaultAllowedTools' in d) updates.defaultAllowedTools = d.defaultAllowedTools || null;
+  if ('agentPath' in d) updates.agentPath = d.agentPath || null;
+  if (d.screenshotIncludeWidget !== undefined) updates.screenshotIncludeWidget = d.screenshotIncludeWidget;
+  if (d.autoDispatch !== undefined) updates.autoDispatch = d.autoDispatch;
 
   await db.update(schema.applications).set(updates).where(eq(schema.applications.id, id));
 

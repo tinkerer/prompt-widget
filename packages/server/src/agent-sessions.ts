@@ -10,6 +10,7 @@ import {
 } from './session-service-client.js';
 import { getLauncher, listLaunchers } from './launcher-registry.js';
 import { tmuxSessionExists, isTmuxAvailable } from './tmux-pty.js';
+import { updateFeedbackOnSessionEnd } from './feedback-status.js';
 
 // Maps admin WS → upstream target (either session-service WS or launcher info)
 interface LocalBridge {
@@ -36,6 +37,8 @@ export async function spawnAgentSession(params: {
   cwd: string;
   permissionProfile: PermissionProfile;
   allowedTools?: string | null;
+  claudeSessionId?: string;
+  resumeSessionId?: string;
 }): Promise<void> {
   await spawnSessionRemote(params);
 }
@@ -212,6 +215,7 @@ export async function killSession(sessionId: string): Promise<boolean> {
     .where(eq(schema.agentSessions.id, sessionId))
     .run();
 
+  updateFeedbackOnSessionEnd(sessionId, 'killed');
   return true;
 }
 
@@ -256,6 +260,7 @@ export async function cleanupOrphanedSessions(): Promise<void> {
       .set({ status: 'failed', completedAt: now })
       .where(eq(schema.agentSessions.id, session.id))
       .run();
+    updateFeedbackOnSessionEnd(session.id, 'failed');
   }
 }
 

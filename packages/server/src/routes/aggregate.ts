@@ -304,7 +304,7 @@ Analyze these items and produce your clustering and action plans.`;
     prompt: analysisPrompt,
     cwd,
     permissionProfile,
-    allowedTools: agent.allowedTools,
+    allowedTools: agent.allowedTools || (app as any)?.defaultAllowedTools || null,
   });
 
   db.update(schema.feedbackItems).set({
@@ -423,7 +423,7 @@ ${itemsList}`;
     prompt: clusterPrompt,
     cwd,
     permissionProfile,
-    allowedTools: agent.allowedTools,
+    allowedTools: agent.allowedTools || (app as any)?.defaultAllowedTools || null,
   });
 
   db.update(schema.feedbackItems).set({

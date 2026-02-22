@@ -1,5 +1,7 @@
 import { signal } from '@preact/signals';
 import { api } from './api.js';
+import { autoNavigateToFeedback } from './settings.js';
+import { navigate, selectedAppId } from './state.js';
 import type { ViewMode } from '../components/SessionViewToggle.js';
 
 function loadJson<T>(key: string, fallback: T): T {
@@ -26,6 +28,8 @@ export interface PopoutPanelState {
   floatingRect: { x: number; y: number; w: number; h: number };
   dockedHeight: number;
   dockedWidth: number;
+  dockedTopOffset?: number;
+  minimized?: boolean;
 }
 
 function migrateOldPopoutState(): PopoutPanelState[] {
@@ -62,6 +66,130 @@ function ensurePanelWidth(panels: PopoutPanelState[]): PopoutPanelState[] {
 }
 
 export const popoutPanels = signal<PopoutPanelState[]>(ensurePanelWidth(migrateOldPopoutState()));
+
+export type DockedOrientation = 'vertical' | 'horizontal';
+export const dockedOrientation = signal<DockedOrientation>(loadJson('pw-docked-orientation', 'vertical'));
+
+export function toggleDockedOrientation() {
+  dockedOrientation.value = dockedOrientation.value === 'vertical' ? 'horizontal' : 'vertical';
+  localStorage.setItem('pw-docked-orientation', JSON.stringify(dockedOrientation.value));
+  nudgeResize();
+}
+
+export const focusedPanelId = signal<string | null>(null);
+let focusTimer: ReturnType<typeof setTimeout> | null = null;
+
+export function setFocusedPanel(panelId: string | null) {
+  if (focusTimer) { clearTimeout(focusTimer); focusTimer = null; }
+  focusedPanelId.value = panelId;
+  if (panelId) {
+    focusTimer = setTimeout(() => { focusedPanelId.value = null; }, 2000);
+  }
+}
+
+export function cyclePanelFocus(direction: 1 | -1) {
+  const panels: string[] = [];
+  if (openTabs.value.length > 0) panels.push('global');
+  for (const p of popoutPanels.value) {
+    if (p.visible) panels.push(p.id);
+  }
+  if (panels.length === 0) return;
+  const currentIdx = focusedPanelId.value ? panels.indexOf(focusedPanelId.value) : -1;
+  const nextIdx = currentIdx < 0 ? 0 : (currentIdx + direction + panels.length) % panels.length;
+  const targetId = panels[nextIdx];
+  setFocusedPanel(targetId);
+
+  // Focus the terminal inside the target panel
+  let container: Element | null = null;
+  if (targetId === 'global') {
+    container = document.querySelector('.global-terminal-panel');
+  } else {
+    container = document.querySelector(`[data-panel-id="${targetId}"]`);
+  }
+  if (container) {
+    const textarea = container.querySelector('.xterm-helper-textarea') as HTMLElement | null;
+    if (textarea) textarea.focus();
+  }
+}
+
+export function reorderTabInPanel(panelId: string, sessionId: string, insertBeforeId: string | null) {
+  const panel = popoutPanels.value.find((p) => p.id === panelId);
+  if (!panel) return;
+  const ids = panel.sessionIds.filter((id) => id !== sessionId);
+  if (insertBeforeId) {
+    const idx = ids.indexOf(insertBeforeId);
+    if (idx >= 0) ids.splice(idx, 0, sessionId);
+    else ids.push(sessionId);
+  } else {
+    ids.push(sessionId);
+  }
+  updatePanel(panelId, { sessionIds: ids });
+  persistPopoutState();
+}
+
+export function reorderGlobalTab(sessionId: string, insertBeforeId: string | null) {
+  const ids = openTabs.value.filter((id) => id !== sessionId);
+  if (insertBeforeId) {
+    const idx = ids.indexOf(insertBeforeId);
+    if (idx >= 0) ids.splice(idx, 0, sessionId);
+    else ids.push(sessionId);
+  } else {
+    ids.push(sessionId);
+  }
+  openTabs.value = ids;
+  persistTabs();
+}
+
+export interface PanelPreset {
+  name: string;
+  openTabs: string[];
+  activeTabId: string | null;
+  panels: PopoutPanelState[];
+  panelHeight: number;
+  panelMinimized: boolean;
+  dockedOrientation: DockedOrientation;
+  savedAt: string;
+}
+
+export const panelPresets = signal<PanelPreset[]>(loadJson('pw-panel-presets', []));
+
+export function savePreset(name: string) {
+  const preset: PanelPreset = {
+    name,
+    openTabs: openTabs.value,
+    activeTabId: activeTabId.value,
+    panels: popoutPanels.value,
+    panelHeight: panelHeight.value,
+    panelMinimized: panelMinimized.value,
+    dockedOrientation: dockedOrientation.value,
+    savedAt: new Date().toISOString(),
+  };
+  panelPresets.value = [...panelPresets.value.filter((p) => p.name !== name), preset];
+  localStorage.setItem('pw-panel-presets', JSON.stringify(panelPresets.value));
+}
+
+export function restorePreset(name: string) {
+  const preset = panelPresets.value.find((p) => p.name === name);
+  if (!preset) return;
+  openTabs.value = preset.openTabs;
+  activeTabId.value = preset.activeTabId;
+  popoutPanels.value = preset.panels;
+  panelHeight.value = preset.panelHeight;
+  panelMinimized.value = preset.panelMinimized;
+  dockedOrientation.value = preset.dockedOrientation;
+  localStorage.setItem('pw-docked-orientation', JSON.stringify(preset.dockedOrientation));
+  persistTabs();
+  persistPopoutState();
+  persistPanelState();
+  nudgeResize();
+}
+
+export function deletePreset(name: string) {
+  panelPresets.value = panelPresets.value.filter((p) => p.name !== name);
+  localStorage.setItem('pw-panel-presets', JSON.stringify(panelPresets.value));
+}
+
+export const snapGuides = signal<{ x?: number; y?: number }[]>([]);
 
 export const viewModes = signal<Record<string, ViewMode>>({});
 
@@ -131,8 +259,12 @@ export function getDockedPanelTop(panelId: string): number {
   const docked = popoutPanels.value.filter((p) => p.docked);
   let top = 40;
   for (const p of docked) {
-    if (p.id === panelId) return top;
-    top += (p.visible ? p.dockedHeight : COLLAPSED_HANDLE_H) + 4;
+    if (p.id === panelId) return top + (p.visible ? (p.dockedTopOffset || 0) : 0);
+    if (p.visible) {
+      top += p.dockedHeight + (p.dockedTopOffset || 0) + 4;
+    } else {
+      top += COLLAPSED_HANDLE_H + 4;
+    }
   }
   return top;
 }
@@ -429,6 +561,17 @@ export function openSession(sessionId: string) {
   activeTabId.value = sessionId;
   panelMinimized.value = false;
   persistTabs();
+
+  if (autoNavigateToFeedback.value) {
+    const session = allSessions.value.find((s) => s.id === sessionId);
+    if (session?.feedbackId) {
+      const appId = selectedAppId.value;
+      const path = appId
+        ? `/app/${appId}/feedback/${session.feedbackId}`
+        : `/feedback/${session.feedbackId}`;
+      navigate(path);
+    }
+  }
 }
 
 export function closeTab(sessionId: string) {
@@ -587,6 +730,36 @@ export async function batchQuickDispatch(feedbackIds: string[], appId?: string |
   await Promise.all(feedbackIds.map((id) => quickDispatch(id, appId)));
 }
 
+export const actionToast = signal<{ key: string; label: string; color: string } | null>(null);
+let toastTimer: ReturnType<typeof setTimeout> | null = null;
+
+export function showActionToast(key: string, label: string, color = 'var(--pw-primary)') {
+  if (toastTimer) clearTimeout(toastTimer);
+  actionToast.value = { key, label, color };
+  toastTimer = setTimeout(() => { actionToast.value = null; }, 1500);
+}
+
+export const waitingSessions = signal<Set<string>>(new Set());
+
+export function setSessionWaiting(sessionId: string, waiting: boolean) {
+  const next = new Set(waitingSessions.value);
+  if (waiting) next.add(sessionId);
+  else next.delete(sessionId);
+  waitingSessions.value = next;
+}
+
+export const hotkeyMenuOpen = signal<{ sessionId: string; x: number; y: number } | null>(null);
+
+export function openHotkeyMenu(sessionId: string) {
+  const tab = document.querySelector(`.terminal-tab.active .status-dot`) as HTMLElement | null;
+  if (tab) {
+    const rect = tab.getBoundingClientRect();
+    hotkeyMenuOpen.value = { sessionId, x: rect.left, y: rect.bottom + 4 };
+  } else {
+    hotkeyMenuOpen.value = { sessionId, x: window.innerWidth / 2 - 60, y: window.innerHeight - 200 };
+  }
+}
+
 export const pendingFirstDigit = signal<number | null>(null);
 let pendingTabTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -596,6 +769,8 @@ function clearPending() {
 }
 
 function activateGlobalSession(all: string[], num: number) {
+  // Blur any focused input so the terminal can grab focus
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   if (num === 0) {
     togglePopoutVisibility();
     return;

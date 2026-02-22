@@ -9,16 +9,17 @@ interface AgentTerminalProps {
   sessionId: string;
   isActive?: boolean;
   onExit?: (exitCode: number) => void;
+  onWaitingChange?: (waiting: boolean) => void;
 }
 
-export function AgentTerminal({ sessionId, isActive, onExit }: AgentTerminalProps) {
+export function AgentTerminal({ sessionId, isActive, onExit, onWaitingChange }: AgentTerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const cleanedUp = useRef(false);
   const hasExited = useRef(false);
-  const safeFitAndResizeRef = useRef<() => void>(() => {});
+  const safeFitAndResizeRef = useRef<(bounce?: boolean) => void>(() => {});
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -224,8 +225,11 @@ export function AgentTerminal({ sessionId, isActive, onExit }: AgentTerminalProp
                 term.write(`\r\n\x1b[33m--- Session exited (code: ${content.exitCode ?? 'unknown'}) ---\x1b[0m\r\n`);
                 hasExited.current = true;
                 onExit?.(content.exitCode ?? -1);
+                onWaitingChange?.(false);
               } else if (content.kind === 'error' && content.data) {
                 term.write(`\r\n\x1b[31m${content.data}\x1b[0m\r\n`);
+              } else if (content.kind === 'waiting_state') {
+                onWaitingChange?.(!!content.waiting);
               }
               sendOutputAck(seq);
               break;
@@ -241,6 +245,9 @@ export function AgentTerminal({ sessionId, isActive, onExit }: AgentTerminalProp
               // Resume input seq from server's last acknowledged seq
               if (typeof msg.lastInputAckSeq === 'number' && msg.lastInputAckSeq > inputSeq) {
                 inputSeq = msg.lastInputAckSeq;
+              }
+              if (msg.waitingForInput !== undefined) {
+                onWaitingChange?.(!!msg.waitingForInput);
               }
               if (msg.data) {
                 if (waitingDots) { clearInterval(waitingDots); waitingDots = null; }
@@ -334,12 +341,27 @@ export function AgentTerminal({ sessionId, isActive, onExit }: AgentTerminalProp
       }
     });
 
-    function safeFitAndResize() {
+    function safeFitAndResize(bounce = false) {
       const el = containerRef.current;
       if (!el || el.offsetWidth === 0 || el.offsetHeight === 0) return;
       fit.fit();
       const ws = wsRef.current;
       if (ws && ws.readyState === WebSocket.OPEN && term.cols > 0 && term.rows > 0) {
+        // On macOS, TIOCSWINSZ skips SIGWINCH when size is unchanged.
+        // "Bounce" by sending rows-1 first to guarantee tmux gets a real
+        // SIGWINCH and re-renders when we send the correct size immediately after.
+        if (bounce && term.rows > 1) {
+          inputSeq++;
+          const bounceMsg = JSON.stringify({
+            type: 'sequenced_input',
+            sessionId,
+            seq: inputSeq,
+            content: { kind: 'resize', cols: term.cols, rows: term.rows - 1 },
+            timestamp: new Date().toISOString(),
+          });
+          pendingInputs.set(inputSeq, bounceMsg);
+          ws.send(bounceMsg);
+        }
         inputSeq++;
         const msg = JSON.stringify({
           type: 'sequenced_input',
@@ -361,6 +383,7 @@ export function AgentTerminal({ sessionId, isActive, onExit }: AgentTerminalProp
     return () => {
       cleanedUp.current = true;
       safeFitAndResizeRef.current = () => {};
+      onWaitingChange?.(false);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (waitingDots) clearInterval(waitingDots);
       if (xtermScreen) {
@@ -380,21 +403,22 @@ export function AgentTerminal({ sessionId, isActive, onExit }: AgentTerminalProp
     if (!isActive || !fitRef.current || !termRef.current || !containerRef.current) return;
     const term = termRef.current;
     // Wait for the browser to lay out the newly-visible container before fitting.
-    // FitAddon.fit() skips resize when dimensions haven't changed, so we also
-    // call term.refresh() to force xterm.js to re-render the canvas (content
-    // written while the tab was hidden may leave the canvas stale).
+    // On macOS the kernel skips SIGWINCH when PTY size is unchanged, so we use
+    // bounce=true to briefly send rows-1 then correct rows, forcing tmux to
+    // re-render.  Also call term.refresh() to repaint the xterm.js canvas
+    // (content written while the tab was display:none may leave it stale).
     const timers: ReturnType<typeof setTimeout>[] = [];
     const rafId = requestAnimationFrame(() => {
-      safeFitAndResizeRef.current();
+      safeFitAndResizeRef.current(true);
       term.refresh(0, term.rows - 1);
-      for (const delay of [50, 150, 300]) {
+      for (const delay of [100, 300]) {
         timers.push(setTimeout(() => {
           safeFitAndResizeRef.current();
           term.refresh(0, term.rows - 1);
         }, delay));
       }
     });
-    timers.push(setTimeout(() => term.focus(), 50));
+    timers.push(setTimeout(() => term.focus(), 80));
     // Periodic resize nudge to fix tmux sizing weirdness
     const nudge = setInterval(() => safeFitAndResizeRef.current(), 15_000);
     return () => {

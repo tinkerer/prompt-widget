@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Server } from 'node:http';
 import * as pty from 'node-pty';
-import { eq, inArray } from 'drizzle-orm';
+import { eq, inArray, desc } from 'drizzle-orm';
 import { db, schema } from './db/index.js';
 import type { PermissionProfile, SequencedOutput, SessionOutputData } from '@prompt-widget/shared';
 import { MessageBuffer } from './message-buffer.js';
@@ -28,6 +28,49 @@ const messageBuffer = new MessageBuffer();
 
 // ---------- PTY process management ----------
 
+const PROMPT_CHECK_INTERVAL = 5_000; // check every 5s
+
+// Check if visible pane content shows a yes/no or permission prompt
+function looksLikePrompt(text: string): boolean {
+  const lower = text.toLowerCase();
+
+  // Yes/No style prompts
+  if (/\[y\/n\]|\(y\/n\)|\(yes\/no\)|\[yes\/no\]/.test(lower)) return true;
+
+  // Claude Code permission prompts — "Allow" / "Deny" options
+  if (/\ballow\b.*\bdeny\b|\bdeny\b.*\ballow\b/.test(lower)) return true;
+  if (/\ballow once\b|\ballow always\b/.test(lower)) return true;
+
+  // Claude Code plan confirmation — "Would you like to proceed?"
+  if (/would you like to proceed/.test(lower)) return true;
+
+  // "Do you want to proceed" style
+  if (/do you want to (proceed|continue)\?/.test(lower)) return true;
+
+  return false;
+}
+
+function startPromptChecker(sessionId: string): ReturnType<typeof setInterval> {
+  return setInterval(() => {
+    const proc = activeSessions.get(sessionId);
+    if (!proc || proc.status !== 'running' || !proc.hasStarted) return;
+
+    // Capture the visible tmux pane to check for prompts
+    const paneText = captureTmuxPane(sessionId);
+    if (!paneText) return;
+
+    const isPrompt = looksLikePrompt(paneText);
+
+    if (isPrompt && !proc.waitingForInput) {
+      proc.waitingForInput = true;
+      sendSequenced(proc, { kind: 'waiting_state', waiting: true });
+    } else if (!isPrompt && proc.waitingForInput) {
+      proc.waitingForInput = false;
+      sendSequenced(proc, { kind: 'waiting_state', waiting: false });
+    }
+  }, PROMPT_CHECK_INTERVAL);
+}
+
 interface AgentProcess {
   sessionId: string;
   ptyProcess: pty.IPty;
@@ -38,6 +81,9 @@ interface AgentProcess {
   adminSockets: Set<WebSocket>;
   status: 'running' | 'completed' | 'failed' | 'killed';
   flushTimer: ReturnType<typeof setInterval>;
+  waitingForInput: boolean;
+  promptChecker: ReturnType<typeof setInterval> | null;
+  hasStarted: boolean;
 }
 
 const activeSessions = new Map<string, AgentProcess>();
@@ -47,28 +93,79 @@ function buildClaudeArgs(
   prompt: string,
   permissionProfile: PermissionProfile,
   allowedTools?: string | null,
+  claudeSessionId?: string,
+  resumeSessionId?: string,
 ): { command: string; args: string[] } {
+  // When resuming, use --resume only — no --session-id (it conflicts)
+  if (resumeSessionId) {
+    const args = ['--resume', resumeSessionId];
+    if (prompt) args.push(prompt);
+    return { command: 'claude', args };
+  }
+
   switch (permissionProfile) {
-    case 'interactive':
-      return { command: 'claude', args: prompt ? [prompt] : [] };
+    case 'interactive': {
+      const args: string[] = [];
+      if (claudeSessionId) args.push('--session-id', claudeSessionId);
+      if (allowedTools) args.push('--allowedTools', allowedTools);
+      if (prompt) args.push(prompt);
+      return { command: 'claude', args };
+    }
     case 'auto': {
       const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose'];
+      if (claudeSessionId) args.push('--session-id', claudeSessionId);
       if (allowedTools) {
         args.push('--allowedTools', allowedTools);
       }
       return { command: 'claude', args };
     }
-    case 'yolo':
-      return {
-        command: 'claude',
-        args: ['-p', prompt, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'],
-      };
+    case 'yolo': {
+      const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'];
+      if (claudeSessionId) args.push('--session-id', claudeSessionId);
+      return { command: 'claude', args };
+    }
     case 'plain': {
       const shell = process.env.SHELL || '/bin/bash';
       return { command: shell, args: [] };
     }
-    default:
-      return { command: 'claude', args: prompt ? [prompt] : [] };
+    default: {
+      const args: string[] = [];
+      if (claudeSessionId) args.push('--session-id', claudeSessionId);
+      if (prompt) args.push(prompt);
+      return { command: 'claude', args };
+    }
+  }
+}
+
+function syncFeedbackDispatchStatus(sessionId: string, sessionStatus: string): void {
+  try {
+    const session = db
+      .select({ feedbackId: schema.agentSessions.feedbackId })
+      .from(schema.agentSessions)
+      .where(eq(schema.agentSessions.id, sessionId))
+      .get();
+    if (!session?.feedbackId) return;
+
+    const latestSession = db
+      .select({ id: schema.agentSessions.id })
+      .from(schema.agentSessions)
+      .where(eq(schema.agentSessions.feedbackId, session.feedbackId))
+      .orderBy(desc(schema.agentSessions.createdAt))
+      .limit(1)
+      .get();
+    if (!latestSession || latestSession.id !== sessionId) return;
+
+    let dispatchStatus: string;
+    if (sessionStatus === 'completed') dispatchStatus = 'completed';
+    else if (sessionStatus === 'killed') dispatchStatus = 'killed';
+    else dispatchStatus = 'failed';
+
+    db.update(schema.feedbackItems)
+      .set({ dispatchStatus, updatedAt: new Date().toISOString() })
+      .where(eq(schema.feedbackItems.id, session.feedbackId))
+      .run();
+  } catch {
+    // best-effort
   }
 }
 
@@ -115,8 +212,10 @@ function spawnSession(params: {
   cwd: string;
   permissionProfile: PermissionProfile;
   allowedTools?: string | null;
+  claudeSessionId?: string;
+  resumeSessionId?: string;
 }): void {
-  const { sessionId, prompt = '', cwd, permissionProfile, allowedTools } = params;
+  const { sessionId, prompt = '', cwd, permissionProfile, allowedTools, claudeSessionId, resumeSessionId } = params;
 
   if (activeSessions.has(sessionId)) {
     throw new Error(`Session ${sessionId} is already running`);
@@ -126,6 +225,8 @@ function spawnSession(params: {
     prompt,
     permissionProfile,
     allowedTools,
+    claudeSessionId,
+    resumeSessionId,
   );
 
   const useTmux = isTmuxAvailable();
@@ -165,6 +266,9 @@ function spawnSession(params: {
     adminSockets: new Set(),
     status: 'running',
     flushTimer: setInterval(() => flushOutput(sessionId), FLUSH_INTERVAL),
+    waitingForInput: false,
+    promptChecker: useTmux ? startPromptChecker(sessionId) : null,
+    hasStarted: false,
   };
 
   activeSessions.set(sessionId, proc);
@@ -199,6 +303,10 @@ function spawnSession(params: {
       proc.outputBuffer = proc.outputBuffer.slice(-MAX_OUTPUT_LOG);
     }
 
+    if (!proc.hasStarted && proc.totalBytes > 100) {
+      proc.hasStarted = true;
+    }
+
     sendSequenced(proc, { kind: 'output', data });
   });
 
@@ -208,6 +316,7 @@ function spawnSession(params: {
 
     proc.status = exitCode === 0 ? 'completed' : 'failed';
     clearInterval(proc.flushTimer);
+    if (proc.promptChecker) { clearInterval(proc.promptChecker); proc.promptChecker = null; }
 
     sendSequenced(proc, { kind: 'exit', exitCode, status: proc.status });
 
@@ -224,6 +333,7 @@ function spawnSession(params: {
       .where(eq(schema.agentSessions.id, sessionId))
       .run();
 
+    syncFeedbackDispatchStatus(sessionId, proc.status);
     activeSessions.delete(sessionId);
   });
 
@@ -265,6 +375,7 @@ function killSessionProcess(sessionId: string): boolean {
   proc.ptyProcess.kill();
   killTmuxSession(sessionId);
   clearInterval(proc.flushTimer);
+  if (proc.promptChecker) { clearInterval(proc.promptChecker); proc.promptChecker = null; }
 
   sendSequenced(proc, { kind: 'exit', exitCode: -1, status: 'killed' });
 
@@ -280,6 +391,7 @@ function killSessionProcess(sessionId: string): boolean {
     .where(eq(schema.agentSessions.id, sessionId))
     .run();
 
+  syncFeedbackDispatchStatus(sessionId, 'killed');
   activeSessions.delete(sessionId);
   return true;
 }
@@ -316,8 +428,14 @@ function tryRecoverSession(session: typeof schema.agentSessions.$inferSelect): b
       adminSockets: new Set(),
       status: 'running',
       flushTimer: setInterval(() => flushOutput(session.id), FLUSH_INTERVAL),
+      waitingForInput: false,
+      promptChecker: null,
+      hasStarted: (session.outputBytes || 0) > 100,
     };
     activeSessions.set(session.id, proc);
+
+    // Start periodic prompt checker
+    proc.promptChecker = startPromptChecker(session.id);
 
     // Restore DB status to running (may have been wrongly marked as failed)
     db.update(schema.agentSessions)
@@ -331,6 +449,7 @@ function tryRecoverSession(session: typeof schema.agentSessions.$inferSelect): b
       if (proc.outputBuffer.length > MAX_OUTPUT_LOG) {
         proc.outputBuffer = proc.outputBuffer.slice(-MAX_OUTPUT_LOG);
       }
+      if (!proc.hasStarted && proc.totalBytes > 100) proc.hasStarted = true;
       sendSequenced(proc, { kind: 'output', data });
     });
 
@@ -339,6 +458,7 @@ function tryRecoverSession(session: typeof schema.agentSessions.$inferSelect): b
 
       proc.status = exitCode === 0 ? 'completed' : 'failed';
       clearInterval(proc.flushTimer);
+      if (proc.promptChecker) { clearInterval(proc.promptChecker); proc.promptChecker = null; }
       sendSequenced(proc, { kind: 'exit', exitCode, status: proc.status });
       const completedAt = new Date().toISOString();
       db.update(schema.agentSessions)
@@ -352,6 +472,7 @@ function tryRecoverSession(session: typeof schema.agentSessions.$inferSelect): b
         })
         .where(eq(schema.agentSessions.id, session.id))
         .run();
+      syncFeedbackDispatchStatus(session.id, proc.status);
       activeSessions.delete(session.id);
     });
 
@@ -375,7 +496,7 @@ function attachAdminSocket(sessionId: string, ws: WebSocket): boolean {
   const proc = activeSessions.get(sessionId);
   if (proc) {
     // Send full history + lastInputAckSeq so client can resume its counter
-    ws.send(JSON.stringify({ type: 'history', data: proc.outputBuffer, lastInputAckSeq: proc.lastInputAckSeq }));
+    ws.send(JSON.stringify({ type: 'history', data: proc.outputBuffer, lastInputAckSeq: proc.lastInputAckSeq, waitingForInput: proc.waitingForInput }));
     proc.adminSockets.add(ws);
     return true;
   }
@@ -511,17 +632,17 @@ app.get('/health', (c) => {
 
 app.post('/spawn', async (c) => {
   const body = await c.req.json();
-  const { sessionId, prompt, cwd, permissionProfile, allowedTools } = body;
+  const { sessionId, prompt, cwd, permissionProfile, allowedTools, claudeSessionId, resumeSessionId } = body;
 
   if (!sessionId || !cwd || !permissionProfile) {
     return c.json({ error: 'Missing required fields' }, 400);
   }
-  if (permissionProfile !== 'plain' && !prompt) {
+  if (permissionProfile !== 'plain' && !prompt && !resumeSessionId) {
     return c.json({ error: 'Prompt required for non-plain sessions' }, 400);
   }
 
   try {
-    spawnSession({ sessionId, prompt, cwd, permissionProfile, allowedTools });
+    spawnSession({ sessionId, prompt, cwd, permissionProfile, allowedTools, claudeSessionId, resumeSessionId });
     return c.json({ ok: true, sessionId });
   } catch (err) {
     const pending = pendingConnections.get(sessionId);
@@ -571,6 +692,7 @@ app.get('/status/:id', (c) => {
       outputSeq: proc.outputSeq,
       totalBytes: proc.totalBytes,
       healthy: isSessionHealthy(proc),
+      waitingForInput: proc.waitingForInput,
     });
   }
   const session = db

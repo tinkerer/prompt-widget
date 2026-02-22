@@ -278,12 +278,20 @@ export const WIDGET_CSS = `
   fill: currentColor;
 }
 
+.pw-selected-elements {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 8px 10px 0;
+  max-height: 80px;
+  overflow-y: auto;
+}
+
 .pw-selected-element {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 8px 10px 0;
-  padding: 4px 8px;
+  padding: 3px 8px;
   background: rgba(99, 102, 241, 0.1);
   border: 1px solid #6366f1;
   border-radius: 6px;
@@ -321,6 +329,110 @@ export const WIDGET_CSS = `
   color: #e2e8f0;
 }
 
+.pw-picker-group {
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+
+.pw-picker-group .pw-picker-btn {
+  border-radius: 6px 0 0 6px;
+}
+
+.pw-picker-dropdown-toggle {
+  height: 32px;
+  width: 20px;
+  border: none;
+  border-left: 1px solid rgba(255,255,255,0.15);
+  background: #334155;
+  color: #94a3b8;
+  cursor: pointer;
+  border-radius: 0 6px 6px 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background 0.15s, color 0.15s;
+}
+
+.pw-picker-dropdown-toggle:hover {
+  background: #475569;
+  color: #e2e8f0;
+}
+
+.pw-picker-dropdown-toggle svg {
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
+}
+
+.pw-picker-menu {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 4px;
+  background: #1e1e2e;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  z-index: 10;
+  min-width: 130px;
+}
+
+.pw-picker-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  color: #e2e8f0;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.pw-picker-menu-item:hover {
+  background: rgba(99, 102, 241, 0.2);
+}
+
+.pw-picker-menu-item input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border: 1px solid #475569;
+  border-radius: 3px;
+  background: #0f172a;
+  cursor: pointer;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.pw-picker-menu-item input[type="checkbox"]:checked {
+  background: #6366f1;
+  border-color: #6366f1;
+}
+
+.pw-picker-menu-item input[type="checkbox"]:checked::after {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 4px;
+  width: 4px;
+  height: 7px;
+  border: solid white;
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+}
+
+.pw-send-group {
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+
 .pw-send-btn {
   height: 32px;
   padding: 0 14px;
@@ -339,8 +451,20 @@ export const WIDGET_CSS = `
   transition: background 0.15s, transform 0.1s;
 }
 
+.pw-send-group .pw-send-btn {
+  border-radius: 6px 0 0 6px;
+}
+
 .pw-send-btn:hover {
   background: #4f46e5;
+}
+
+.pw-send-btn.pw-dispatch-active {
+  background: #22c55e;
+}
+
+.pw-send-btn.pw-dispatch-active:hover {
+  background: #16a34a;
 }
 
 .pw-send-btn:active {
@@ -351,6 +475,90 @@ export const WIDGET_CSS = `
   width: 16px;
   height: 16px;
   fill: currentColor;
+}
+
+.pw-send-dropdown-toggle {
+  height: 32px;
+  width: 24px;
+  border: none;
+  border-left: 1px solid rgba(255,255,255,0.25);
+  background: #6366f1;
+  color: white;
+  cursor: pointer;
+  border-radius: 0 6px 6px 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background 0.15s;
+}
+
+.pw-send-dropdown-toggle:hover {
+  background: #4f46e5;
+}
+
+.pw-send-dropdown-toggle.pw-dispatch-active {
+  background: #22c55e;
+}
+
+.pw-send-dropdown-toggle.pw-dispatch-active:hover {
+  background: #16a34a;
+}
+
+.pw-send-dropdown-toggle svg {
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
+}
+
+.pw-send-menu {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  margin-bottom: 4px;
+  background: #1e1e2e;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  z-index: 10;
+  min-width: 160px;
+}
+
+.pw-send-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: none;
+  color: #e2e8f0;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.pw-send-menu-item:hover {
+  background: rgba(99, 102, 241, 0.2);
+}
+
+.pw-send-menu-item.pw-active {
+  color: #a5b4fc;
+}
+
+.pw-send-menu-item .pw-menu-check {
+  width: 14px;
+  flex-shrink: 0;
+  text-align: center;
+}
+
+.pw-send-menu-divider {
+  height: 1px;
+  background: rgba(255,255,255,0.08);
+  margin: 2px 0;
 }
 
 .pw-flash {

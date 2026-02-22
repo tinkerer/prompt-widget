@@ -145,6 +145,7 @@ export function runMigrations() {
     `ALTER TABLE applications ADD COLUMN agent_path TEXT`,
     `ALTER TABLE applications ADD COLUMN screenshot_include_widget INTEGER NOT NULL DEFAULT 0`,
     `ALTER TABLE applications ADD COLUMN auto_dispatch INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE agent_sessions ADD COLUMN claude_session_id TEXT`,
   ];
 
   for (const stmt of alterStatements) {
@@ -177,6 +178,7 @@ export function runMigrations() {
           last_input_seq INTEGER NOT NULL DEFAULT 0,
           tmux_session_name TEXT,
           launcher_id TEXT,
+          claude_session_id TEXT,
           created_at TEXT NOT NULL,
           started_at TEXT,
           completed_at TEXT

@@ -52,22 +52,41 @@ function buildClaudeArgs(
   prompt: string,
   permissionProfile: string,
   allowedTools?: string | null,
+  claudeSessionId?: string,
+  resumeSessionId?: string,
 ): { command: string; args: string[] } {
+  // When resuming, use --resume only — no --session-id (it conflicts)
+  if (resumeSessionId) {
+    const args = ['--resume', resumeSessionId];
+    if (prompt) args.push(prompt);
+    return { command: 'claude', args };
+  }
+
   switch (permissionProfile) {
-    case 'interactive':
-      return { command: 'claude', args: prompt ? [prompt] : [] };
+    case 'interactive': {
+      const args: string[] = [];
+      if (claudeSessionId) args.push('--session-id', claudeSessionId);
+      if (allowedTools) args.push('--allowedTools', allowedTools);
+      if (prompt) args.push(prompt);
+      return { command: 'claude', args };
+    }
     case 'auto': {
       const args = ['-p', prompt];
+      if (claudeSessionId) args.push('--session-id', claudeSessionId);
       if (allowedTools) args.push('--allowedTools', allowedTools);
       return { command: 'claude', args };
     }
-    case 'yolo':
-      return {
-        command: 'claude',
-        args: ['-p', prompt, '--dangerously-skip-permissions'],
-      };
-    default:
-      return { command: 'claude', args: prompt ? [prompt] : [] };
+    case 'yolo': {
+      const args = ['-p', prompt, '--dangerously-skip-permissions'];
+      if (claudeSessionId) args.push('--session-id', claudeSessionId);
+      return { command: 'claude', args };
+    }
+    default: {
+      const args: string[] = [];
+      if (claudeSessionId) args.push('--session-id', claudeSessionId);
+      if (prompt) args.push(prompt);
+      return { command: 'claude', args };
+    }
   }
 }
 
@@ -101,17 +120,19 @@ function spawnSession(params: {
   cwd: string;
   permissionProfile: string;
   allowedTools?: string | null;
+  claudeSessionId?: string;
+  resumeSessionId?: string;
   cols: number;
   rows: number;
 }): void {
-  const { sessionId, prompt, cwd, permissionProfile, allowedTools, cols, rows } = params;
+  const { sessionId, prompt, cwd, permissionProfile, allowedTools, claudeSessionId, resumeSessionId, cols, rows } = params;
 
   if (sessions.has(sessionId)) {
     console.log(`[launcher] Session ${sessionId} already running`);
     return;
   }
 
-  const { command, args } = buildClaudeArgs(prompt, permissionProfile, allowedTools);
+  const { command, args } = buildClaudeArgs(prompt, permissionProfile, allowedTools, claudeSessionId, resumeSessionId);
   const useTmux = isTmuxAvailable();
 
   console.log(`[launcher] Spawning session ${sessionId}: profile=${permissionProfile}, cwd=${cwd}, tmux=${useTmux}`);
@@ -194,6 +215,8 @@ function handleServerMessage(msg: ServerToLauncherMessage): void {
         cwd: msg.cwd,
         permissionProfile: msg.permissionProfile,
         allowedTools: msg.allowedTools,
+        claudeSessionId: msg.claudeSessionId,
+        resumeSessionId: msg.resumeSessionId,
         cols: msg.cols,
         rows: msg.rows,
       });

@@ -1,4 +1,4 @@
-import { signal } from '@preact/signals';
+import { signal, effect } from '@preact/signals';
 import { api } from '../lib/api.js';
 import { navigate } from '../lib/state.js';
 import { openSession, resumeSession } from '../lib/sessions.js';
@@ -21,6 +21,18 @@ const editingDescription = signal(false);
 const editDescValue = signal('');
 
 const STATUSES = ['new', 'reviewed', 'dispatched', 'resolved', 'archived'];
+
+effect(() => {
+  if (!lightboxSrc.value) return;
+  const handler = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      e.stopImmediatePropagation();
+      lightboxSrc.value = null;
+    }
+  };
+  document.addEventListener('keydown', handler, true);
+  return () => document.removeEventListener('keydown', handler, true);
+});
 
 let currentDetailAppId: string | null = null;
 
@@ -144,7 +156,14 @@ async function doDispatch() {
     // Only refresh sessions list (lightweight) instead of full page reload
     loadSessions(fb.id);
   } catch (err: any) {
-    alert('Dispatch failed: ' + err.message);
+    const msg = err.message || 'Unknown error';
+    const isServiceDown = msg.includes('unreachable') || msg.includes('503');
+    if (isServiceDown && confirm(`Dispatch failed — session service may be down.\n\n${msg}\n\nRetry?`)) {
+      dispatchLoading.value = false;
+      return doDispatch();
+    } else if (!isServiceDown) {
+      alert('Dispatch failed: ' + msg);
+    }
   } finally {
     dispatchLoading.value = false;
   }
@@ -207,38 +226,41 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
           <div style="font-size:11px;color:var(--pw-text-faint);font-family:monospace;margin-top:2px">{fb.id}</div>
         </div>
         <div style="display:flex;gap:8px">
-          <button class="btn btn-danger" onClick={deleteFeedback}>Delete</button>
+          <button class="btn-ghost-danger" onClick={deleteFeedback}>Delete</button>
         </div>
       </div>
 
       {agents.value.length > 0 && (
-        <div class="dispatch-bar">
-          <select
-            class="dispatch-bar-select"
-            value={dispatchAgentId.value}
-            onChange={(e) => (dispatchAgentId.value = (e.target as HTMLSelectElement).value)}
-          >
-            {agents.value.map((a) => (
-              <option value={a.id}>
-                {a.name}{a.isDefault && a.appId ? ' (app default)' : a.isDefault ? ' (default)' : ''}{!a.appId ? '' : ''}
-              </option>
-            ))}
-          </select>
-          <input
-            class="dispatch-bar-input"
-            type="text"
-            placeholder="Instructions (optional)..."
-            value={dispatchInstructions.value}
-            onInput={(e) => (dispatchInstructions.value = (e.target as HTMLInputElement).value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') doDispatch(); }}
-          />
-          <button
-            class="btn btn-primary dispatch-bar-btn"
-            disabled={!dispatchAgentId.value || dispatchLoading.value}
-            onClick={doDispatch}
-          >
-            {dispatchLoading.value ? 'Dispatching...' : 'Dispatch'}
-          </button>
+        <div class="dispatch-bar dispatch-bar-styled">
+          <div class="dispatch-bar-label">Dispatch</div>
+          <div class="dispatch-bar-controls">
+            <select
+              class="dispatch-bar-select"
+              value={dispatchAgentId.value}
+              onChange={(e) => (dispatchAgentId.value = (e.target as HTMLSelectElement).value)}
+            >
+              {agents.value.map((a) => (
+                <option value={a.id}>
+                  {a.name}{a.isDefault && a.appId ? ' (app default)' : a.isDefault ? ' (default)' : ''}{!a.appId ? '' : ''}
+                </option>
+              ))}
+            </select>
+            <input
+              class="dispatch-bar-input"
+              type="text"
+              placeholder="Instructions (optional)..."
+              value={dispatchInstructions.value}
+              onInput={(e) => (dispatchInstructions.value = (e.target as HTMLInputElement).value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') doDispatch(); }}
+            />
+            <button
+              class="btn btn-primary dispatch-bar-btn"
+              disabled={!dispatchAgentId.value || dispatchLoading.value}
+              onClick={doDispatch}
+            >
+              {dispatchLoading.value ? 'Dispatching...' : 'Dispatch'}
+            </button>
+          </div>
         </div>
       )}
 
@@ -246,84 +268,79 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
         <div>
           <div class="detail-card" style="margin-bottom:16px">
             <h3>Details</h3>
-            <div class="field-row">
-              <span class="field-label">Status</span>
-              <span class="field-value">
-                <select
-                  value={fb.status}
-                  onChange={(e) => updateStatus((e.target as HTMLSelectElement).value)}
-                  style="padding:2px 6px;font-size:13px"
+
+            <div class="status-pills">
+              {STATUSES.map((s) => (
+                <span
+                  class={`status-pill badge-${s}${fb.status === s ? ' active' : ''}`}
+                  onClick={() => updateStatus(s)}
                 >
-                  {STATUSES.map((s) => (
-                    <option value={s}>{s}</option>
-                  ))}
-                </select>
-              </span>
+                  {s}
+                </span>
+              ))}
             </div>
-            <div class="field-row">
-              <span class="field-label">Type</span>
-              <span class="field-value">
-                <span class={`badge badge-${fb.type}`}>{fb.type.replace(/_/g, ' ')}</span>
-              </span>
+
+            {editingDescription.value ? (
+              <div style="margin-bottom:16px">
+                <textarea
+                  value={editDescValue.value}
+                  onInput={(e) => (editDescValue.value = (e.target as HTMLTextAreaElement).value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') (editingDescription.value = false);
+                    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) saveDescription();
+                  }}
+                  style="width:100%;padding:10px 12px;font-size:14px;min-height:80px;resize:vertical;font-family:inherit;background:var(--pw-input-bg);color:var(--pw-primary-text);border:1px solid var(--pw-accent);border-radius:6px;box-sizing:border-box"
+                  ref={(el) => el?.focus()}
+                />
+                <div style="display:flex;gap:4px;justify-content:flex-end;margin-top:6px">
+                  <button class="btn btn-sm" onClick={() => (editingDescription.value = false)}>Cancel</button>
+                  <button class="btn btn-sm btn-primary" onClick={saveDescription}>Save</button>
+                </div>
+              </div>
+            ) : (
+              <div
+                class={`detail-description${!fb.description ? ' detail-description-empty' : ''}`}
+                title="Click to edit"
+                onClick={() => { editDescValue.value = fb.description || ''; editingDescription.value = true; }}
+              >
+                {fb.description || 'No description'}
+              </div>
+            )}
+
+            <div class="detail-meta-row">
+              <span class={`badge badge-${fb.type}`}>{fb.type.replace(/_/g, ' ')}</span>
+              {fb.sourceUrl && (
+                <a href={fb.sourceUrl} target="_blank" rel="noopener">{fb.sourceUrl}</a>
+              )}
             </div>
-            <div class="field-row">
-              <span class="field-label">Description</span>
-              <span class="field-value">
-                {editingDescription.value ? (
-                  <div style="display:flex;flex-direction:column;gap:4px;width:100%">
-                    <textarea
-                      value={editDescValue.value}
-                      onInput={(e) => (editDescValue.value = (e.target as HTMLTextAreaElement).value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Escape') (editingDescription.value = false);
-                        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) saveDescription();
-                      }}
-                      style="padding:6px 8px;font-size:13px;min-height:80px;resize:vertical;font-family:inherit;background:var(--pw-input-bg);color:var(--pw-primary-text);border:1px solid var(--pw-accent);border-radius:4px"
-                      ref={(el) => el?.focus()}
-                    />
-                    <div style="display:flex;gap:4px;justify-content:flex-end">
-                      <button class="btn btn-sm" onClick={() => (editingDescription.value = false)}>Cancel</button>
-                      <button class="btn btn-sm btn-primary" onClick={saveDescription}>Save</button>
-                    </div>
-                  </div>
-                ) : (
-                  <span
-                    style="cursor:pointer;border-bottom:1px dashed var(--pw-text-faint)"
-                    title="Click to edit"
-                    onClick={() => { editDescValue.value = fb.description || ''; editingDescription.value = true; }}
-                  >
-                    {fb.description || '—'}
-                  </span>
-                )}
-              </span>
-            </div>
-            <div class="field-row">
-              <span class="field-label">Source URL</span>
-              <span class="field-value" style="word-break:break-all">{fb.sourceUrl ? <a href={fb.sourceUrl} target="_blank" rel="noopener" style="color:var(--pw-accent)">{fb.sourceUrl}</a> : '—'}</span>
-            </div>
-            <div class="field-row">
-              <span class="field-label">Viewport</span>
-              <span class="field-value">{fb.viewport || '—'}</span>
-            </div>
-            <div class="field-row">
-              <span class="field-label">User Agent</span>
-              <span class="field-value" style="font-size:12px">{fb.userAgent || '—'}</span>
-            </div>
-            <div class="field-row">
-              <span class="field-label">Session</span>
-              <span class="field-value" style="font-size:12px">{fb.sessionId || '—'}</span>
-            </div>
-            <div class="field-row">
-              <span class="field-label">User</span>
-              <span class="field-value">{fb.userId || '—'}</span>
-            </div>
-            <div class="field-row">
-              <span class="field-label">Created</span>
-              <span class="field-value">{formatDate(fb.createdAt)}</span>
-            </div>
-            <div class="field-row">
-              <span class="field-label">Updated</span>
-              <span class="field-value">{formatDate(fb.updatedAt)}</span>
+
+            <details class="detail-meta-collapse">
+              <summary>Technical Details</summary>
+              <div class="field-row">
+                <span class="field-label">Source URL</span>
+                <span class="field-value" style="word-break:break-all">{fb.sourceUrl ? <a href={fb.sourceUrl} target="_blank" rel="noopener" style="color:var(--pw-accent)">{fb.sourceUrl}</a> : '—'}</span>
+              </div>
+              <div class="field-row">
+                <span class="field-label">Viewport</span>
+                <span class="field-value">{fb.viewport || '—'}</span>
+              </div>
+              <div class="field-row">
+                <span class="field-label">User Agent</span>
+                <span class="field-value" style="font-size:12px">{fb.userAgent || '—'}</span>
+              </div>
+              <div class="field-row">
+                <span class="field-label">Session</span>
+                <span class="field-value" style="font-size:12px">{fb.sessionId || '—'}</span>
+              </div>
+              <div class="field-row">
+                <span class="field-label">User</span>
+                <span class="field-value">{fb.userId || '—'}</span>
+              </div>
+            </details>
+
+            <div class="detail-timestamps">
+              <span>Created {formatDate(fb.createdAt)}</span>
+              <span>Updated {formatDate(fb.updatedAt)}</span>
             </div>
           </div>
 
@@ -394,182 +411,197 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
         </div>
 
         <div>
-          <div class="detail-card" style="margin-bottom:16px">
-            <h3>Tags</h3>
-            <div class="tags" style="margin-bottom:8px">
-              {(fb.tags || []).map((t: string) => (
-                <span class="tag">
-                  {t}
-                  <button onClick={() => removeTag(t)}>&times;</button>
-                </span>
-              ))}
-              {(fb.tags || []).length === 0 && <span style="color:var(--pw-text-faint);font-size:13px">No tags</span>}
-            </div>
-            <div style="display:flex;gap:4px">
-              <input
-                type="text"
-                placeholder="Add tag..."
-                value={newTag.value}
-                onInput={(e) => (newTag.value = (e.target as HTMLInputElement).value)}
-                onKeyDown={(e) => e.key === 'Enter' && addTag()}
-                style="flex:1;padding:4px 8px;font-size:12px"
-              />
-              <button class="btn btn-sm" onClick={addTag}>Add</button>
-            </div>
-          </div>
-
-          {fb.data?.selectedElement && (() => {
-            const el = fb.data.selectedElement;
-            return (
-              <div class="detail-card" style="margin-bottom:16px">
-                <h3>Selected Element</h3>
-                <div class="field-row">
-                  <span class="field-label">Tag</span>
-                  <span class="field-value"><code style="background:var(--pw-code-block-bg);padding:1px 6px;border-radius:3px">{el.tagName}</code></span>
-                </div>
-                {el.id && (
-                  <div class="field-row">
-                    <span class="field-label">ID</span>
-                    <span class="field-value" style="font-family:monospace">#{el.id}</span>
-                  </div>
-                )}
-                {el.classes?.length > 0 && (
-                  <div class="field-row">
-                    <span class="field-label">Classes</span>
-                    <span class="field-value" style="font-family:monospace">.{el.classes.join(' .')}</span>
-                  </div>
-                )}
-                <div class="field-row">
-                  <span class="field-label">Selector</span>
-                  <span class="field-value" style="font-family:monospace;word-break:break-all;font-size:12px">{el.selector}</span>
-                </div>
-                {el.textContent && (
-                  <div class="field-row">
-                    <span class="field-label">Text</span>
-                    <span class="field-value" style="font-size:12px;color:var(--pw-text-muted)">{el.textContent}</span>
-                  </div>
-                )}
-                {el.boundingRect && (
-                  <div class="field-row">
-                    <span class="field-label">Position</span>
-                    <span class="field-value" style="font-size:12px">{Math.round(el.boundingRect.x)},{Math.round(el.boundingRect.y)} &mdash; {Math.round(el.boundingRect.width)}&times;{Math.round(el.boundingRect.height)}</span>
-                  </div>
-                )}
-                {Object.keys(el.attributes || {}).length > 0 && (
-                  <div style="margin-top:8px">
-                    <div style="font-size:11px;color:var(--pw-text-faint);margin-bottom:4px">Attributes</div>
-                    {Object.entries(el.attributes).map(([k, v]) => (
-                      <div class="field-row" key={k}>
-                        <span class="field-label" style="font-family:monospace;font-size:11px">{k}</span>
-                        <span class="field-value" style="font-size:12px;word-break:break-all">{v as string}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })()}
-
-          {fb.screenshots && fb.screenshots.length > 0 && (
-            <div class="detail-card" style="margin-bottom:16px">
-              <h3>Screenshots ({fb.screenshots.length})</h3>
-              <div class="screenshots-grid">
-                {fb.screenshots.map((s: any) => (
-                  <img
-                    class="screenshot-img"
-                    src={`/api/v1/images/${s.id}`}
-                    alt={s.filename}
-                    key={s.id}
-                    onClick={() => (lightboxSrc.value = `/api/v1/images/${s.id}`)}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
-
-          {fb.dispatchedTo && (
-            <div class="detail-card" style="margin-bottom:16px">
-              <h3>Dispatch Info</h3>
-              <div class="field-row">
-                <span class="field-label">Sent to</span>
-                <span class="field-value">{fb.dispatchedTo}</span>
-              </div>
-              <div class="field-row">
-                <span class="field-label">At</span>
-                <span class="field-value">{fb.dispatchedAt ? formatDate(fb.dispatchedAt) : '—'}</span>
-              </div>
-              <div class="field-row">
-                <span class="field-label">Status</span>
-                <span class="field-value">
-                  <span class={`badge ${fb.dispatchStatus === 'success' ? 'badge-resolved' : fb.dispatchStatus === 'running' ? 'badge-dispatched' : 'badge-new'}`}>
-                    {fb.dispatchStatus}
+          <div class="detail-card detail-sidebar">
+            <section class="detail-section">
+              <h4>Tags</h4>
+              <div class="tags" style="margin-bottom:8px">
+                {(fb.tags || []).map((t: string) => (
+                  <span class="tag">
+                    {t}
+                    <button onClick={() => removeTag(t)}>&times;</button>
                   </span>
-                </span>
+                ))}
+                {(fb.tags || []).length === 0 && <span style="color:var(--pw-text-faint);font-size:13px">No tags</span>}
               </div>
-              {fb.dispatchResponse && (
-                <div style="margin-top:8px">
-                  <div class="json-viewer" style="max-height:150px">{fb.dispatchResponse}</div>
-                </div>
-              )}
-            </div>
-          )}
+              <div style="display:flex;gap:4px">
+                <input
+                  type="text"
+                  placeholder="Add tag..."
+                  value={newTag.value}
+                  onInput={(e) => (newTag.value = (e.target as HTMLInputElement).value)}
+                  onKeyDown={(e) => e.key === 'Enter' && addTag()}
+                  style="flex:1;padding:4px 8px;font-size:12px"
+                />
+                <button class="btn btn-sm" onClick={addTag}>Add</button>
+              </div>
+            </section>
 
-          {agentSessions.value.length > 0 && (
-            <div class="detail-card" style="margin-bottom:16px">
-              <h3>Agent Sessions ({agentSessions.value.length})</h3>
-              <div class="session-list">
-                {agentSessions.value.map((s: any) => (
-                  <div class="session-item" key={s.id}>
-                    <div>
-                      <span class="session-id">{s.id.slice(-8)}</span>
-                      <span class={`session-status ${s.status}`} style="margin-left:6px">{s.status}</span>
-                    </div>
-                    <div style="display:flex;gap:4px">
-                      <button
-                        class="btn btn-sm"
-                        onClick={() => openSession(s.id)}
-                      >
-                        {s.status === 'running' ? 'Attach' : 'View Log'}
-                      </button>
-                      {s.status !== 'running' && s.status !== 'pending' && (
-                        <button
-                          class="btn btn-sm btn-primary"
-                          onClick={async () => {
-                            const newId = await resumeSession(s.id);
-                            if (newId) loadSessions(fb.id);
-                          }}
-                        >
-                          Resume
-                        </button>
+            {(fb.data?.selectedElements || fb.data?.selectedElement) && (() => {
+              const elements: any[] = fb.data.selectedElements
+                ? fb.data.selectedElements
+                : [fb.data.selectedElement];
+              return (
+                <section class="detail-section">
+                  <h4>Selected Element{elements.length > 1 ? 's' : ''} ({elements.length})</h4>
+                  {elements.map((el: any, i: number) => (
+                    <div key={i} style={elements.length > 1 ? "padding:8px 0;border-bottom:1px solid var(--pw-border)" : ""}>
+                      <div class="field-row">
+                        <span class="field-label">Tag</span>
+                        <span class="field-value"><code style="background:var(--pw-code-block-bg);padding:1px 6px;border-radius:3px">{el.tagName}</code></span>
+                      </div>
+                      {el.id && (
+                        <div class="field-row">
+                          <span class="field-label">ID</span>
+                          <span class="field-value" style="font-family:monospace">#{el.id}</span>
+                        </div>
+                      )}
+                      {el.classes?.length > 0 && (
+                        <div class="field-row">
+                          <span class="field-label">Classes</span>
+                          <span class="field-value" style="font-family:monospace">.{el.classes.join(' .')}</span>
+                        </div>
+                      )}
+                      <div class="field-row">
+                        <span class="field-label">Selector</span>
+                        <span class="field-value" style="font-family:monospace;word-break:break-all;font-size:12px">{el.selector}</span>
+                      </div>
+                      {el.textContent && (
+                        <div class="field-row">
+                          <span class="field-label">Text</span>
+                          <span class="field-value" style="font-size:12px;color:var(--pw-text-muted)">{el.textContent}</span>
+                        </div>
+                      )}
+                      {el.boundingRect && (
+                        <div class="field-row">
+                          <span class="field-label">Position</span>
+                          <span class="field-value" style="font-size:12px">{Math.round(el.boundingRect.x)},{Math.round(el.boundingRect.y)} &mdash; {Math.round(el.boundingRect.width)}&times;{Math.round(el.boundingRect.height)}</span>
+                        </div>
+                      )}
+                      {Object.keys(el.attributes || {}).length > 0 && (
+                        <div style="margin-top:8px">
+                          <div style="font-size:11px;color:var(--pw-text-faint);margin-bottom:4px">Attributes</div>
+                          {Object.entries(el.attributes).map(([k, v]) => (
+                            <div class="field-row" key={k}>
+                              <span class="field-label" style="font-family:monospace;font-size:11px">{k}</span>
+                              <span class="field-value" style="font-size:12px;word-break:break-all">{v as string}</span>
+                            </div>
+                          ))}
+                        </div>
                       )}
                     </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+                  ))}
+                </section>
+              );
+            })()}
 
-          {fb.context?.environment && (
-            <div class="detail-card">
-              <h3>Environment</h3>
-              <div class="field-row">
-                <span class="field-label">Platform</span>
-                <span class="field-value">{fb.context.environment.platform}</span>
-              </div>
-              <div class="field-row">
-                <span class="field-label">Language</span>
-                <span class="field-value">{fb.context.environment.language}</span>
-              </div>
-              <div class="field-row">
-                <span class="field-label">Screen</span>
-                <span class="field-value">{fb.context.environment.screenResolution}</span>
-              </div>
-              <div class="field-row">
-                <span class="field-label">Referrer</span>
-                <span class="field-value" style="word-break:break-all">{fb.context.environment.referrer || '—'}</span>
-              </div>
-            </div>
-          )}
+            {fb.screenshots && fb.screenshots.length > 0 && (
+              <section class="detail-section">
+                <h4>Screenshots ({fb.screenshots.length})</h4>
+                <div class="screenshots-grid">
+                  {fb.screenshots.map((s: any) => (
+                    <img
+                      class="screenshot-img"
+                      src={`/api/v1/images/${s.id}`}
+                      alt={s.filename}
+                      key={s.id}
+                      onClick={() => (lightboxSrc.value = `/api/v1/images/${s.id}`)}
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {fb.dispatchedTo && (
+              <section class="detail-section">
+                <h4>Dispatch Info</h4>
+                <div class="field-row">
+                  <span class="field-label">Sent to</span>
+                  <span class="field-value">{fb.dispatchedTo}</span>
+                </div>
+                <div class="field-row">
+                  <span class="field-label">At</span>
+                  <span class="field-value">{fb.dispatchedAt ? formatDate(fb.dispatchedAt) : '—'}</span>
+                </div>
+                <div class="field-row">
+                  <span class="field-label">Status</span>
+                  <span class="field-value">
+                    <span class={`badge ${fb.dispatchStatus === 'success' ? 'badge-resolved' : fb.dispatchStatus === 'running' ? 'badge-dispatched' : 'badge-new'}`}>
+                      {fb.dispatchStatus}
+                    </span>
+                  </span>
+                </div>
+                {fb.dispatchResponse && (
+                  <div style="margin-top:8px">
+                    <div class="json-viewer" style="max-height:150px">{fb.dispatchResponse}</div>
+                  </div>
+                )}
+              </section>
+            )}
+
+            {agentSessions.value.length > 0 && (
+              <section class="detail-section">
+                <h4>Agent Sessions ({agentSessions.value.length})</h4>
+                <div class="session-list">
+                  {agentSessions.value.map((s: any) => (
+                    <div class="session-item" key={s.id}>
+                      <div>
+                        <span class="session-id" title="Click to copy full ID" onClick={(e: Event) => {
+                          e.stopPropagation();
+                          navigator.clipboard.writeText(s.id);
+                          const el = e.currentTarget as HTMLElement;
+                          const orig = el.textContent;
+                          el.textContent = 'Copied!';
+                          setTimeout(() => { el.textContent = orig; }, 1000);
+                        }}>{s.id.slice(-8)}</span>
+                        <span class={`session-status ${s.status}`} style="margin-left:6px">{s.status}</span>
+                      </div>
+                      <div style="display:flex;gap:4px">
+                        <button
+                          class="btn btn-sm"
+                          onClick={() => openSession(s.id)}
+                        >
+                          {s.status === 'running' ? 'Attach' : 'View Log'}
+                        </button>
+                        {s.status !== 'running' && s.status !== 'pending' && (
+                          <button
+                            class="btn btn-sm btn-primary"
+                            onClick={async () => {
+                              const newId = await resumeSession(s.id);
+                              if (newId) loadSessions(fb.id);
+                            }}
+                          >
+                            Resume
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {fb.context?.environment && (
+              <section class="detail-section">
+                <h4>Environment</h4>
+                <div class="field-row">
+                  <span class="field-label">Platform</span>
+                  <span class="field-value">{fb.context.environment.platform}</span>
+                </div>
+                <div class="field-row">
+                  <span class="field-label">Language</span>
+                  <span class="field-value">{fb.context.environment.language}</span>
+                </div>
+                <div class="field-row">
+                  <span class="field-label">Screen</span>
+                  <span class="field-value">{fb.context.environment.screenResolution}</span>
+                </div>
+                <div class="field-row">
+                  <span class="field-label">Referrer</span>
+                  <span class="field-value" style="word-break:break-all">{fb.context.environment.referrer || '—'}</span>
+                </div>
+              </section>
+            )}
+          </div>
         </div>
       </div>
 

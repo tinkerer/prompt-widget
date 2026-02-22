@@ -7,17 +7,18 @@ interface Props {
   sessionId: string;
   isActive?: boolean;
   onExit?: (exitCode: number) => void;
+  onWaitingChange?: (waiting: boolean) => void;
   permissionProfile?: string;
   mode: ViewMode;
 }
 
-export function SessionViewToggle({ sessionId, isActive, onExit, permissionProfile, mode }: Props) {
+export function SessionViewToggle({ sessionId, isActive, onExit, onWaitingChange, permissionProfile, mode }: Props) {
   return (
     <div class="session-view-toggle" style={{ display: 'flex', flexDirection: 'column', width: '100%', flex: 1, minHeight: 0 }}>
       <div class="view-content" style={{ flex: 1, overflow: 'hidden', display: 'flex', minHeight: 0 }}>
         {mode === 'terminal' && (
           <div style={{ width: '100%', height: '100%' }}>
-            <AgentTerminal sessionId={sessionId} isActive={isActive} onExit={onExit} />
+            <AgentTerminal sessionId={sessionId} isActive={isActive} onExit={onExit} onWaitingChange={onWaitingChange} />
           </div>
         )}
         {mode === 'structured' && (
@@ -31,7 +32,7 @@ export function SessionViewToggle({ sessionId, isActive, onExit, permissionProfi
               <StructuredView sessionId={sessionId} isActive={isActive} permissionProfile={permissionProfile} />
             </div>
             <div style={{ width: '45%', height: '100%', overflow: 'hidden' }}>
-              <AgentTerminal sessionId={sessionId} isActive={isActive} onExit={onExit} />
+              <AgentTerminal sessionId={sessionId} isActive={isActive} onExit={onExit} onWaitingChange={onWaitingChange} />
             </div>
           </>
         )}

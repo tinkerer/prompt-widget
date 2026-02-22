@@ -35,10 +35,23 @@ export class PromptWidgetElement {
   private history: string[] = [];
   private historyIndex = -1;
   private currentDraft = '';
-  private selectedElement: SelectedElementInfo | null = null;
+  private selectedElements: SelectedElementInfo[] = [];
   private pickerCleanup: (() => void) | null = null;
   private overlayManager: OverlayPanelManager;
   private appId: string;
+  private savedDraft = '';
+  private savedCollectors = new Set(['console', 'environment', 'network', 'performance']);
+  private pickerMultiSelect = false;
+  private dispatchMode: 'off' | 'once' | 'auto' = 'off';
+  private annotatorOpen = false;
+  private escHandler = (e: KeyboardEvent) => {
+    if (e.key === 'Escape' && this.isOpen) {
+      // Let sub-overlays (annotator, element picker) handle Escape first
+      if (this.annotatorOpen || this.pickerCleanup) return;
+      e.preventDefault();
+      this.close();
+    }
+  };
 
   constructor() {
     this.host = document.createElement('prompt-widget-host');
@@ -63,6 +76,7 @@ export class PromptWidgetElement {
     this.appId = this.extractAppId(this.config.appKey) || '__default__';
 
     this.loadHistory();
+    this.loadDispatchMode();
     installCollectors(this.config.collectors);
     this.render();
     this.bindShortcut();
@@ -94,6 +108,115 @@ export class PromptWidgetElement {
     try {
       localStorage.setItem(HISTORY_KEY, JSON.stringify(this.history.slice(-MAX_HISTORY)));
     } catch { /* ignore */ }
+  }
+
+  private loadDispatchMode() {
+    try {
+      const stored = localStorage.getItem('pw-dispatch-mode');
+      if (stored === 'auto') this.dispatchMode = 'auto';
+    } catch { /* ignore */ }
+  }
+
+  private setDispatchMode(mode: 'off' | 'once' | 'auto') {
+    this.dispatchMode = mode;
+    try {
+      if (mode === 'auto') {
+        localStorage.setItem('pw-dispatch-mode', 'auto');
+      } else {
+        localStorage.removeItem('pw-dispatch-mode');
+      }
+    } catch { /* ignore */ }
+
+    const sendBtn = this.shadow.querySelector('#pw-send-btn') as HTMLButtonElement | null;
+    if (sendBtn) this.updateSendButtonTitle(sendBtn);
+  }
+
+  private updateSendButtonTitle(sendBtn: HTMLButtonElement) {
+    const group = this.shadow.querySelector('.pw-send-group');
+    if (this.dispatchMode === 'auto') {
+      sendBtn.title = 'Submit & dispatch (auto)';
+      sendBtn.classList.add('pw-dispatch-active');
+      group?.querySelector('.pw-send-dropdown-toggle')?.classList.add('pw-dispatch-active');
+    } else {
+      sendBtn.title = 'Send feedback';
+      sendBtn.classList.remove('pw-dispatch-active');
+      group?.querySelector('.pw-send-dropdown-toggle')?.classList.remove('pw-dispatch-active');
+    }
+  }
+
+  private toggleSendMenu() {
+    const existing = this.shadow.querySelector('.pw-send-menu');
+    if (existing) { existing.remove(); return; }
+
+    const group = this.shadow.querySelector('.pw-send-group');
+    if (!group) return;
+
+    const menu = document.createElement('div');
+    menu.className = 'pw-send-menu';
+
+    const items: Array<{ label: string; mode: 'off' | 'once' | 'auto'; desc: string }> = [
+      { label: 'Submit', mode: 'off', desc: 'Submit feedback only' },
+      { label: 'Dispatch', mode: 'once', desc: 'Submit & dispatch this time' },
+      { label: 'Auto-dispatch', mode: 'auto', desc: 'Always dispatch on submit' },
+    ];
+
+    for (const item of items) {
+      const btn = document.createElement('button');
+      btn.className = `pw-send-menu-item${this.dispatchMode === item.mode ? ' pw-active' : ''}`;
+      const check = this.dispatchMode === item.mode ? '\u2713' : '';
+      btn.innerHTML = `<span class="pw-menu-check">${check}</span>${item.label}`;
+      btn.title = item.desc;
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.setDispatchMode(item.mode);
+        menu.remove();
+      });
+      menu.appendChild(btn);
+    }
+
+    group.appendChild(menu);
+
+    const closeHandler = (e: Event) => {
+      if (!menu.contains(e.target as Node)) {
+        menu.remove();
+        this.shadow.removeEventListener('click', closeHandler);
+      }
+    };
+    setTimeout(() => this.shadow.addEventListener('click', closeHandler), 0);
+  }
+
+  private togglePickerMenu() {
+    const existing = this.shadow.querySelector('.pw-picker-menu');
+    if (existing) { existing.remove(); return; }
+
+    const group = this.shadow.querySelector('.pw-picker-group');
+    if (!group) return;
+
+    const menu = document.createElement('div');
+    menu.className = 'pw-picker-menu';
+
+    const label = document.createElement('label');
+    label.className = 'pw-picker-menu-item';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = this.pickerMultiSelect;
+    cb.addEventListener('change', () => {
+      this.pickerMultiSelect = cb.checked;
+    });
+    const span = document.createElement('span');
+    span.textContent = 'Multi-select';
+    label.append(cb, span);
+    menu.appendChild(label);
+
+    group.appendChild(menu);
+
+    const closeHandler = (e: Event) => {
+      if (!menu.contains(e.target as Node)) {
+        menu.remove();
+        this.shadow.removeEventListener('click', closeHandler);
+      }
+    };
+    setTimeout(() => this.shadow.addEventListener('click', closeHandler), 0);
   }
 
   private render() {
@@ -180,7 +303,7 @@ export class PromptWidgetElement {
     panel.innerHTML = `
       <button class="pw-close">&times;</button>
       <div class="pw-screenshots pw-hidden" id="pw-screenshots"></div>
-      <div id="pw-selected-element" class="pw-selected-element pw-hidden"></div>
+      <div id="pw-selected-elements" class="pw-selected-elements pw-hidden"></div>
       <div class="pw-input-area">
         <textarea class="pw-textarea" id="pw-chat-input" placeholder="What's on your mind?" rows="3" autocomplete="off"></textarea>
         <div class="pw-context-options">
@@ -188,19 +311,32 @@ export class PromptWidgetElement {
           <label class="pw-check"><input type="checkbox" value="environment" checked /><span>Page info</span></label>
           <label class="pw-check"><input type="checkbox" value="network" checked /><span>Network</span></label>
           <label class="pw-check"><input type="checkbox" value="performance" checked /><span>Perf</span></label>
-          ${this.sessionBridge.autoDispatch ? '<label class="pw-check"><input type="checkbox" id="pw-auto-dispatch" checked /><span>Auto-dispatch</span></label>' : ''}
         </div>
         <div class="pw-toolbar">
           <button class="pw-camera-btn" id="pw-capture-btn" title="Capture screenshot">
             <svg viewBox="0 0 24 24"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z"/><path d="M9 2 7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9zm3 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"/></svg>
           </button>
-          <button class="pw-picker-btn" id="pw-picker-btn" title="Select an element">
-            <svg viewBox="0 0 24 24"><path d="M3 3h4V1H1v6h2V3zm0 14H1v6h6v-2H3v-4zm14 4h-4v2h6v-6h-2v4zM17 3V1h6v6h-2V3h-4zM12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0 6a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/></svg>
-          </button>
+          <div class="pw-picker-group">
+            <button class="pw-picker-btn" id="pw-picker-btn" title="Select an element">
+              <svg viewBox="0 0 24 24"><path d="M3 3h4V1H1v6h2V3zm0 14H1v6h6v-2H3v-4zm14 4h-4v2h6v-6h-2v4zM17 3V1h6v6h-2V3h-4zM12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0 6a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/></svg>
+            </button>
+            <button class="pw-picker-dropdown-toggle" id="pw-picker-dropdown" title="Picker options">
+              <svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
+            </button>
+          </div>
           <button class="pw-admin-btn" id="pw-admin-btn" title="Admin panels"><svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"/></svg></button>
+          ${this.sessionBridge.autoDispatch ? `
+          <div class="pw-send-group">
+            <button class="pw-send-btn" id="pw-send-btn" title="Send feedback">
+              <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+            </button>
+            <button class="pw-send-dropdown-toggle" id="pw-send-dropdown" title="Dispatch options">
+              <svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
+            </button>
+          </div>` : `
           <button class="pw-send-btn" id="pw-send-btn" title="Send feedback">
             <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-          </button>
+          </button>`}
         </div>
       </div>
       <div id="pw-error" class="pw-error pw-hidden"></div>
@@ -214,14 +350,32 @@ export class PromptWidgetElement {
     const sendBtn = panel.querySelector('#pw-send-btn') as HTMLButtonElement;
 
     const pickerBtn = panel.querySelector('#pw-picker-btn') as HTMLButtonElement;
+    const pickerDropdownBtn = panel.querySelector('#pw-picker-dropdown') as HTMLButtonElement | null;
 
     const adminBtn = panel.querySelector('#pw-admin-btn') as HTMLButtonElement | null;
 
     closeBtn.addEventListener('click', () => this.close());
     captureBtn.addEventListener('click', () => this.captureScreen());
     pickerBtn.addEventListener('click', () => this.startElementPicker());
+    pickerDropdownBtn?.addEventListener('click', (e) => { e.stopPropagation(); this.togglePickerMenu(); });
     adminBtn?.addEventListener('click', () => this.toggleAdminOptions());
     sendBtn.addEventListener('click', () => this.handleSubmit());
+
+    const dropdownBtn = panel.querySelector('#pw-send-dropdown') as HTMLButtonElement | null;
+    dropdownBtn?.addEventListener('click', (e) => { e.stopPropagation(); this.toggleSendMenu(); });
+
+    this.updateSendButtonTitle(sendBtn);
+
+    // Restore saved state
+    if (this.savedDraft) input.value = this.savedDraft;
+    // Restore checkbox states
+    panel.querySelectorAll('.pw-context-options input[type="checkbox"]').forEach(cb => {
+      const el = cb as HTMLInputElement;
+      if (el.value) el.checked = this.savedCollectors.has(el.value);
+    });
+    // Restore screenshots and selected elements
+    this.renderScreenshotThumbs();
+    this.renderSelectedElementChips();
 
     input.addEventListener('keydown', (e: KeyboardEvent) => {
       if (e.key === 'Enter' && !e.shiftKey) {
@@ -323,39 +477,48 @@ export class PromptWidgetElement {
     const panel = this.shadow.querySelector('.pw-panel') as HTMLElement;
     if (panel) panel.style.opacity = '0.3';
 
-    this.pickerCleanup = startPicker((info) => {
+    this.pickerCleanup = startPicker((infos) => {
       if (panel) panel.style.opacity = '1';
       this.pickerCleanup = null;
-      if (info) {
-        this.selectedElement = info;
-        this.renderSelectedElementChip();
+      if (infos.length > 0) {
+        this.selectedElements.push(...infos);
+        this.renderSelectedElementChips();
       }
-    }, this.host);
+    }, this.host, { multiSelect: this.pickerMultiSelect });
   }
 
-  private renderSelectedElementChip() {
-    const container = this.shadow.querySelector('#pw-selected-element');
+  private renderSelectedElementChips() {
+    const container = this.shadow.querySelector('#pw-selected-elements');
     if (!container) return;
 
-    if (!this.selectedElement) {
+    if (this.selectedElements.length === 0) {
       container.classList.add('pw-hidden');
       container.innerHTML = '';
       return;
     }
 
-    const el = this.selectedElement;
-    let display = el.tagName;
-    if (el.id) display += '#' + el.id;
-    const cls = el.classes.filter(c => !c.startsWith('pw-')).slice(0, 2);
-    if (cls.length) display += '.' + cls.join('.');
-
     container.classList.remove('pw-hidden');
-    container.innerHTML = `<code>${display}</code><button class="pw-selected-element-remove" title="Remove">\u00d7</button>`;
+    container.innerHTML = '';
 
-    container.querySelector('.pw-selected-element-remove')!.addEventListener('click', () => {
-      this.selectedElement = null;
-      this.renderSelectedElementChip();
-    });
+    for (let i = 0; i < this.selectedElements.length; i++) {
+      const el = this.selectedElements[i];
+      let display = el.tagName;
+      if (el.id) display += '#' + el.id;
+      const cls = el.classes.filter(c => !c.startsWith('pw-')).slice(0, 2);
+      if (cls.length) display += '.' + cls.join('.');
+
+      const chip = document.createElement('div');
+      chip.className = 'pw-selected-element';
+      chip.innerHTML = `<code>${display}</code><button class="pw-selected-element-remove" title="Remove">\u00d7</button>`;
+
+      const idx = i;
+      chip.querySelector('.pw-selected-element-remove')!.addEventListener('click', () => {
+        this.selectedElements.splice(idx, 1);
+        this.renderSelectedElementChips();
+      });
+
+      container.appendChild(chip);
+    }
   }
 
   private openAnnotator(index: number) {
@@ -476,7 +639,8 @@ export class PromptWidgetElement {
 
     const dismiss = () => {
       overlay.remove();
-      document.removeEventListener('keydown', escHandler);
+      this.annotatorOpen = false;
+      document.removeEventListener('keydown', escHandler, true);
     };
 
     cancelBtn.addEventListener('click', dismiss);
@@ -488,14 +652,18 @@ export class PromptWidgetElement {
     });
 
     const escHandler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') dismiss();
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        dismiss();
+      }
     };
-    document.addEventListener('keydown', escHandler);
+    document.addEventListener('keydown', escHandler, true);
+    this.annotatorOpen = true;
 
     saveBtn.addEventListener('click', () => {
       if (rects.length === 0) {
-        overlay.remove();
-        document.removeEventListener('keydown', escHandler);
+        dismiss();
         return;
       }
 
@@ -521,8 +689,7 @@ export class PromptWidgetElement {
           this.pendingScreenshots[index] = newBlob;
           this.renderScreenshotThumbs();
         }
-        overlay.remove();
-        document.removeEventListener('keydown', escHandler);
+        dismiss();
       }, 'image/png');
     });
   }
@@ -530,11 +697,6 @@ export class PromptWidgetElement {
   private getCheckedCollectors(): Collector[] {
     const checkboxes = this.shadow.querySelectorAll('.pw-context-options input[type="checkbox"]:checked');
     return Array.from(checkboxes).map((cb) => (cb as HTMLInputElement).value as Collector);
-  }
-
-  private getAutoDispatchChecked(): boolean {
-    const cb = this.shadow.querySelector('#pw-auto-dispatch') as HTMLInputElement | null;
-    return cb ? cb.checked : false;
   }
 
   private async handleSubmit() {
@@ -549,10 +711,13 @@ export class PromptWidgetElement {
     errorEl.classList.add('pw-hidden');
     input.disabled = true;
 
-    const autoDispatch = this.getAutoDispatchChecked();
+    const shouldDispatch = this.dispatchMode === 'auto' || this.dispatchMode === 'once';
+    if (this.dispatchMode === 'once') {
+      this.dispatchMode = 'off';
+    }
 
     try {
-      await this.submitFeedback({ type: 'manual', title: '', description, autoDispatch }, this.getCheckedCollectors());
+      await this.submitFeedback({ type: 'manual', title: '', description, autoDispatch: shouldDispatch }, this.getCheckedCollectors());
 
       if (description) {
         this.history.push(description);
@@ -560,8 +725,10 @@ export class PromptWidgetElement {
       }
       this.historyIndex = -1;
       this.currentDraft = '';
+      this.savedDraft = '';
       this.pendingScreenshots = [];
-      this.selectedElement = null;
+      this.selectedElements = [];
+      input.value = '';
 
       this.emit('submit', { type: 'manual', title: '', description });
       this.showFlash();
@@ -602,8 +769,8 @@ export class PromptWidgetElement {
     if (opts.autoDispatch) {
       feedbackPayload.autoDispatch = true;
     }
-    if (this.selectedElement) {
-      feedbackPayload.data = { selectedElement: this.selectedElement };
+    if (this.selectedElements.length > 0) {
+      feedbackPayload.data = { selectedElements: this.selectedElements };
     }
 
     if (this.pendingScreenshots.length > 0) {
@@ -677,20 +844,27 @@ export class PromptWidgetElement {
   open() {
     if (this.isOpen) return;
     this.isOpen = true;
-    this.pendingScreenshots = [];
     this.historyIndex = -1;
-    this.currentDraft = '';
     this.renderPanel();
+    document.addEventListener('keydown', this.escHandler, true);
   }
 
   close() {
     if (!this.isOpen) return;
     this.isOpen = false;
+    document.removeEventListener('keydown', this.escHandler, true);
     if (this.pickerCleanup) {
       this.pickerCleanup();
       this.pickerCleanup = null;
     }
-    this.selectedElement = null;
+    // Save state before removing panel
+    const input = this.shadow.querySelector('#pw-chat-input') as HTMLTextAreaElement;
+    if (input) this.savedDraft = input.value;
+    this.savedCollectors.clear();
+    this.shadow.querySelectorAll('.pw-context-options input[type="checkbox"]:checked').forEach(cb => {
+      const val = (cb as HTMLInputElement).value;
+      if (val) this.savedCollectors.add(val);
+    });
     const panel = this.shadow.querySelector('.pw-panel');
     if (panel) panel.remove();
   }

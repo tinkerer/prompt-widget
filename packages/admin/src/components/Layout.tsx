@@ -27,6 +27,9 @@ import {
   killSession,
   resumeSession,
   closeTab,
+  actionToast,
+  showActionToast,
+  hotkeyMenuOpen,
   sessionsDrawerOpen,
   sessionSearchQuery,
   toggleSessionsDrawer,
@@ -48,6 +51,11 @@ import {
   popoutPanels,
   findPanelForSession,
   sidebarAnimating,
+  updatePanel,
+  persistPopoutState,
+  cyclePanelFocus,
+  toggleDockedOrientation,
+  waitingSessions,
 } from '../lib/sessions.js';
 
 const liveConnectionCounts = signal<Record<string, number>>({});
@@ -108,6 +116,10 @@ export function Layout({ children }: { children: ComponentChildren }) {
   const width = sidebarWidth.value;
   const [showShortcutHelp, setShowShortcutHelp] = useState(false);
   const [showSpotlight, setShowSpotlight] = useState(false);
+  const showShortcutHelpRef = useRef(false);
+  const showSpotlightRef = useRef(false);
+  showShortcutHelpRef.current = showShortcutHelp;
+  showSpotlightRef.current = showSpotlight;
 
   useEffect(() => {
     pollLiveConnections();
@@ -170,6 +182,19 @@ export function Layout({ children }: { children: ComponentChildren }) {
       }),
       registerShortcut({
         key: '`',
+        label: 'Toggle terminal panel',
+        category: 'Panels',
+        action: () => {
+          if (openTabs.value.length > 0) {
+            panelMinimized.value = !panelMinimized.value;
+            persistPanelState();
+          }
+        },
+      }),
+      registerShortcut({
+        key: '~',
+        code: 'Backquote',
+        modifiers: { ctrl: true, shift: true },
         label: 'Toggle terminal panel',
         category: 'Panels',
         action: () => {
@@ -281,17 +306,22 @@ export function Layout({ children }: { children: ComponentChildren }) {
         key: 'W',
         code: 'KeyW',
         modifiers: { ctrl: true, shift: true },
-        label: 'Close tab / panel',
+        label: 'Close popup / tab',
         category: 'Panels',
         action: () => {
-          if (activeTabId.value) {
-            closeTab(activeTabId.value);
+          if (showSpotlightRef.current) { setShowSpotlight(false); return; }
+          if (showShortcutHelpRef.current) { setShowShortcutHelp(false); return; }
+          if (hotkeyMenuOpen.value) { hotkeyMenuOpen.value = null; }
+          const visiblePanels = popoutPanels.value.filter((p) => p.visible);
+          if (visiblePanels.length > 0) {
+            const panel = visiblePanels[visiblePanels.length - 1];
+            updatePanel(panel.id, { visible: false });
+            persistPopoutState();
             return;
           }
-          const visible = popoutPanels.value.filter((p) => p.visible);
-          if (visible.length > 0) {
-            const panel = visible[visible.length - 1];
-            closeTab(panel.activeSessionId);
+          if (activeTabId.value) {
+            showActionToast('W', 'Close tab', 'var(--pw-text-muted)');
+            closeTab(activeTabId.value);
           }
         },
       }),
@@ -310,6 +340,51 @@ export function Layout({ children }: { children: ComponentChildren }) {
         label: 'New terminal',
         category: 'Panels',
         action: () => spawnTerminal(selectedAppId.value),
+      }),
+      registerShortcut({
+        key: 'Tab',
+        modifiers: { ctrl: true, shift: true },
+        label: 'Cycle panel focus',
+        category: 'Panels',
+        action: () => cyclePanelFocus(1),
+      }),
+      registerShortcut({
+        key: '|',
+        code: 'Backslash',
+        modifiers: { ctrl: true, shift: true },
+        label: 'Toggle docked orientation',
+        category: 'Panels',
+        action: toggleDockedOrientation,
+      }),
+      registerShortcut({
+        key: 'R',
+        code: 'KeyR',
+        modifiers: { ctrl: true, shift: true },
+        label: 'Resolve active session',
+        category: 'Panels',
+        action: () => {
+          const sid = activeTabId.value;
+          if (!sid) return;
+          const sess = allSessions.value.find((s: any) => s.id === sid);
+          if (!sess || exitedSessions.value.has(sid) || !sess.feedbackId) return;
+          hotkeyMenuOpen.value = null;
+          showActionToast('R', 'Resolve', 'var(--pw-success)');
+          sidebarResolveSession(sid, sess.feedbackId);
+        },
+      }),
+      registerShortcut({
+        key: 'K',
+        code: 'KeyK',
+        modifiers: { ctrl: true, shift: true },
+        label: 'Kill active session',
+        category: 'Panels',
+        action: () => {
+          const sid = activeTabId.value;
+          if (!sid || exitedSessions.value.has(sid)) return;
+          hotkeyMenuOpen.value = null;
+          showActionToast('K', 'Kill', 'var(--pw-danger)');
+          killSession(sid);
+        },
       }),
     ];
     return () => cleanups.forEach((fn) => fn());
@@ -643,8 +718,8 @@ export function Layout({ children }: { children: ComponentChildren }) {
                                 <SidebarTabBadge tabNum={globalNum} />
                               ) : (
                                 <span
-                                  class={`session-status-dot ${s.status}`}
-                                  title={s.status}
+                                  class={`session-status-dot ${s.status}${s.status === 'running' && waitingSessions.value.has(s.id) ? ' waiting' : ''}`}
+                                  title={s.status === 'running' && waitingSessions.value.has(s.id) ? 'waiting for input' : s.status}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -700,6 +775,12 @@ export function Layout({ children }: { children: ComponentChildren }) {
       <PopoutPanel />
       {showShortcutHelp && <ShortcutHelpModal onClose={() => setShowShortcutHelp(false)} />}
       {showSpotlight && <SpotlightSearch onClose={() => setShowSpotlight(false)} />}
+      {actionToast.value && (
+        <div class="action-toast">
+          <span class="action-toast-key" style={{ background: actionToast.value.color }}>{actionToast.value.key}</span>
+          <span class="action-toast-label">{actionToast.value.label}</span>
+        </div>
+      )}
       {sidebarStatusMenu.value && (() => {
         const menuSid = sidebarStatusMenu.value!.sessionId;
         const menuSess = allSessions.value.find((s: any) => s.id === menuSid);
@@ -712,15 +793,15 @@ export function Layout({ children }: { children: ComponentChildren }) {
             onClick={(e) => e.stopPropagation()}
           >
             {isRunning && !menuExited && (
-              <button onClick={() => { sidebarStatusMenu.value = null; killSession(menuSid); }}>Kill</button>
+              <button onClick={() => { sidebarStatusMenu.value = null; killSession(menuSid); }}>Kill <kbd>⌃⇧K</kbd></button>
             )}
             {isRunning && !menuExited && menuSess?.feedbackId && (
-              <button onClick={() => { sidebarStatusMenu.value = null; sidebarResolveSession(menuSid, menuSess.feedbackId); }}>Resolve</button>
+              <button onClick={() => { sidebarStatusMenu.value = null; sidebarResolveSession(menuSid, menuSess.feedbackId); }}>Resolve <kbd>⌃⇧R</kbd></button>
             )}
             {menuExited && (
               <button onClick={() => { sidebarStatusMenu.value = null; resumeSession(menuSid); }}>Resume</button>
             )}
-            <button onClick={() => { sidebarStatusMenu.value = null; closeTab(menuSid); }}>Close tab</button>
+            <button onClick={() => { sidebarStatusMenu.value = null; closeTab(menuSid); }}>Close tab <kbd>⌃⇧W</kbd></button>
             <button onClick={() => { sidebarStatusMenu.value = null; deleteSession(menuSid); }}>Archive</button>
           </div>
         );

@@ -50,7 +50,7 @@ The `<script>` tag creates a feedback button overlay. Configure via data attribu
 - `performance` — page load time, DOM content load, FCP
 - `environment` — user agent, viewport, screen resolution, URL
 
-**Session bridge:** WebSocket connection that lets agents execute commands in the page — JS evaluation, DOM queries, click, type, navigate, mouse/keyboard events, screenshots.
+**Session bridge:** WebSocket connection that lets agents execute commands in the page — JS evaluation, DOM queries, click, type, navigate, mouse/keyboard events, screenshots. Supports batch execution, session aliasing, `waitFor` polling, and shadow DOM traversal.
 
 **Custom hooks** — expose app-specific data to agents:
 
@@ -256,6 +256,98 @@ POST   /api/v1/agent/sessions/:id/keyboard/press  Press key (with optional modif
 POST   /api/v1/agent/sessions/:id/keyboard/type   Type text into element
 POST   /api/v1/agent/sessions/:id/keyboard/down   Low-level keydown
 POST   /api/v1/agent/sessions/:id/keyboard/up     Low-level keyup
+```
+
+### Batch execution
+
+Execute multiple commands in a single request. Commands run sequentially; execution stops on first error if `stopOnError` is true (default).
+
+```bash
+curl -s -X POST "$BASE/batch" -H 'Content-Type: application/json' -d '{
+  "commands": [
+    { "command": "clickAt", "params": { "x": 100, "y": 200 } },
+    { "command": "waitFor", "params": { "selector": ".modal", "timeout": 5000 } },
+    { "command": "screenshot", "params": {} }
+  ],
+  "stopOnError": true,
+  "commandTimeout": 15000
+}'
+```
+
+Returns `{ results, completedCount, totalCount, totalDurationMs, stoppedAtIndex }`. Max 50 commands per batch.
+
+### Session aliasing
+
+Assign a human-readable name to a session ID, then use the alias anywhere a session ID is accepted.
+
+```bash
+# Set alias
+curl -s -X POST "$BASE/alias" -H 'Content-Type: application/json' -d '{"name":"my-page"}'
+
+# Now use "my-page" instead of the session ID
+curl -s "http://localhost:3001/api/v1/agent/sessions/my-page/dom?selector=body"
+
+# Remove alias
+curl -s -X DELETE "$BASE/alias" -H 'Content-Type: application/json' -d '{"name":"my-page"}'
+```
+
+Aliases are automatically cleaned up when the session disconnects.
+
+### waitFor
+
+Poll for a selector condition before proceeding. Useful for waiting on modals, spinners, or dynamic content.
+
+```bash
+curl -s -X POST "$BASE/waitFor" -H 'Content-Type: application/json' -d '{
+  "selector": ".modal.visible",
+  "condition": "exists",
+  "timeout": 5000,
+  "pollInterval": 100,
+  "pierceShadow": false
+}'
+```
+
+Conditions: `exists`, `absent`, `visible`, `hidden`, `textContains`, `textEquals`. For text conditions, pass `"text": "expected value"`. Returns `{ found, selector, condition, elapsedMs, timedOut, element }`.
+
+### Shadow DOM queries
+
+Selector-based commands can pierce open shadow roots with dedicated `/deep` endpoints or via the `pierceShadow` param on `waitFor`:
+
+```
+GET    /api/v1/agent/sessions/:id/dom/deep?selector=.btn    DOM snapshot through shadow roots
+POST   /api/v1/agent/sessions/:id/click/deep                Click element inside shadow DOM
+POST   /api/v1/agent/sessions/:id/type/deep                 Type into shadow DOM element
+POST   /api/v1/agent/sessions/:id/mouse/hover/deep          Hover shadow DOM element
+```
+
+The accessibility tree (`getDom`) also traverses shadow roots when using the `/deep` variant.
+
+### Compound widget actions
+
+High-level endpoints for common widget interactions:
+
+```
+POST   /api/v1/agent/sessions/:id/widget/open        Open widget panel (feedback, aggregate, etc.)
+POST   /api/v1/agent/sessions/:id/widget/close       Close widget panel
+POST   /api/v1/agent/sessions/:id/widget/submit      Submit feedback via widget (with optional screenshot)
+POST   /api/v1/agent/sessions/:id/widget/screenshot   Screenshot with widget visible (includeWidget defaults to true)
+```
+
+### Agent testing primitives
+
+```
+POST   /api/v1/agent/sessions/:id/batch           Execute commands sequentially in one request
+POST   /api/v1/agent/sessions/:id/alias            Set session alias (alphanumeric, hyphens, underscores)
+DELETE /api/v1/agent/sessions/:id/alias            Remove session alias
+POST   /api/v1/agent/sessions/:id/waitFor          Poll for selector condition (exists/absent/visible/hidden/text)
+GET    /api/v1/agent/sessions/:id/dom/deep         DOM snapshot piercing shadow roots
+POST   /api/v1/agent/sessions/:id/click/deep       Click through shadow DOM
+POST   /api/v1/agent/sessions/:id/type/deep        Type into shadow DOM element
+POST   /api/v1/agent/sessions/:id/mouse/hover/deep Hover through shadow DOM
+POST   /api/v1/agent/sessions/:id/widget/open      Open widget panel
+POST   /api/v1/agent/sessions/:id/widget/close     Close widget panel
+POST   /api/v1/agent/sessions/:id/widget/submit    Submit feedback via widget
+POST   /api/v1/agent/sessions/:id/widget/screenshot Screenshot including widget
 ```
 
 ### Applications and agents

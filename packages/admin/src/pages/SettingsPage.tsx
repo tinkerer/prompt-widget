@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback } from 'preact/hooks';
-import { theme, setTheme, shortcutsEnabled, tooltipsEnabled, showTabs, arrowTabSwitching, multiDigitTabs, type Theme } from '../lib/settings.js';
+import { theme, setTheme, shortcutsEnabled, tooltipsEnabled, showTabs, arrowTabSwitching, multiDigitTabs, autoNavigateToFeedback, type Theme } from '../lib/settings.js';
 import { getAllShortcuts } from '../lib/shortcuts.js';
 import { Guide, GUIDES, resetGuide } from '../components/Guide.js';
 import { api } from '../lib/api.js';
-import { openSession } from '../lib/sessions.js';
+import { openSession, panelPresets, savePreset, restorePreset, deletePreset } from '../lib/sessions.js';
 
 function formatKey(s: ReturnType<typeof getAllShortcuts>[0]): string {
   const parts: string[] = [];
@@ -217,6 +217,54 @@ function TmuxConfigManager() {
   );
 }
 
+function PanelPresetManager() {
+  const [newName, setNewName] = useState('');
+  const presets = panelPresets.value;
+
+  return (
+    <div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+        <input
+          type="text"
+          placeholder="Preset name..."
+          value={newName}
+          onInput={(e) => setNewName((e.target as HTMLInputElement).value)}
+          style="flex:1;padding:6px 10px;font-size:13px"
+        />
+        <button
+          class="btn btn-sm btn-primary"
+          disabled={!newName.trim()}
+          onClick={() => {
+            if (newName.trim()) {
+              savePreset(newName.trim());
+              setNewName('');
+            }
+          }}
+        >
+          Save Current
+        </button>
+      </div>
+      {presets.length === 0 && (
+        <div style="font-size:12px;color:var(--pw-text-muted)">No saved presets yet.</div>
+      )}
+      {presets.map((p) => (
+        <div key={p.name} class="preset-row">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:600">{p.name}</div>
+            <div style="font-size:11px;color:var(--pw-text-faint)">
+              {p.openTabs.length} tabs, {p.panels.length} panels &middot; {new Date(p.savedAt).toLocaleDateString()}
+            </div>
+          </div>
+          <div style="display:flex;gap:4px">
+            <button class="btn btn-sm" onClick={() => restorePreset(p.name)}>Restore</button>
+            <button class="btn btn-sm btn-danger" onClick={() => deletePreset(p.name)}>Delete</button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function SettingsPage() {
   const [activeGuide, setActiveGuide] = useState<typeof GUIDES[0] | null>(null);
   const shortcuts = getAllShortcuts();
@@ -345,6 +393,21 @@ export function SettingsPage() {
               <span class="toggle-slider" />
             </label>
           </div>
+
+          <div class="settings-toggle-row">
+            <div>
+              <div class="settings-toggle-label">Auto-navigate to feedback</div>
+              <div class="settings-toggle-desc">When switching sessions, navigate to the associated feedback item</div>
+            </div>
+            <label class="toggle-switch">
+              <input
+                type="checkbox"
+                checked={autoNavigateToFeedback.value}
+                onChange={(e) => (autoNavigateToFeedback.value = (e.target as HTMLInputElement).checked)}
+              />
+              <span class="toggle-slider" />
+            </label>
+          </div>
         </div>
 
         <div class="settings-section">
@@ -353,6 +416,14 @@ export function SettingsPage() {
             Named tmux configs for browser terminal sessions. Assign per-app in Applications.
           </div>
           <TmuxConfigManager />
+        </div>
+
+        <div class="settings-section">
+          <h3>Panel Presets</h3>
+          <div class="settings-toggle-desc" style="margin-bottom:10px">
+            Save and restore panel arrangements (tab layout, docked panels, sizes).
+          </div>
+          <PanelPresetManager />
         </div>
 
         <div class="settings-section">

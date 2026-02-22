@@ -8,6 +8,8 @@ export interface SpawnParams {
   cwd: string;
   permissionProfile: PermissionProfile;
   allowedTools?: string | null;
+  claudeSessionId?: string;
+  resumeSessionId?: string;
 }
 
 async function post(path: string, body?: unknown): Promise<Response> {
@@ -19,10 +21,23 @@ async function post(path: string, body?: unknown): Promise<Response> {
 }
 
 export async function spawnSessionRemote(params: SpawnParams): Promise<void> {
-  const res = await post('/spawn', params);
+  let res: Response;
+  try {
+    res = await post('/spawn', params);
+  } catch (err) {
+    const cause = err instanceof Error ? err.message : String(err);
+    throw new SessionServiceError(`Session service unreachable at ${SESSION_SERVICE_URL}: ${cause}`);
+  }
   if (!res.ok) {
     const data = await res.json().catch(() => ({ error: 'Unknown error' }));
     throw new Error((data as { error?: string }).error || `Spawn failed: ${res.status}`);
+  }
+}
+
+export class SessionServiceError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SessionServiceError';
   }
 }
 

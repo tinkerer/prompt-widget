@@ -23,8 +23,29 @@ export interface SessionInfo {
 }
 
 const sessions = new Map<string, SessionInfo>();
+const aliases = new Map<string, string>();
 
 const REQUEST_TIMEOUT = 15_000;
+
+export function resolveSessionId(idOrAlias: string): string {
+  return aliases.get(idOrAlias) ?? idOrAlias;
+}
+
+export function setAlias(alias: string, sessionId: string) {
+  aliases.set(alias, sessionId);
+}
+
+export function removeAlias(alias: string) {
+  aliases.delete(alias);
+}
+
+export function getAliasesForSession(sessionId: string): string[] {
+  const result: string[] = [];
+  for (const [alias, sid] of aliases) {
+    if (sid === sessionId) result.push(alias);
+  }
+  return result;
+}
 
 export function registerSession(sessionId: string, ws: WebSocket, meta: { userAgent?: string; url?: string; userId?: string; viewport?: string; appId?: string }) {
   const existing = sessions.get(sessionId);
@@ -85,6 +106,10 @@ export function registerSession(sessionId: string, ws: WebSocket, meta: { userAg
         pending.reject(new Error('Session disconnected'));
       }
       sessions.delete(sessionId);
+      // Clean up any aliases pointing to this session
+      for (const [alias, sid] of aliases) {
+        if (sid === sessionId) aliases.delete(alias);
+      }
     }
   });
 
@@ -111,7 +136,7 @@ export function listSessions(): Omit<SessionInfo, 'ws' | 'pendingRequests'>[] {
   return result;
 }
 
-export function sendCommand(sessionId: string, command: string, params: Record<string, unknown> = {}): Promise<unknown> {
+export function sendCommand(sessionId: string, command: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<unknown> {
   const session = getSession(sessionId);
   if (!session) {
     return Promise.reject(new Error('Session not found or disconnected'));
@@ -123,7 +148,7 @@ export function sendCommand(sessionId: string, command: string, params: Record<s
     const timeout = setTimeout(() => {
       session.pendingRequests.delete(requestId);
       reject(new Error('Request timed out'));
-    }, REQUEST_TIMEOUT);
+    }, timeoutMs ?? REQUEST_TIMEOUT);
 
     session.pendingRequests.set(requestId, { resolve, reject, timeout });
 

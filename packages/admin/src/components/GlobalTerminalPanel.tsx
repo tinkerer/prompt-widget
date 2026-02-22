@@ -22,6 +22,10 @@ import {
   pendingFirstDigit,
   allNumberedSessions,
   sidebarAnimating,
+  focusedPanelId,
+  hotkeyMenuOpen,
+  waitingSessions,
+  setSessionWaiting,
 } from '../lib/sessions.js';
 import { startTabDrag } from '../lib/tab-drag.js';
 import { navigate, selectedAppId } from '../lib/state.js';
@@ -31,6 +35,7 @@ import { api } from '../lib/api.js';
 import { copyWithTooltip } from '../lib/clipboard.js';
 
 const statusMenuOpen = signal<{ sessionId: string; x: number; y: number } | null>(null);
+const panelResizing = signal(false);
 
 async function resolveSession(sessionId: string, feedbackId?: string) {
   await killSession(sessionId);
@@ -95,9 +100,41 @@ export function GlobalTerminalPanel() {
     return () => document.removeEventListener('click', close);
   }, [statusMenuOpen.value]);
 
+  useEffect(() => {
+    const held = ctrlShiftHeld.value;
+    if (!held || !activeId || exited.has(activeId)) {
+      hotkeyMenuOpen.value = null;
+      return;
+    }
+
+    function updatePos() {
+      const dot = tabsRef.current?.querySelector('.terminal-tab.active .status-dot') as HTMLElement | null;
+      const scrollBox = tabsRef.current;
+      if (!dot || !scrollBox) { hotkeyMenuOpen.value = null; return; }
+      const dotRect = dot.getBoundingClientRect();
+      const scrollRect = scrollBox.getBoundingClientRect();
+      if (dotRect.right < scrollRect.left || dotRect.left > scrollRect.right) {
+        hotkeyMenuOpen.value = null;
+        return;
+      }
+      const x = Math.max(scrollRect.left, Math.min(dotRect.left, scrollRect.right - 120));
+      const y = dotRect.bottom + 4;
+      hotkeyMenuOpen.value = { sessionId: activeId!, x, y };
+    }
+
+    updatePos();
+    const scrollEl = tabsRef.current;
+    scrollEl?.addEventListener('scroll', updatePos, { passive: true });
+    return () => scrollEl?.removeEventListener('scroll', updatePos);
+  }, [ctrlShiftHeld.value, activeId]);
+
   const onResizeMouseDown = useCallback((e: MouseEvent) => {
     e.preventDefault();
     dragging.current = true;
+    panelResizing.value = true;
+    if (panelMinimized.value) {
+      panelMinimized.value = false;
+    }
     const onMove = (ev: MouseEvent) => {
       if (!dragging.current) return;
       const newH = window.innerHeight - ev.clientY;
@@ -105,6 +142,7 @@ export function GlobalTerminalPanel() {
     };
     const onUp = () => {
       dragging.current = false;
+      panelResizing.value = false;
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
       persistPanelState();
@@ -129,9 +167,11 @@ export function GlobalTerminalPanel() {
     </button>
   );
 
+  const isFocused = focusedPanelId.value === 'global';
+
   return (
     <div
-      class={`global-terminal-panel${sidebarAnimating.value ? ' animating' : ''}`}
+      class={`global-terminal-panel${sidebarAnimating.value ? ' animating' : ''}${panelResizing.value ? ' dragging' : ''}${isFocused ? ' panel-focused' : ''}`}
       style={{ height: minimized ? (hasTabs ? '66px' : '32px') : `${height}px`, left: `${sidebarWidth.value}px` }}
     >
       <div class="terminal-resize-handle" onMouseDown={onResizeMouseDown} />
@@ -140,6 +180,7 @@ export function GlobalTerminalPanel() {
           <div ref={tabsRef} class="terminal-tabs" onWheel={(e) => { e.preventDefault(); (e.currentTarget as HTMLElement).scrollLeft += e.deltaY; }}>
             {tabs.map((sid) => {
               const isExited = exited.has(sid);
+              const isWaiting = !isExited && waitingSessions.value.has(sid);
               const isActive = sid === activeId;
               const sess = sessionMap.get(sid);
               const isPlain = sess?.permissionProfile === 'plain';
@@ -164,7 +205,7 @@ export function GlobalTerminalPanel() {
                   title={sess?.feedbackTitle || sess?.agentName || sid}
                 >
                   <span
-                    class={`status-dot ${isExited ? 'exited' : ''}`}
+                    class={`status-dot ${isExited ? 'exited' : ''}${isWaiting ? ' waiting' : ''}`}
                     onClick={(e) => {
                       e.stopPropagation();
                       const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -198,15 +239,44 @@ export function GlobalTerminalPanel() {
             onClick={(e) => e.stopPropagation()}
           >
             {!menuExited && (
-              <button onClick={() => { statusMenuOpen.value = null; killSession(menuSid); }}>Kill</button>
+              <button onClick={() => { statusMenuOpen.value = null; killSession(menuSid); }}>
+                Kill <kbd>⌃⇧K</kbd>
+              </button>
             )}
             {!menuExited && menuSess?.feedbackId && (
-              <button onClick={() => { statusMenuOpen.value = null; resolveSession(menuSid, menuSess.feedbackId); }}>Resolve</button>
+              <button onClick={() => { statusMenuOpen.value = null; resolveSession(menuSid, menuSess.feedbackId); }}>
+                Resolve <kbd>⌃⇧R</kbd>
+              </button>
             )}
             {menuExited && (
               <button onClick={() => { statusMenuOpen.value = null; resumeSession(menuSid); }}>Resume</button>
             )}
-            <button onClick={() => { statusMenuOpen.value = null; closeTab(menuSid); }}>Close tab</button>
+            <button onClick={() => { statusMenuOpen.value = null; closeTab(menuSid); }}>
+              Close tab <kbd>⌃⇧W</kbd>
+            </button>
+          </div>
+        );
+      })()}
+      {hotkeyMenuOpen.value && !statusMenuOpen.value && (() => {
+        const hk = hotkeyMenuOpen.value!;
+        const activeSessMenu = sessionMap.get(hk.sessionId);
+        return (
+          <div
+            class="status-dot-menu"
+            style={{ left: `${hk.x}px`, top: `${hk.y}px` }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button onClick={() => killSession(hk.sessionId)}>
+              Kill <kbd>K</kbd>
+            </button>
+            {activeSessMenu?.feedbackId && (
+              <button onClick={() => resolveSession(hk.sessionId, activeSessMenu.feedbackId)}>
+                Resolve <kbd>R</kbd>
+              </button>
+            )}
+            <button onClick={() => closeTab(hk.sessionId)}>
+              Close tab <kbd>W</kbd>
+            </button>
           </div>
         );
       })()}
@@ -227,7 +297,7 @@ export function GlobalTerminalPanel() {
                 class="feedback-title-link"
                 title={activeSess?.feedbackTitle || 'View feedback'}
               >
-                {activeSess?.feedbackTitle ? (activeSess.feedbackTitle.length > 60 ? activeSess.feedbackTitle.slice(0, 60) + '\u2026' : activeSess.feedbackTitle) : 'View feedback'}
+                {activeSess?.feedbackTitle || 'View feedback'}
               </a>
             )}
           </>
@@ -271,6 +341,7 @@ export function GlobalTerminalPanel() {
                 sessionId={sid}
                 isActive={sid === activeId}
                 onExit={() => markSessionExited(sid)}
+                onWaitingChange={(w) => setSessionWaiting(sid, w)}
                 permissionProfile={sessionMap.get(sid)?.permissionProfile}
                 mode={getViewMode(sid)}
               />

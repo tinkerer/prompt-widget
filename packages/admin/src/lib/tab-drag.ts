@@ -1,9 +1,12 @@
 import {
+  openTabs,
   popOutTab,
   popBackIn,
   moveSessionToPanel,
   splitFromPanel,
   findPanelForSession,
+  reorderTabInPanel,
+  reorderGlobalTab,
 } from './sessions.js';
 
 export interface TabDragConfig {
@@ -27,6 +30,8 @@ export function startTabDrag(e: MouseEvent, config: TabDragConfig): void {
   let sourceTab: HTMLElement | null = (e.currentTarget as HTMLElement);
   let dropTarget: { type: 'panel'; panelId: string } | { type: 'main' } | null = null;
   let lastHighlighted: Element | null = null;
+  let reorderIndicator: HTMLElement | null = null;
+  let reorderInsertBefore: string | null = null;
 
   function createGhost() {
     ghost = document.createElement('div');
@@ -45,12 +50,11 @@ export function startTabDrag(e: MouseEvent, config: TabDragConfig): void {
   function detectDropTarget(x: number, y: number): typeof dropTarget {
     const els = document.elementsFromPoint(x, y);
     for (const el of els) {
-      if (el === ghost) continue;
+      if (el === ghost || el === reorderIndicator) continue;
       const panelEl = (el as HTMLElement).closest?.('[data-panel-id]') as HTMLElement | null;
       if (panelEl) {
         const panelId = panelEl.dataset.panelId!;
         if (config.source !== 'main' && config.source.panelId === panelId) {
-          // Dragging within the same panel — only treat as panel drop if panel has other sessions
           continue;
         }
         return { type: 'panel', panelId };
@@ -81,6 +85,87 @@ export function startTabDrag(e: MouseEvent, config: TabDragConfig): void {
     }
   }
 
+  function updateReorderIndicator(x: number, y: number) {
+    // Find if hovering over the same panel's tab bar
+    const els = document.elementsFromPoint(x, y);
+    let tabBar: HTMLElement | null = null;
+    let isSamePanel = false;
+
+    for (const el of els) {
+      if (el === ghost || el === reorderIndicator) continue;
+      // Check popout panel tab bars
+      if (config.source !== 'main') {
+        const panelEl = (el as HTMLElement).closest?.('[data-panel-id]') as HTMLElement | null;
+        if (panelEl && panelEl.dataset.panelId === (config.source as { panelId: string }).panelId) {
+          const tb = panelEl.querySelector('.popout-tab-bar') as HTMLElement | null;
+          if (tb) { tabBar = tb; isSamePanel = true; break; }
+        }
+      }
+      // Check global tab bar
+      if (config.source === 'main') {
+        const tb = (el as HTMLElement).closest?.('.terminal-tabs') as HTMLElement | null;
+        if (tb) { tabBar = tb; isSamePanel = true; break; }
+      }
+    }
+
+    if (!isSamePanel || !tabBar) {
+      removeReorderIndicator();
+      reorderInsertBefore = null;
+      return;
+    }
+
+    // Find insertion point by comparing x against tab midpoints
+    const tabs = Array.from(tabBar.querySelectorAll(config.source === 'main' ? '.terminal-tab' : '.popout-tab')) as HTMLElement[];
+    let insertBefore: string | null = null;
+    let indicatorX = 0;
+    let found = false;
+
+    for (const tab of tabs) {
+      const rect = tab.getBoundingClientRect();
+      const mid = rect.left + rect.width / 2;
+      if (x < mid) {
+        // Get session id from the tab — use the tab's index to look up
+        const tabIdx = tabs.indexOf(tab);
+        if (config.source === 'main') {
+          const tabIds = openTabs.value;
+          insertBefore = tabIds[tabIdx] || null;
+        } else {
+          const panel = findPanelForSession(config.sessionId);
+          if (panel) insertBefore = panel.sessionIds[tabIdx] || null;
+        }
+        indicatorX = rect.left;
+        found = true;
+        break;
+      }
+    }
+
+    if (!found && tabs.length > 0) {
+      const lastRect = tabs[tabs.length - 1].getBoundingClientRect();
+      indicatorX = lastRect.right;
+      insertBefore = null;
+    }
+
+    reorderInsertBefore = insertBefore;
+
+    if (!reorderIndicator) {
+      reorderIndicator = document.createElement('div');
+      reorderIndicator.className = 'tab-reorder-indicator';
+      document.body.appendChild(reorderIndicator);
+    }
+
+    const barRect = tabBar.getBoundingClientRect();
+    reorderIndicator.style.left = `${indicatorX}px`;
+    reorderIndicator.style.top = `${barRect.top}px`;
+    reorderIndicator.style.height = `${barRect.height}px`;
+  }
+
+  function removeReorderIndicator() {
+    if (reorderIndicator) {
+      reorderIndicator.remove();
+      reorderIndicator = null;
+    }
+  }
+
   function onMove(ev: MouseEvent) {
     const dx = ev.clientX - startX;
     const dy = ev.clientY - startY;
@@ -92,6 +177,7 @@ export function startTabDrag(e: MouseEvent, config: TabDragConfig): void {
     updateGhost(ev.clientX, ev.clientY);
     dropTarget = detectDropTarget(ev.clientX, ev.clientY);
     highlightTarget(dropTarget);
+    updateReorderIndicator(ev.clientX, ev.clientY);
   }
 
   function onUp() {
@@ -101,9 +187,21 @@ export function startTabDrag(e: MouseEvent, config: TabDragConfig): void {
     if (lastHighlighted) lastHighlighted.classList.remove('drop-target');
     sourceTab?.classList.remove('tab-dragging');
     if (ghost) { ghost.remove(); ghost = null; }
+    const hadReorderIndicator = !!reorderIndicator;
+    removeReorderIndicator();
 
     if (!dragging) {
       config.onClickFallback();
+      return;
+    }
+
+    // Same-panel reorder
+    if (hadReorderIndicator && reorderInsertBefore !== config.sessionId) {
+      if (config.source === 'main') {
+        reorderGlobalTab(config.sessionId, reorderInsertBefore);
+      } else {
+        reorderTabInPanel((config.source as { panelId: string }).panelId, config.sessionId, reorderInsertBefore);
+      }
       return;
     }
 
@@ -113,14 +211,13 @@ export function startTabDrag(e: MouseEvent, config: TabDragConfig): void {
       } else if (!dropTarget) {
         popOutTab(config.sessionId);
       }
-      // dropTarget type 'main' = no-op (already in main)
     } else {
-      const srcPanelId = config.source.panelId;
+      const srcPanelId = (config.source as { panelId: string }).panelId;
       if (dropTarget?.type === 'main') {
         popBackIn(config.sessionId);
       } else if (dropTarget?.type === 'panel' && dropTarget.panelId !== srcPanelId) {
         moveSessionToPanel(config.sessionId, dropTarget.panelId);
-      } else if (!dropTarget) {
+      } else if (!dropTarget && !hadReorderIndicator) {
         splitFromPanel(config.sessionId);
       }
     }

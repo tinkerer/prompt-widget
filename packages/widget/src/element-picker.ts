@@ -71,10 +71,20 @@ function captureElementInfo(el: Element): SelectedElementInfo {
   };
 }
 
+interface SelectionHighlight {
+  element: Element;
+  overlay: HTMLDivElement;
+  info: SelectedElementInfo;
+}
+
 export function startPicker(
-  callback: (info: SelectedElementInfo | null) => void,
+  callback: (infos: SelectedElementInfo[]) => void,
   excludeHost: Element,
+  options?: { multiSelect?: boolean },
 ): () => void {
+  const multiSelect = options?.multiSelect ?? false;
+  const selected: SelectionHighlight[] = [];
+
   const highlight = document.createElement('div');
   Object.assign(highlight.style, {
     position: 'fixed',
@@ -118,9 +128,49 @@ export function startPicker(
     fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
     textAlign: 'center',
     padding: '8px',
-    pointerEvents: 'none',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '12px',
   });
-  bar.textContent = 'Click to select \u00b7 Esc to cancel';
+
+  const barText = document.createElement('span');
+  barText.style.pointerEvents = 'none';
+  const updateBarText = () => {
+    if (!multiSelect) {
+      barText.textContent = 'Click or press Space to select \u00b7 Esc to cancel';
+      return;
+    }
+    const count = selected.length;
+    barText.textContent = count === 0
+      ? 'Click or press Space to select \u00b7 Esc to cancel'
+      : `${count} selected \u00b7 Click or Space to add/remove`;
+  };
+  updateBarText();
+
+  const doneBtn = document.createElement('button');
+  Object.assign(doneBtn.style, {
+    background: '#6366f1',
+    color: '#fff',
+    border: 'none',
+    borderRadius: '4px',
+    padding: '4px 12px',
+    fontSize: '12px',
+    fontWeight: '600',
+    cursor: 'pointer',
+  });
+  doneBtn.textContent = 'Done';
+  doneBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    finish();
+  });
+
+  if (multiSelect) {
+    bar.append(barText, doneBtn);
+  } else {
+    bar.append(barText);
+  }
 
   document.body.appendChild(highlight);
   document.body.appendChild(label);
@@ -136,6 +186,39 @@ export function startPicker(
     return false;
   }
 
+  function isAlreadySelected(el: Element): number {
+    return selected.findIndex(s => s.element === el);
+  }
+
+  function createSelectionOverlay(el: Element): HTMLDivElement {
+    const rect = el.getBoundingClientRect();
+    const overlay = document.createElement('div');
+    Object.assign(overlay.style, {
+      position: 'fixed',
+      pointerEvents: 'none',
+      zIndex: '2147483645',
+      border: '2px solid #22c55e',
+      background: 'rgba(34, 197, 94, 0.12)',
+      borderRadius: '3px',
+      top: rect.top + 'px',
+      left: rect.left + 'px',
+      width: rect.width + 'px',
+      height: rect.height + 'px',
+    });
+    document.body.appendChild(overlay);
+    return overlay;
+  }
+
+  function updateSelectionOverlays() {
+    for (const s of selected) {
+      const rect = s.element.getBoundingClientRect();
+      s.overlay.style.top = rect.top + 'px';
+      s.overlay.style.left = rect.left + 'px';
+      s.overlay.style.width = rect.width + 'px';
+      s.overlay.style.height = rect.height + 'px';
+    }
+  }
+
   function onMouseMove(e: MouseEvent) {
     const el = document.elementFromPoint(e.clientX, e.clientY);
     if (!el || isPickerOrWidget(el)) {
@@ -146,55 +229,116 @@ export function startPicker(
     }
     lastTarget = el;
     const rect = el.getBoundingClientRect();
+    const alreadyIdx = isAlreadySelected(el);
+
     highlight.style.display = 'block';
     highlight.style.top = rect.top + 'px';
     highlight.style.left = rect.left + 'px';
     highlight.style.width = rect.width + 'px';
     highlight.style.height = rect.height + 'px';
 
+    if (alreadyIdx >= 0) {
+      highlight.style.border = '2px solid #ef4444';
+      highlight.style.background = 'rgba(239, 68, 68, 0.08)';
+    } else {
+      highlight.style.border = '2px solid #6366f1';
+      highlight.style.background = 'rgba(99, 102, 241, 0.08)';
+    }
+
     let labelText = el.tagName.toLowerCase();
     if (el.id) labelText += '#' + el.id;
     const cls = Array.from(el.classList).filter(c => !c.startsWith('pw-')).slice(0, 3);
     if (cls.length) labelText += '.' + cls.join('.');
+    if (alreadyIdx >= 0) labelText = '\u2713 ' + labelText;
     label.textContent = labelText;
     label.style.display = 'block';
     label.style.top = Math.max(0, rect.top - 22) + 'px';
     label.style.left = rect.left + 'px';
   }
 
+  function selectTarget(target: Element) {
+    if (!multiSelect) {
+      const info = captureElementInfo(target);
+      selected.push({ element: target, overlay: createSelectionOverlay(target), info });
+      finish();
+      return;
+    }
+
+    const idx = isAlreadySelected(target);
+    if (idx >= 0) {
+      selected[idx].overlay.remove();
+      selected.splice(idx, 1);
+    } else {
+      const info = captureElementInfo(target);
+      const overlay = createSelectionOverlay(target);
+      selected.push({ element: target, overlay, info });
+    }
+    updateBarText();
+  }
+
   function onClick(e: MouseEvent) {
+    if (bar.contains(e.target as Node)) return;
     e.preventDefault();
     e.stopPropagation();
     e.stopImmediatePropagation();
-    if (lastTarget) {
-      callback(captureElementInfo(lastTarget));
-    } else {
-      callback(null);
-    }
-    cleanup();
+    const target = lastTarget || document.elementFromPoint(e.clientX, e.clientY);
+    if (!target || isPickerOrWidget(target)) return;
+    selectTarget(target);
   }
 
   function onKeyDown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
-      callback(null);
-      cleanup();
+      if (selected.length > 0) {
+        finish();
+      } else {
+        callback([]);
+        cleanup();
+      }
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      e.stopPropagation();
+      finish();
+    } else if (e.key === ' ') {
+      e.preventDefault();
+      e.stopPropagation();
+      if (lastTarget) selectTarget(lastTarget);
     }
+  }
+
+  function onScroll() {
+    updateSelectionOverlays();
+  }
+
+  function finish() {
+    const infos = selected.map(s => {
+      // Re-capture bounding rect at finish time
+      const rect = s.element.getBoundingClientRect();
+      s.info.boundingRect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      return s.info;
+    });
+    callback(infos);
+    cleanup();
   }
 
   function cleanup() {
     document.removeEventListener('mousemove', onMouseMove, true);
     document.removeEventListener('click', onClick, true);
     document.removeEventListener('keydown', onKeyDown, true);
+    window.removeEventListener('scroll', onScroll, true);
     highlight.remove();
     label.remove();
     bar.remove();
+    for (const s of selected) {
+      s.overlay.remove();
+    }
   }
 
   document.addEventListener('mousemove', onMouseMove, true);
   document.addEventListener('click', onClick, true);
   document.addEventListener('keydown', onKeyDown, true);
+  window.addEventListener('scroll', onScroll, true);
 
   return cleanup;
 }

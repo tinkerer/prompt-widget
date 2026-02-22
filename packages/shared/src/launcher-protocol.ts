@@ -68,6 +68,8 @@ export interface LaunchSession {
   cwd: string;
   permissionProfile: PermissionProfile;
   allowedTools?: string | null;
+  claudeSessionId?: string;
+  resumeSessionId?: string;
   cols: number;
   rows: number;
 }

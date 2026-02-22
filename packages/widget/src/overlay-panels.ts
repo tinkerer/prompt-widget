@@ -257,14 +257,14 @@ export class OverlayPanelManager {
     this.bringToFront(id);
     state.el.classList.add('pw-dragging');
 
-    const startX = e.clientX;
-    const startY = e.clientY;
-    const origX = state.x;
-    const origY = state.y;
+    // Read actual position from DOM to avoid drift
+    const rect = state.el.getBoundingClientRect();
+    const offsetX = e.clientX - rect.left;
+    const offsetY = e.clientY - rect.top;
 
     const onMove = (ev: MouseEvent) => {
-      state.x = origX + (ev.clientX - startX);
-      state.y = origY + (ev.clientY - startY);
+      state.x = ev.clientX - offsetX;
+      state.y = ev.clientY - offsetY;
       state.el.style.left = `${state.x}px`;
       state.el.style.top = `${state.y}px`;
     };
@@ -289,10 +289,11 @@ export class OverlayPanelManager {
 
     const startX = e.clientX;
     const startY = e.clientY;
-    const origX = state.x;
-    const origY = state.y;
-    const origW = state.width;
-    const origH = state.height;
+    const rect = state.el.getBoundingClientRect();
+    const origX = rect.left;
+    const origY = rect.top;
+    const origW = rect.width;
+    const origH = rect.height;
 
     const onMove = (ev: MouseEvent) => {
       const dx = ev.clientX - startX;

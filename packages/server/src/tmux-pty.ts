@@ -1,5 +1,7 @@
 import { execSync, execFileSync, spawnSync } from 'node:child_process';
-import { resolve, dirname } from 'node:path';
+import { writeFileSync, unlinkSync, chmodSync } from 'node:fs';
+import { resolve, dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import * as pty from 'node-pty';
@@ -51,19 +53,39 @@ export function spawnInTmux(params: {
     return a;
   }).join(' ');
 
-  execFileSync('tmux', [
-    ...TMUX_SOCKET,
-    '-f', PW_TMUX_CONF,
-    'new-session', '-d',
-    '-s', name,
-    '-x', String(cols),
-    '-y', String(rows),
-    '-c', cwd,
-    shellCmd,
-  ], {
-    stdio: 'pipe',
-    env: { ...process.env, ...env, TERM: 'xterm-256color' },
-  });
+  // tmux new-session has a command length limit (~2KB). For long prompts,
+  // write a launcher script and execute that instead.
+  const TMUX_CMD_LIMIT = 1500;
+  let tmuxCmd: string;
+  let scriptPath: string | null = null;
+
+  if (shellCmd.length > TMUX_CMD_LIMIT) {
+    scriptPath = join(tmpdir(), `pw-launch-${sessionId}.sh`);
+    writeFileSync(scriptPath, `#!/bin/bash\ncd ${cwd.replace(/'/g, "'\\''")}\nexec ${shellCmd}\n`);
+    chmodSync(scriptPath, 0o755);
+    tmuxCmd = scriptPath;
+  } else {
+    tmuxCmd = shellCmd;
+  }
+
+  try {
+    execFileSync('tmux', [
+      ...TMUX_SOCKET,
+      '-f', PW_TMUX_CONF,
+      'new-session', '-d',
+      '-s', name,
+      '-x', String(cols),
+      '-y', String(rows),
+      '-c', cwd,
+      tmuxCmd,
+    ], {
+      stdio: 'pipe',
+      env: { ...process.env, ...env, TERM: 'xterm-256color' },
+    });
+  } catch (err) {
+    if (scriptPath) try { unlinkSync(scriptPath); } catch {}
+    throw err;
+  }
 
   const ptyProcess = pty.spawn('tmux', [...TMUX_SOCKET, 'attach-session', '-t', name], {
     name: 'xterm-256color',

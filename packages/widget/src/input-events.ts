@@ -129,10 +129,23 @@ export function dispatchClickAt(x: number, y: number, button = 0) {
   return { element: elementInfo(el) };
 }
 
-export function dispatchHover(opts: { selector?: string; x?: number; y?: number }) {
+function deepQuerySelectorForHover(root: Element | Document | ShadowRoot, selector: string): Element | null {
+  const found = root.querySelector(selector);
+  if (found) return found;
+  const elements = root.querySelectorAll('*');
+  for (const el of elements) {
+    if (el.shadowRoot) {
+      const deep = deepQuerySelectorForHover(el.shadowRoot, selector);
+      if (deep) return deep;
+    }
+  }
+  return null;
+}
+
+export function dispatchHover(opts: { selector?: string; x?: number; y?: number; pierceShadow?: boolean }) {
   let el: Element | null;
   if (opts.selector) {
-    el = document.querySelector(opts.selector);
+    el = opts.pierceShadow ? deepQuerySelectorForHover(document, opts.selector) : document.querySelector(opts.selector);
     if (!el) throw new Error(`Element not found: ${opts.selector}`);
   } else {
     el = document.elementFromPoint(opts.x ?? 0, opts.y ?? 0);

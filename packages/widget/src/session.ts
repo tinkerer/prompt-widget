@@ -14,6 +14,41 @@ interface CommandMessage {
   params: Record<string, unknown>;
 }
 
+function deepQuerySelector(root: Element | Document | ShadowRoot, selector: string): Element | null {
+  const found = root.querySelector(selector);
+  if (found) return found;
+
+  const elements = root instanceof Document ? Array.from(root.querySelectorAll('*')) : Array.from(root.querySelectorAll('*'));
+  for (const el of elements) {
+    if (el.shadowRoot) {
+      const deep = deepQuerySelector(el.shadowRoot, selector);
+      if (deep) return deep;
+    }
+  }
+  return null;
+}
+
+function deepQuerySelectorAll(root: Element | Document | ShadowRoot, selector: string): Element[] {
+  const results: Element[] = Array.from(root.querySelectorAll(selector));
+
+  const elements = root.querySelectorAll('*');
+  for (const el of elements) {
+    if (el.shadowRoot) {
+      results.push(...deepQuerySelectorAll(el.shadowRoot, selector));
+    }
+  }
+  return results;
+}
+
+function isElementVisible(el: Element): boolean {
+  const htmlEl = el as HTMLElement;
+  if (htmlEl.offsetParent === null && getComputedStyle(el).position !== 'fixed') return false;
+  const cs = getComputedStyle(el);
+  if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
+  const rect = el.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+
 export class SessionBridge {
   private ws: WebSocket | null = null;
   private sessionId: string;
@@ -134,7 +169,8 @@ export class SessionBridge {
     try {
       switch (command) {
         case 'screenshot': {
-          const blob = await captureScreenshot({ includeWidget: this.screenshotIncludeWidget });
+          const includeWidget = params.includeWidget !== undefined ? !!params.includeWidget : this.screenshotIncludeWidget;
+          const blob = await captureScreenshot({ includeWidget });
           if (!blob) {
             this.respondError(requestId, 'Screenshot capture failed');
             return;
@@ -186,7 +222,8 @@ export class SessionBridge {
 
         case 'getDom': {
           const selector = (params.selector as string) || 'body';
-          const el = document.querySelector(selector);
+          const pierce = !!params.pierceShadow;
+          const el = pierce ? deepQuerySelector(document, selector) : document.querySelector(selector);
           if (!el) {
             this.respondError(requestId, `Element not found: ${selector}`);
             return;
@@ -197,7 +234,7 @@ export class SessionBridge {
             tagName: el.tagName,
             childCount: el.children.length,
             attributes: getAttributes(el),
-            accessibilityTree: buildA11yTree(el, 3),
+            accessibilityTree: buildA11yTree(el, 3, pierce),
           });
           break;
         }
@@ -211,7 +248,8 @@ export class SessionBridge {
 
         case 'click': {
           const selector = params.selector as string;
-          const el = document.querySelector(selector) as HTMLElement | null;
+          const pierce = !!params.pierceShadow;
+          const el = (pierce ? deepQuerySelector(document, selector) : document.querySelector(selector)) as HTMLElement | null;
           if (!el) {
             this.respondError(requestId, `Element not found: ${selector}`);
             return;
@@ -229,9 +267,10 @@ export class SessionBridge {
         case 'type': {
           const selector = params.selector as string | undefined;
           const text = params.text as string;
+          const pierce = !!params.pierceShadow;
           let el: HTMLElement | null;
           if (selector) {
-            el = document.querySelector(selector);
+            el = (pierce ? deepQuerySelector(document, selector) : document.querySelector(selector)) as HTMLElement | null;
           } else {
             el = document.activeElement as HTMLElement;
           }
@@ -263,6 +302,7 @@ export class SessionBridge {
             selector: params.selector as string | undefined,
             x: params.x as number | undefined,
             y: params.y as number | undefined,
+            pierceShadow: !!params.pierceShadow,
           });
           this.respond(requestId, result);
           break;
@@ -334,6 +374,91 @@ export class SessionBridge {
           break;
         }
 
+        case 'waitFor': {
+          const selector = params.selector as string;
+          const condition = (params.condition as string) || 'exists';
+          const text = params.text as string | undefined;
+          const timeout = Math.min((params.timeout as number) || 5000, 30000);
+          const pollInterval = Math.max((params.pollInterval as number) || 100, 50);
+          const pierce = !!params.pierceShadow;
+
+          const startTime = Date.now();
+
+          const check = (): { met: boolean; element?: Element | null } => {
+            const el = pierce ? deepQuerySelector(document, selector) : document.querySelector(selector);
+            switch (condition) {
+              case 'exists':
+                return { met: !!el, element: el };
+              case 'absent':
+                return { met: !el, element: null };
+              case 'visible':
+                return { met: !!el && isElementVisible(el), element: el };
+              case 'hidden':
+                return { met: !el || !isElementVisible(el), element: el };
+              case 'textContains':
+                return { met: !!el && (el.textContent || '').includes(text || ''), element: el };
+              case 'textEquals':
+                return { met: !!el && (el.textContent || '').trim() === (text || ''), element: el };
+              default:
+                return { met: false };
+            }
+          };
+
+          const poll = () => {
+            const result = check();
+            if (result.met) {
+              this.respond(requestId, {
+                found: true,
+                selector,
+                condition,
+                elapsedMs: Date.now() - startTime,
+                element: result.element ? {
+                  tagName: result.element.tagName,
+                  text: result.element.textContent?.slice(0, 200) || '',
+                  visible: result.element ? isElementVisible(result.element) : false,
+                } : null,
+              });
+              return;
+            }
+            if (Date.now() - startTime >= timeout) {
+              this.respond(requestId, {
+                found: false,
+                selector,
+                condition,
+                elapsedMs: Date.now() - startTime,
+                timedOut: true,
+              });
+              return;
+            }
+            setTimeout(poll, pollInterval);
+          };
+          poll();
+          break;
+        }
+
+        case 'widgetSubmit': {
+          if (!window.promptWidget) {
+            this.respondError(requestId, 'Widget not initialized');
+            break;
+          }
+          const description = (params.description as string) || '';
+          const doScreenshot = !!params.screenshot;
+          const type = (params.type as string) || 'manual';
+          const tags = (params.tags as string[]) || [];
+          try {
+            await window.promptWidget.submit({
+              description,
+              screenshot: doScreenshot,
+              type: type as any,
+              tags,
+            });
+            this.respond(requestId, { submitted: true });
+          } catch (err) {
+            this.respondError(requestId, err instanceof Error ? err.message : 'Submit failed');
+          }
+          break;
+        }
+
         default:
           this.respondError(requestId, `Unknown command: ${command}`);
       }
@@ -368,7 +493,7 @@ interface A11yNode {
   children?: A11yNode[];
 }
 
-function buildA11yTree(el: Element, maxDepth: number): A11yNode {
+function buildA11yTree(el: Element, maxDepth: number, pierceShadow = false): A11yNode {
   const role = el.getAttribute('role') || inferRole(el);
   const name =
     el.getAttribute('aria-label') ||
@@ -380,10 +505,18 @@ function buildA11yTree(el: Element, maxDepth: number): A11yNode {
 
   const node: A11yNode = { role, name, tag: el.tagName.toLowerCase() };
 
-  if (maxDepth > 0 && el.children.length > 0) {
-    node.children = [];
-    for (const child of el.children) {
-      node.children.push(buildA11yTree(child, maxDepth - 1));
+  if (maxDepth > 0) {
+    const children: Element[] = [];
+    if (pierceShadow && el.shadowRoot) {
+      children.push(...Array.from(el.shadowRoot.children));
+    }
+    children.push(...Array.from(el.children));
+
+    if (children.length > 0) {
+      node.children = [];
+      for (const child of children) {
+        node.children.push(buildA11yTree(child, maxDepth - 1, pierceShadow));
+      }
     }
   }
 

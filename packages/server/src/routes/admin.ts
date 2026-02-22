@@ -3,7 +3,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Hono } from 'hono';
 import { ulid } from 'ulidx';
-import { eq, desc, asc, like, and, or, isNull, sql, inArray } from 'drizzle-orm';
+import { eq, desc, asc, like, and, or, isNull, sql, inArray, ne } from 'drizzle-orm';
 import {
   feedbackListSchema,
   feedbackUpdateSchema,
@@ -19,7 +19,7 @@ import {
   DEFAULT_PROMPT_TEMPLATE,
   dispatchFeedbackToAgent,
 } from '../dispatch.js';
-import { inputSessionRemote, getSessionStatus } from '../session-service-client.js';
+import { inputSessionRemote, getSessionStatus, SessionServiceError } from '../session-service-client.js';
 import { killSession } from '../agent-sessions.js';
 import { feedbackEvents } from '../events.js';
 import { verifyAdminToken } from '../auth.js';
@@ -43,7 +43,9 @@ adminRoutes.get('/feedback/events', async (c) => {
         send('connected', { ts: Date.now() });
 
         const onNew = (item: { id: string; appId: string | null }) => send('new-feedback', item);
+        const onUpdated = (item: { id: string; appId: string | null }) => send('feedback-updated', item);
         feedbackEvents.on('new', onNew);
+        feedbackEvents.on('updated', onUpdated);
 
         const keepalive = setInterval(() => {
           try { controller.enqueue(encoder.encode(': keepalive\n\n')); } catch { /* closed */ }
@@ -51,6 +53,7 @@ adminRoutes.get('/feedback/events', async (c) => {
 
         c.req.raw.signal.addEventListener('abort', () => {
           feedbackEvents.off('new', onNew);
+          feedbackEvents.off('updated', onUpdated);
           clearInterval(keepalive);
         });
       },
@@ -171,6 +174,34 @@ adminRoutes.get('/feedback', async (c) => {
     .get();
   const total = countResult?.count || 0;
 
+  // Fetch latest session info for dispatched feedback items
+  const feedbackIds = items.map((i) => i.id);
+  const sessionMap = new Map<string, { latestSessionId: string; latestSessionStatus: string; sessionCount: number }>();
+  if (feedbackIds.length > 0) {
+    const sessions = db
+      .select({
+        feedbackId: schema.agentSessions.feedbackId,
+        id: schema.agentSessions.id,
+        status: schema.agentSessions.status,
+      })
+      .from(schema.agentSessions)
+      .where(and(
+        inArray(schema.agentSessions.feedbackId, feedbackIds),
+        ne(schema.agentSessions.status, 'deleted'),
+      ))
+      .orderBy(desc(schema.agentSessions.createdAt))
+      .all();
+    for (const s of sessions) {
+      if (!s.feedbackId) continue;
+      const existing = sessionMap.get(s.feedbackId);
+      if (existing) {
+        existing.sessionCount++;
+      } else {
+        sessionMap.set(s.feedbackId, { latestSessionId: s.id, latestSessionStatus: s.status, sessionCount: 1 });
+      }
+    }
+  }
+
   const hydrated = items.map((item) => {
     const tags = db
       .select()
@@ -183,7 +214,9 @@ adminRoutes.get('/feedback', async (c) => {
       .from(schema.feedbackScreenshots)
       .where(eq(schema.feedbackScreenshots.feedbackId, item.id))
       .all();
-    return hydrateFeedback(item, tags, screenshots);
+    const fb = hydrateFeedback(item, tags, screenshots);
+    const si = sessionMap.get(item.id);
+    return si ? { ...fb, latestSessionId: si.latestSessionId, latestSessionStatus: si.latestSessionStatus, sessionCount: si.sessionCount } : fb;
   });
 
   return c.json({
@@ -534,34 +567,44 @@ adminRoutes.post('/dispatch', async (c) => {
 
   const { feedbackId, agentEndpointId, instructions } = parsed.data;
 
-  // Admin-specific: detect and kill stuck sessions before dispatching
-  const agent = await db.query.agentEndpoints.findFirst({
-    where: eq(schema.agentEndpoints.id, agentEndpointId),
-  });
-  if (agent) {
-    const mode = (agent.mode || 'webhook') as string;
-    if (mode !== 'webhook') {
-      const existing = db
-        .select()
-        .from(schema.agentSessions)
-        .where(
-          and(
-            eq(schema.agentSessions.feedbackId, feedbackId),
-            sql`${schema.agentSessions.status} IN ('pending', 'running')`
+  try {
+    // Admin-specific: detect and kill stuck sessions before dispatching
+    const agent = await db.query.agentEndpoints.findFirst({
+      where: eq(schema.agentEndpoints.id, agentEndpointId),
+    });
+    if (agent) {
+      const mode = (agent.mode || 'webhook') as string;
+      if (mode !== 'webhook') {
+        const existing = db
+          .select()
+          .from(schema.agentSessions)
+          .where(
+            and(
+              eq(schema.agentSessions.feedbackId, feedbackId),
+              sql`${schema.agentSessions.status} IN ('pending', 'running')`
+            )
           )
-        )
-        .get();
+          .get();
 
-      if (existing) {
-        const ageMs = Date.now() - new Date(existing.createdAt).getTime();
+        if (existing) {
+          const ageMs = Date.now() - new Date(existing.createdAt).getTime();
 
-        if (ageMs > 30_000) {
-          const status = await getSessionStatus(existing.id);
-          const stuck = !status || status.healthy === false || (status.totalBytes ?? 0) < 15_000;
+          if (ageMs > 30_000) {
+            const status = await getSessionStatus(existing.id);
+            const stuck = !status || status.healthy === false || (status.totalBytes ?? 0) < 15_000;
 
-          if (stuck) {
-            console.log(`[admin] Stuck session detected: ${existing.id} (age=${Math.round(ageMs / 1000)}s, bytes=${status?.totalBytes ?? 0}, healthy=${status?.healthy}) — killing`);
-            await killSession(existing.id);
+            if (stuck) {
+              console.log(`[admin] Stuck session detected: ${existing.id} (age=${Math.round(ageMs / 1000)}s, bytes=${status?.totalBytes ?? 0}, healthy=${status?.healthy}) — killing`);
+              await killSession(existing.id);
+            } else {
+              return c.json({
+                dispatched: true,
+                sessionId: existing.id,
+                status: 200,
+                response: `Existing active session: ${existing.id}`,
+                existing: true,
+              });
+            }
           } else {
             return c.json({
               dispatched: true,
@@ -571,20 +614,10 @@ adminRoutes.post('/dispatch', async (c) => {
               existing: true,
             });
           }
-        } else {
-          return c.json({
-            dispatched: true,
-            sessionId: existing.id,
-            status: 200,
-            response: `Existing active session: ${existing.id}`,
-            existing: true,
-          });
         }
       }
     }
-  }
 
-  try {
     const result = await dispatchFeedbackToAgent({ feedbackId, agentEndpointId, instructions });
     return c.json(result);
   } catch (err) {
@@ -592,7 +625,12 @@ adminRoutes.post('/dispatch', async (c) => {
     if (errorMsg === 'Feedback not found' || errorMsg === 'Agent endpoint not found') {
       return c.json({ error: errorMsg }, 404);
     }
-    return c.json({ dispatched: false, error: errorMsg }, 502);
+    if (err instanceof SessionServiceError) {
+      console.error(`[admin] Session service error during dispatch:`, errorMsg);
+      return c.json({ dispatched: false, error: errorMsg }, 503);
+    }
+    console.error(`[admin] Dispatch error:`, errorMsg);
+    return c.json({ dispatched: false, error: errorMsg }, 500);
   }
 });
 

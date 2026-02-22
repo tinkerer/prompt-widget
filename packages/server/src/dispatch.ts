@@ -4,6 +4,7 @@ import type { FeedbackItem, PermissionProfile, LaunchSession } from '@prompt-wid
 import { db, schema } from './db/index.js';
 import { spawnAgentSession } from './agent-sessions.js';
 import { getLauncher, addSessionToLauncher } from './launcher-registry.js';
+import { feedbackEvents } from './events.js';
 
 export function hydrateFeedback(row: typeof schema.feedbackItems.$inferSelect, tags: string[], screenshots: (typeof schema.feedbackScreenshots.$inferSelect)[]): FeedbackItem {
   return {
@@ -167,6 +168,8 @@ export async function dispatchFeedbackToAgent(params: {
       updatedAt: now,
     }).where(eq(schema.feedbackItems.id, feedbackId));
 
+    feedbackEvents.emit('updated', { id: feedbackId, appId: feedback.appId });
+
     return {
       dispatched: true,
       status: result.status,
@@ -185,7 +188,7 @@ export async function dispatchFeedbackToAgent(params: {
       prompt,
       cwd,
       permissionProfile,
-      allowedTools: agent.allowedTools,
+      allowedTools: agent.allowedTools || (app as any)?.defaultAllowedTools || null,
     });
 
     const now = new Date().toISOString();
@@ -197,6 +200,8 @@ export async function dispatchFeedbackToAgent(params: {
       dispatchResponse: `Agent session started: ${sessionId}`,
       updatedAt: now,
     }).where(eq(schema.feedbackItems.id, feedbackId)).run();
+
+    feedbackEvents.emit('updated', { id: feedbackId, appId: feedback.appId });
 
     return {
       dispatched: true,
@@ -238,6 +243,7 @@ export async function dispatchAgentSession(params: {
 }): Promise<{ sessionId: string }> {
   const sessionId = ulid();
   const now = new Date().toISOString();
+  const claudeSessionId = crypto.randomUUID();
 
   // Resolve launcher: explicit param > agent endpoint preference > local
   let targetLauncherId = params.launcherId || null;
@@ -263,6 +269,7 @@ export async function dispatchAgentSession(params: {
       status: 'pending',
       outputBytes: 0,
       launcherId: launcher ? launcher.id : null,
+      claudeSessionId,
       createdAt: now,
     })
     .run();
@@ -276,6 +283,7 @@ export async function dispatchAgentSession(params: {
       cwd: params.cwd,
       permissionProfile: params.permissionProfile,
       allowedTools: params.allowedTools,
+      claudeSessionId,
       cols: 120,
       rows: 40,
     };
@@ -285,11 +293,11 @@ export async function dispatchAgentSession(params: {
       console.log(`[dispatch] Sent session ${sessionId} to launcher ${launcher.id}`);
     } catch (err) {
       console.error(`[dispatch] Failed to send to launcher, falling back to local:`, err);
-      await spawnLocal(sessionId, params);
+      await spawnLocal(sessionId, { ...params, claudeSessionId });
     }
   } else {
     // Local spawn — await so errors propagate to the caller
-    await spawnLocal(sessionId, params);
+    await spawnLocal(sessionId, { ...params, claudeSessionId });
   }
 
   return { sessionId };
@@ -300,6 +308,8 @@ async function spawnLocal(sessionId: string, params: {
   cwd: string;
   permissionProfile: PermissionProfile;
   allowedTools?: string | null;
+  claudeSessionId?: string;
+  resumeSessionId?: string;
 }): Promise<void> {
   try {
     await spawnAgentSession({
@@ -308,6 +318,8 @@ async function spawnLocal(sessionId: string, params: {
       cwd: params.cwd,
       permissionProfile: params.permissionProfile,
       allowedTools: params.allowedTools,
+      claudeSessionId: params.claudeSessionId,
+      resumeSessionId: params.resumeSessionId,
     });
   } catch (err) {
     console.error(`Failed to spawn session ${sessionId}:`, err);
@@ -414,9 +426,43 @@ export async function resumeAgentSession(parentSessionId: string): Promise<{ ses
     if (appRow?.projectDir) cwd = appRow.projectDir;
   }
 
+  const sessionId = ulid();
+  const now = new Date().toISOString();
+
+  // Always resume in interactive mode so the user gets an immediate terminal
+  const permissionProfile: PermissionProfile = 'interactive';
+
+  // If parent has a Claude session ID, use --resume for full context restoration
+  if (parent.claudeSessionId) {
+    // Reuse parent's claudeSessionId since --resume continues the same conversation
+    db.insert(schema.agentSessions)
+      .values({
+        id: sessionId,
+        feedbackId: parent.feedbackId,
+        agentEndpointId: parent.agentEndpointId,
+        parentSessionId,
+        permissionProfile,
+        status: 'pending',
+        outputBytes: 0,
+        claudeSessionId: parent.claudeSessionId,
+        createdAt: now,
+      })
+      .run();
+
+    await spawnLocal(sessionId, {
+      prompt: '',
+      cwd,
+      permissionProfile,
+      resumeSessionId: parent.claudeSessionId,
+    });
+
+    return { sessionId };
+  }
+
+  // Legacy fallback: no stored Claude session ID, use context-dump approach
+  const claudeSessionId = crypto.randomUUID();
   const originalPrompt = `do feedback item ${parent.feedbackId}\n\nTitle: ${feedbackRow.title}${feedbackRow.description ? `\nDescription: ${feedbackRow.description}` : ''}`;
 
-  // Include a tail of the parent session's output so the agent knows what was already done
   const parentOutput = parent.outputLog || '';
   const outputTail = parentOutput.length > 4000
     ? '...(truncated)\n' + parentOutput.slice(-4000)
@@ -434,12 +480,6 @@ ${originalPrompt}
 
 IMPORTANT: The previous session may have made partial progress. Check the current state (git status, git diff, etc.) then continue working on anything that is still incomplete or broken. Do NOT just summarize what was done — actually do more work. If everything appears complete, verify by running tests or checking the build, and fix any issues you find.`;
 
-  const sessionId = ulid();
-  const now = new Date().toISOString();
-
-  // Always resume in interactive mode so the user gets an immediate terminal
-  const permissionProfile: PermissionProfile = 'interactive';
-
   db.insert(schema.agentSessions)
     .values({
       id: sessionId,
@@ -449,6 +489,7 @@ IMPORTANT: The previous session may have made partial progress. Check the curren
       permissionProfile,
       status: 'pending',
       outputBytes: 0,
+      claudeSessionId,
       createdAt: now,
     })
     .run();
@@ -457,6 +498,7 @@ IMPORTANT: The previous session may have made partial progress. Check the curren
     prompt: resumePrompt,
     cwd,
     permissionProfile,
+    claudeSessionId,
   });
 
   return { sessionId };

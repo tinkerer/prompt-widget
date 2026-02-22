@@ -436,10 +436,13 @@ function ImageViewer({ src }: { src: string }) {
   useEffect(() => {
     if (!lightbox) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setLightbox(false);
+      if (e.key === 'Escape') {
+        e.stopImmediatePropagation();
+        setLightbox(false);
+      }
     };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
+    document.addEventListener('keydown', handler, true);
+    return () => document.removeEventListener('keydown', handler, true);
   }, [lightbox]);
 
   return (

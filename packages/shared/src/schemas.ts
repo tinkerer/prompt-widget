@@ -102,7 +102,15 @@ export const applicationSchema = z.object({
   serverUrl: z.string().url().optional(),
   hooks: z.array(z.string().max(100)).max(50).default([]),
   description: z.string().max(5000).default(''),
+  tmuxConfigId: z.string().nullable().optional(),
+  defaultPermissionProfile: z.string().max(100).optional(),
+  defaultAllowedTools: z.string().max(5000).nullable().optional(),
+  agentPath: z.string().max(500).nullable().optional(),
+  screenshotIncludeWidget: z.boolean().optional(),
+  autoDispatch: z.boolean().optional(),
 });
+
+export const applicationUpdateSchema = applicationSchema.partial();
 
 export const agentEndpointSchema = z.object({
   name: z.string().min(1).max(100),
@@ -152,6 +160,21 @@ export const planUpdateSchema = z.object({
 export const analyzeSchema = z.object({
   appId: z.string(),
   agentEndpointId: z.string(),
+});
+
+export const agentBatchRequestSchema = z.object({
+  commands: z.array(z.object({
+    command: z.string().min(1),
+    params: z.record(z.unknown()).default({}),
+  })).min(1).max(50),
+  stopOnError: z.boolean().default(true),
+  commandTimeout: z.number().int().min(1000).max(30000).default(15000),
+});
+
+export type AgentBatchRequest = z.infer<typeof agentBatchRequestSchema>;
+
+export const sessionAliasSchema = z.object({
+  name: z.string().min(1).max(100).regex(/^[a-zA-Z0-9_-]+$/),
 });
 
 export const analyzeClusterSchema = z.object({

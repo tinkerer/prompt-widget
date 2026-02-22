@@ -73,8 +73,15 @@ function handleKeyDown(e: KeyboardEvent) {
       const isArrow = e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown';
       const isDigit = /^Digit[0-9]$/.test(code);
       const isMinusEqual = code === 'Minus' || code === 'Equal';
-      const isCloseTab = code === 'KeyW';
-      if (!(inXterm && ctrlOrMeta && e.shiftKey && (isArrow || isDigit || isMinusEqual || isCloseTab))) return;
+      const isSessionAction = code === 'KeyW' || code === 'KeyR' || code === 'KeyK';
+      const isBackquote = code === 'Backquote';
+      const isTab = e.key === 'Tab';
+      const isPipe = code === 'Backslash' && e.shiftKey;
+      // Panel shortcuts (digits, minus, equal, close, backquote, tab, pipe) work from any input;
+      // arrows only pass through in xterm (Ctrl+Shift+Arrow is text selection in normal inputs)
+      const allowedInAnyInput = ctrlOrMeta && e.shiftKey && (isDigit || isMinusEqual || isSessionAction || isBackquote || isTab || isPipe);
+      const allowedInXterm = inXterm && ctrlOrMeta && e.shiftKey && isArrow;
+      if (!(allowedInAnyInput || allowedInXterm)) return;
     }
   }
 
