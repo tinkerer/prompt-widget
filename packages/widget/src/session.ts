@@ -169,8 +169,7 @@ export class SessionBridge {
     try {
       switch (command) {
         case 'screenshot': {
-          const includeWidget = params.includeWidget !== undefined ? !!params.includeWidget : this.screenshotIncludeWidget;
-          const blob = await captureScreenshot({ includeWidget });
+          const blob = await captureScreenshot();
           if (!blob) {
             this.respondError(requestId, 'Screenshot capture failed');
             return;

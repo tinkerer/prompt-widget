@@ -10,8 +10,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@prompt-widget/shared": "workspace:*",
-    "html-to-image": "^1.11.0"
+    "@prompt-widget/shared": "workspace:*"
   },
   "devDependencies": {
     "esbuild": "^0.24.0",

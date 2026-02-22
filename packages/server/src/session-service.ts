@@ -55,11 +55,13 @@ function startPromptChecker(sessionId: string): ReturnType<typeof setInterval> {
     const proc = activeSessions.get(sessionId);
     if (!proc || proc.status !== 'running' || !proc.hasStarted) return;
 
-    // Capture the visible tmux pane to check for prompts
+    // Capture the visible tmux pane — only check the bottom 10 lines
+    // where the actual interactive prompt renders, not scrollback content
     const paneText = captureTmuxPane(sessionId);
     if (!paneText) return;
+    const bottomLines = paneText.split('\n').slice(-10).join('\n');
 
-    const isPrompt = looksLikePrompt(paneText);
+    const isPrompt = looksLikePrompt(bottomLines);
 
     if (isPrompt && !proc.waitingForInput) {
       proc.waitingForInput = true;

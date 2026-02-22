@@ -424,7 +424,7 @@ export class PromptWidgetElement {
     const btn = this.shadow.querySelector('#pw-capture-btn') as HTMLButtonElement;
     btn.disabled = true;
 
-    const blob = await captureScreenshot({ includeWidget: this.sessionBridge.screenshotIncludeWidget });
+    const blob = await captureScreenshot();
     if (blob) {
       this.addScreenshot(blob);
     }
@@ -879,7 +879,7 @@ export class PromptWidgetElement {
     const screenshots: Blob[] = [];
 
     if (opts.screenshot) {
-      const blob = await captureScreenshot({ includeWidget: this.sessionBridge.screenshotIncludeWidget });
+      const blob = await captureScreenshot();
       if (blob) screenshots.push(blob);
     }
 
