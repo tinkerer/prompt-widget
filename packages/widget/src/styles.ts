@@ -459,4 +459,65 @@ export const WIDGET_CSS = `
   font-size: 12px;
   color: #64748b;
 }
+
+.pw-admin-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  border: none;
+  background: #334155;
+  color: #94a3b8;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+}
+
+.pw-admin-btn:hover {
+  background: #475569;
+  color: #e2e8f0;
+}
+
+.pw-admin-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+.pw-admin-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 10px 2px;
+  border-top: 1px solid #334155;
+  animation: pw-slide-in 0.12s ease-out;
+}
+
+.pw-admin-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  background: #0f172a;
+  color: #cbd5e1;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.pw-admin-option:hover {
+  background: #334155;
+  border-color: #6366f1;
+  color: #f1f5f9;
+}
+
+.pw-admin-option-icon {
+  font-size: 13px;
+}
 `;

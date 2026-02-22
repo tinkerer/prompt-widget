@@ -72,6 +72,7 @@ export class OverlayPanelManager {
     const hashRoute = config.path(appId, opts?.param);
     const autoTerminal = type === 'terminal' ? '&autoTerminal=1' : '';
     const iframeUrl = `${this.adminBaseUrl}?embed=true&appId=${encodeURIComponent(appId)}${autoTerminal}#${hashRoute}`;
+    console.log('[pw] openPanel', type, 'url:', iframeUrl, 'appId:', appId);
 
     const width = config.width;
     const height = config.height;

@@ -21,7 +21,7 @@ import {
   setViewMode,
   pendingFirstDigit,
   allNumberedSessions,
-  sidebarDragging,
+  sidebarAnimating,
 } from '../lib/sessions.js';
 import { startTabDrag } from '../lib/tab-drag.js';
 import { navigate, selectedAppId } from '../lib/state.js';
@@ -131,7 +131,7 @@ export function GlobalTerminalPanel() {
 
   return (
     <div
-      class={`global-terminal-panel${sidebarDragging.value ? ' no-transition' : ''}`}
+      class={`global-terminal-panel${sidebarAnimating.value ? ' animating' : ''}`}
       style={{ height: minimized ? (hasTabs ? '66px' : '32px') : `${height}px`, left: `${sidebarWidth.value}px` }}
     >
       <div class="terminal-resize-handle" onMouseDown={onResizeMouseDown} />

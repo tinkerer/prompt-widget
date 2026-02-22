@@ -1,7 +1,7 @@
 import { signal } from '@preact/signals';
-import { useEffect } from 'preact/hooks';
+import { useEffect, useRef } from 'preact/hooks';
 import { api } from '../lib/api.js';
-import { navigate } from '../lib/state.js';
+import { navigate, isEmbedded } from '../lib/state.js';
 import { allSessions, openSession, closeTab, loadAllSessions, deleteSession, permanentlyDeleteSession, spawnTerminal } from '../lib/sessions.js';
 
 const filterStatus = signal('');
@@ -72,12 +72,28 @@ async function permanentlyDeleteAll(ids: string[]) {
 }
 
 export function SessionsPage({ appId }: { appId?: string | null }) {
+  const autoTerminalDone = useRef(false);
+
   useEffect(() => {
     loadMaps();
     loadAllSessions(true);
     const id = setInterval(() => loadAllSessions(true), 5000);
     return () => clearInterval(id);
   }, []);
+
+  const isAutoTerminal = isEmbedded.value && new URLSearchParams(window.location.search).get('autoTerminal') === '1';
+
+  useEffect(() => {
+    if (autoTerminalDone.current) return;
+    if (isAutoTerminal) {
+      autoTerminalDone.current = true;
+      spawnTerminal(appId ?? null);
+    }
+  }, [appId]);
+
+  if (isAutoTerminal) {
+    return <div />;
+  }
 
   const sessions = allSessions.value;
 

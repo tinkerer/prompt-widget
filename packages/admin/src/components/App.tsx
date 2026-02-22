@@ -1,6 +1,7 @@
 import { useEffect } from 'preact/hooks';
 import { isAuthenticated, currentRoute, navigate, selectedAppId, applications, loadApplications, isEmbedded } from '../lib/state.js';
 import { Layout } from './Layout.js';
+import { GlobalTerminalPanel } from './GlobalTerminalPanel.js';
 import { LoginPage } from '../pages/LoginPage.js';
 import { FeedbackListPage } from '../pages/FeedbackListPage.js';
 import { FeedbackDetailPage } from '../pages/FeedbackDetailPage.js';
@@ -95,7 +96,12 @@ export function App() {
   }
 
   if (embedded) {
-    return <div class="pw-embed-root">{page}</div>;
+    return (
+      <div class="pw-embed-root">
+        {page}
+        <GlobalTerminalPanel />
+      </div>
+    );
   }
 
   return <Layout>{page}</Layout>;

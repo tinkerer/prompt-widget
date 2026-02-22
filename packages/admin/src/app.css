@@ -4170,3 +4170,11 @@ body.pw-embed .login-card {
   box-shadow: none;
   border: 1px solid var(--pw-border);
 }
+
+body.pw-embed .global-terminal-panel {
+  left: 0 !important;
+  top: 0 !important;
+  bottom: 0 !important;
+  height: 100vh !important;
+  border-top: none;
+}
