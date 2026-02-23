@@ -56,6 +56,14 @@ import {
   cyclePanelFocus,
   toggleDockedOrientation,
   waitingSessions,
+  splitEnabled,
+  rightPaneTabs,
+  rightPaneActiveId,
+  leftPaneTabs,
+  enableSplit,
+  disableSplit,
+  focusedPanelId,
+  goToPreviousTab,
 } from '../lib/sessions.js';
 
 const liveConnectionCounts = signal<Record<string, number>>({});
@@ -287,6 +295,14 @@ export function Layout({ children }: { children: ComponentChildren }) {
         action: () => { if (arrowTabSwitching.value) cycleSessionTab(1); },
       }),
       registerShortcut({
+        key: 'P',
+        code: 'KeyP',
+        modifiers: { ctrl: true, shift: true },
+        label: 'Previous tab (last used)',
+        category: 'Panels',
+        action: () => goToPreviousTab(),
+      }),
+      registerShortcut({
         sequence: 'g t',
         key: 't',
         label: 'New terminal',
@@ -355,6 +371,17 @@ export function Layout({ children }: { children: ComponentChildren }) {
         label: 'Toggle docked orientation',
         category: 'Panels',
         action: toggleDockedOrientation,
+      }),
+      registerShortcut({
+        key: '"',
+        code: 'Quote',
+        modifiers: { ctrl: true, shift: true },
+        label: 'Toggle split pane',
+        category: 'Panels',
+        action: () => {
+          if (splitEnabled.value) disableSplit();
+          else enableSplit();
+        },
       }),
       registerShortcut({
         key: 'R',
@@ -450,6 +477,24 @@ export function Layout({ children }: { children: ComponentChildren }) {
   }
 
   function cycleSessionTab(dir: number) {
+    if (splitEnabled.value && focusedPanelId.value === 'split-right') {
+      const rTabs = rightPaneTabs.value;
+      if (rTabs.length === 0) return;
+      const current = rightPaneActiveId.value;
+      const idx = current ? rTabs.indexOf(current) : -1;
+      const next = rTabs[(idx + dir + rTabs.length) % rTabs.length];
+      rightPaneActiveId.value = next;
+      return;
+    }
+    if (splitEnabled.value) {
+      const lTabs = leftPaneTabs();
+      if (lTabs.length === 0) return;
+      const current = activeTabId.value;
+      const idx = current ? lTabs.indexOf(current) : -1;
+      const next = lTabs[(idx + dir + lTabs.length) % lTabs.length];
+      openSession(next);
+      return;
+    }
     const tabs = openTabs.value;
     if (tabs.length === 0) return;
     const current = activeTabId.value;

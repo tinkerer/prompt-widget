@@ -357,9 +357,9 @@ export function ApplicationsPage() {
                       checked={formScreenshotIncludeWidget.value}
                       onChange={(e) => (formScreenshotIncludeWidget.value = (e.target as HTMLInputElement).checked)}
                     />
-                    Include widget in screenshots
+                    Show "Exclude widget" screenshot option
                   </label>
-                  <span style="font-size:11px;color:var(--pw-text-faint)">When enabled, the prompt-widget overlay will appear in captured screenshots</span>
+                  <span style="font-size:11px;color:var(--pw-text-faint)">Shows a dropdown on the camera button to exclude the widget from screenshots</span>
                 </div>
                 <div class="form-group">
                   <label style="display:flex;align-items:center;gap:8px;cursor:pointer">

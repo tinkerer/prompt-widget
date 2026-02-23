@@ -2107,12 +2107,16 @@ input:focus, select:focus, textarea:focus {
 }
 
 .terminal-tab .status-dot.waiting {
+  width: 12px;
+  height: 12px;
+  outline: 2px solid rgba(255, 255, 255, 0.6);
+  outline-offset: 1px;
   animation: pulse-green 1.5s ease-in-out infinite;
 }
 
 @keyframes pulse-green {
-  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6); }
-  50% { opacity: 0.4; box-shadow: 0 0 0 4px rgba(34, 197, 94, 0); }
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7); }
+  50% { opacity: 0.4; box-shadow: 0 0 0 6px rgba(34, 197, 94, 0); }
 }
 
 .status-dot-menu {
@@ -2332,6 +2336,94 @@ input:focus, select:focus, textarea:focus {
   min-height: 0;
 }
 
+/* Split pane layout */
+.terminal-split-container {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.terminal-split-container.dragging {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.terminal-split-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.split-pane-tab-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 28px;
+  padding: 0 6px;
+  background: #0f172a;
+  border-bottom: 1px solid #334155;
+  flex-shrink: 0;
+}
+
+.split-pane-tab-bar .terminal-tabs {
+  gap: 1px;
+}
+
+.split-pane-tab-bar .terminal-tab {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+.terminal-split-divider {
+  width: 4px;
+  cursor: col-resize;
+  background: #334155;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.terminal-split-divider:hover {
+  background: #6366f1;
+}
+
+.terminal-split-btn {
+  background: none;
+  border: 1px solid #334155;
+  color: #94a3b8;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.terminal-split-btn:hover {
+  background: #334155;
+  color: #e2e8f0;
+}
+
+.split-pane-unsplit-btn {
+  background: none;
+  border: none;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.split-pane-unsplit-btn:hover {
+  color: #f87171;
+}
+
+[data-split-pane].drop-target {
+  box-shadow: inset 0 0 0 2px #22c55e;
+}
+
 /* Session list in sidebar */
 .session-list {
   display: flex;
@@ -2405,7 +2497,13 @@ input:focus, select:focus, textarea:focus {
 .session-status-dot.failed { background: #ef4444; }
 .session-status-dot.killed { background: #f59e0b; }
 .session-status-dot.pending { background: #94a3b8; }
-.session-status-dot.waiting { animation: pulse-green 1.5s ease-in-out infinite; }
+.session-status-dot.waiting {
+  width: 12px;
+  height: 12px;
+  outline: 2px solid rgba(255, 255, 255, 0.6);
+  outline-offset: 1px;
+  animation: pulse-green 1.5s ease-in-out infinite;
+}
 
 /* Sessions page */
 .sessions-page-filters {

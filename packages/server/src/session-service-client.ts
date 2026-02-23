@@ -92,6 +92,16 @@ export async function getSessionStatus(sessionId: string): Promise<SessionStatus
   }
 }
 
+export async function getWaitingSessions(): Promise<string[]> {
+  try {
+    const res = await fetch(`${SESSION_SERVICE_URL}/waiting`);
+    if (!res.ok) return [];
+    return await res.json() as string[];
+  } catch {
+    return [];
+  }
+}
+
 export function getSessionServiceWsUrl(sessionId: string): string {
   const wsBase = SESSION_SERVICE_URL.replace(/^http/, 'ws');
   return `${wsBase}/ws/agent-session?sessionId=${sessionId}`;

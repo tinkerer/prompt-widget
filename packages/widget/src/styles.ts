@@ -427,6 +427,104 @@ export const WIDGET_CSS = `
   transform: rotate(45deg);
 }
 
+.pw-camera-group {
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+
+.pw-camera-group .pw-camera-btn {
+  border-radius: 6px 0 0 6px;
+}
+
+.pw-camera-dropdown-toggle {
+  height: 32px;
+  width: 20px;
+  border: none;
+  border-left: 1px solid rgba(255,255,255,0.15);
+  background: #334155;
+  color: #94a3b8;
+  cursor: pointer;
+  border-radius: 0 6px 6px 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background 0.15s, color 0.15s;
+}
+
+.pw-camera-dropdown-toggle:hover {
+  background: #475569;
+  color: #e2e8f0;
+}
+
+.pw-camera-dropdown-toggle svg {
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
+}
+
+.pw-camera-menu {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 4px;
+  background: #1e1e2e;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  z-index: 10;
+  min-width: 150px;
+}
+
+.pw-camera-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  color: #e2e8f0;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.pw-camera-menu-item:hover {
+  background: rgba(99, 102, 241, 0.2);
+}
+
+.pw-camera-menu-item input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border: 1px solid #475569;
+  border-radius: 3px;
+  background: #0f172a;
+  cursor: pointer;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.pw-camera-menu-item input[type="checkbox"]:checked {
+  background: #6366f1;
+  border-color: #6366f1;
+}
+
+.pw-camera-menu-item input[type="checkbox"]:checked::after {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 4px;
+  width: 4px;
+  height: 7px;
+  border: solid white;
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+}
+
 .pw-send-group {
   display: flex;
   align-items: center;

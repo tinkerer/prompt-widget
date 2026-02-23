@@ -15,9 +15,15 @@ function loadJson<T>(key: string, fallback: T): T {
 
 export const openTabs = signal<string[]>(loadJson('pw-open-tabs', []));
 export const activeTabId = signal<string | null>(loadJson('pw-active-tab', null));
+export const previousTabId = signal<string | null>(null);
 export const panelMinimized = signal(loadJson('pw-panel-minimized', false));
 export const panelHeight = signal(loadJson('pw-panel-height', 400));
 export const exitedSessions = signal<Set<string>>(new Set(loadJson<string[]>('pw-exited-sessions', [])));
+
+export const splitEnabled = signal<boolean>(loadJson('pw-split-enabled', false));
+export const rightPaneTabs = signal<string[]>(loadJson('pw-right-pane-tabs', []));
+export const rightPaneActiveId = signal<string | null>(loadJson('pw-right-pane-active', null));
+export const splitRatio = signal<number>(loadJson('pw-split-ratio', 0.5));
 
 export interface PopoutPanelState {
   id: string;
@@ -89,7 +95,13 @@ export function setFocusedPanel(panelId: string | null) {
 
 export function cyclePanelFocus(direction: 1 | -1) {
   const panels: string[] = [];
-  if (openTabs.value.length > 0) panels.push('global');
+  if (openTabs.value.length > 0) {
+    if (splitEnabled.value) {
+      panels.push('split-left', 'split-right');
+    } else {
+      panels.push('global');
+    }
+  }
   for (const p of popoutPanels.value) {
     if (p.visible) panels.push(p.id);
   }
@@ -99,10 +111,11 @@ export function cyclePanelFocus(direction: 1 | -1) {
   const targetId = panels[nextIdx];
   setFocusedPanel(targetId);
 
-  // Focus the terminal inside the target panel
   let container: Element | null = null;
   if (targetId === 'global') {
     container = document.querySelector('.global-terminal-panel');
+  } else if (targetId === 'split-left' || targetId === 'split-right') {
+    container = document.querySelector(`[data-split-pane="${targetId}"]`);
   } else {
     container = document.querySelector(`[data-panel-id="${targetId}"]`);
   }
@@ -140,6 +153,114 @@ export function reorderGlobalTab(sessionId: string, insertBeforeId: string | nul
   persistTabs();
 }
 
+export function leftPaneTabs(): string[] {
+  if (!splitEnabled.value) return openTabs.value;
+  const rightSet = new Set(rightPaneTabs.value);
+  return openTabs.value.filter((id) => !rightSet.has(id));
+}
+
+export function enableSplit(sessionId?: string) {
+  if (splitEnabled.value) return;
+  const tabs = openTabs.value;
+  if (tabs.length < 2) return;
+  const target = sessionId || activeTabId.value;
+  if (!target || !tabs.includes(target)) return;
+  splitEnabled.value = true;
+  rightPaneTabs.value = [target];
+  rightPaneActiveId.value = target;
+  if (activeTabId.value === target) {
+    const remaining = tabs.filter((id) => id !== target);
+    activeTabId.value = remaining[remaining.length - 1] || null;
+  }
+  persistSplitState();
+  persistTabs();
+  nudgeResize();
+}
+
+export function disableSplit() {
+  if (!splitEnabled.value) return;
+  const rightActive = rightPaneActiveId.value;
+  splitEnabled.value = false;
+  rightPaneTabs.value = [];
+  rightPaneActiveId.value = null;
+  if (rightActive && openTabs.value.includes(rightActive)) {
+    activeTabId.value = rightActive;
+  }
+  persistSplitState();
+  persistTabs();
+  nudgeResize();
+}
+
+export function moveToRightPane(sessionId: string) {
+  if (!splitEnabled.value) return;
+  if (!openTabs.value.includes(sessionId)) return;
+  if (rightPaneTabs.value.includes(sessionId)) return;
+  rightPaneTabs.value = [...rightPaneTabs.value, sessionId];
+  rightPaneActiveId.value = sessionId;
+  if (activeTabId.value === sessionId) {
+    const left = leftPaneTabs();
+    activeTabId.value = left.length > 0 ? left[left.length - 1] : null;
+  }
+  persistSplitState();
+  persistTabs();
+  nudgeResize();
+}
+
+export function moveToLeftPane(sessionId: string) {
+  if (!rightPaneTabs.value.includes(sessionId)) return;
+  const remaining = rightPaneTabs.value.filter((id) => id !== sessionId);
+  rightPaneTabs.value = remaining;
+  if (rightPaneActiveId.value === sessionId) {
+    rightPaneActiveId.value = remaining.length > 0 ? remaining[remaining.length - 1] : null;
+  }
+  activeTabId.value = sessionId;
+  if (remaining.length === 0) {
+    disableSplit();
+    return;
+  }
+  persistSplitState();
+  persistTabs();
+  nudgeResize();
+}
+
+export function openSessionInRightPane(sessionId: string) {
+  if (!splitEnabled.value) enableSplit(sessionId);
+  if (!openTabs.value.includes(sessionId)) {
+    openTabs.value = [...openTabs.value, sessionId];
+  }
+  if (!rightPaneTabs.value.includes(sessionId)) {
+    rightPaneTabs.value = [...rightPaneTabs.value, sessionId];
+  }
+  rightPaneActiveId.value = sessionId;
+  persistSplitState();
+  persistTabs();
+}
+
+export function reorderRightPaneTab(sessionId: string, insertBeforeId: string | null) {
+  const ids = rightPaneTabs.value.filter((id) => id !== sessionId);
+  if (insertBeforeId) {
+    const idx = ids.indexOf(insertBeforeId);
+    if (idx >= 0) ids.splice(idx, 0, sessionId);
+    else ids.push(sessionId);
+  } else {
+    ids.push(sessionId);
+  }
+  rightPaneTabs.value = ids;
+  persistSplitState();
+}
+
+function persistSplitState() {
+  localStorage.setItem('pw-split-enabled', JSON.stringify(splitEnabled.value));
+  localStorage.setItem('pw-right-pane-tabs', JSON.stringify(rightPaneTabs.value));
+  localStorage.setItem('pw-right-pane-active', JSON.stringify(rightPaneActiveId.value));
+  localStorage.setItem('pw-split-ratio', JSON.stringify(splitRatio.value));
+}
+
+export function setSplitRatio(ratio: number) {
+  splitRatio.value = Math.max(0.2, Math.min(0.8, ratio));
+  persistSplitState();
+}
+
 export interface PanelPreset {
   name: string;
   openTabs: string[];
@@ -148,6 +269,10 @@ export interface PanelPreset {
   panelHeight: number;
   panelMinimized: boolean;
   dockedOrientation: DockedOrientation;
+  splitEnabled?: boolean;
+  rightPaneTabs?: string[];
+  rightPaneActiveId?: string | null;
+  splitRatio?: number;
   savedAt: string;
 }
 
@@ -162,6 +287,10 @@ export function savePreset(name: string) {
     panelHeight: panelHeight.value,
     panelMinimized: panelMinimized.value,
     dockedOrientation: dockedOrientation.value,
+    splitEnabled: splitEnabled.value,
+    rightPaneTabs: rightPaneTabs.value,
+    rightPaneActiveId: rightPaneActiveId.value,
+    splitRatio: splitRatio.value,
     savedAt: new Date().toISOString(),
   };
   panelPresets.value = [...panelPresets.value.filter((p) => p.name !== name), preset];
@@ -177,10 +306,15 @@ export function restorePreset(name: string) {
   panelHeight.value = preset.panelHeight;
   panelMinimized.value = preset.panelMinimized;
   dockedOrientation.value = preset.dockedOrientation;
+  splitEnabled.value = preset.splitEnabled ?? false;
+  rightPaneTabs.value = preset.rightPaneTabs ?? [];
+  rightPaneActiveId.value = preset.rightPaneActiveId ?? null;
+  splitRatio.value = preset.splitRatio ?? 0.5;
   localStorage.setItem('pw-docked-orientation', JSON.stringify(preset.dockedOrientation));
   persistTabs();
   persistPopoutState();
   persistPanelState();
+  persistSplitState();
   nudgeResize();
 }
 
@@ -274,6 +408,17 @@ export function popOutTab(sessionId: string) {
   if (activeTabId.value === sessionId) {
     const tabs = openTabs.value;
     activeTabId.value = tabs.length > 0 ? tabs[tabs.length - 1] : null;
+  }
+  if (rightPaneTabs.value.includes(sessionId)) {
+    const remaining = rightPaneTabs.value.filter((id) => id !== sessionId);
+    rightPaneTabs.value = remaining;
+    if (rightPaneActiveId.value === sessionId) {
+      rightPaneActiveId.value = remaining.length > 0 ? remaining[remaining.length - 1] : null;
+    }
+    if (remaining.length === 0 && splitEnabled.value) {
+      splitEnabled.value = false;
+    }
+    persistSplitState();
   }
   // If already in a panel, just make sure it's visible
   const existing = findPanelForSession(sessionId);
@@ -540,7 +685,16 @@ export async function loadAllSessions(includeDeleted = false) {
         if (!tabs.includes(sid)) tabs.push(sid);
       }
     }
-    allSessions.value = await api.getAgentSessions(undefined, tabs.length > 0 ? tabs : undefined, includeDeleted);
+    const sessions = await api.getAgentSessions(undefined, tabs.length > 0 ? tabs : undefined, includeDeleted);
+    allSessions.value = sessions;
+
+    // Update waiting state from API for all sessions (covers sessions without open tabs)
+    const next = new Set(waitingSessions.value);
+    for (const s of sessions) {
+      if (s.waitingForInput) next.add(s.id);
+      else next.delete(s.id);
+    }
+    waitingSessions.value = next;
   } catch {
     // ignore
   } finally {
@@ -554,9 +708,21 @@ export function startSessionPolling(): () => void {
   return () => clearInterval(id);
 }
 
+export function goToPreviousTab() {
+  const prev = previousTabId.value;
+  if (!prev) return;
+  if (openTabs.value.includes(prev)) {
+    openSession(prev);
+  }
+}
+
 export function openSession(sessionId: string) {
   if (!openTabs.value.includes(sessionId)) {
     openTabs.value = [...openTabs.value, sessionId];
+  }
+  const current = activeTabId.value;
+  if (current && current !== sessionId) {
+    previousTabId.value = current;
   }
   activeTabId.value = sessionId;
   panelMinimized.value = false;
@@ -591,12 +757,24 @@ export function closeTab(sessionId: string) {
     persistPopoutState();
     return;
   }
+  if (rightPaneTabs.value.includes(sessionId)) {
+    const remaining = rightPaneTabs.value.filter((id) => id !== sessionId);
+    rightPaneTabs.value = remaining;
+    if (rightPaneActiveId.value === sessionId) {
+      rightPaneActiveId.value = remaining.length > 0 ? remaining[remaining.length - 1] : null;
+    }
+    if (remaining.length === 0 && splitEnabled.value) {
+      splitEnabled.value = false;
+    }
+    persistSplitState();
+  }
   const oldTabs = openTabs.value;
   const idx = oldTabs.indexOf(sessionId);
   const tabs = oldTabs.filter((id) => id !== sessionId);
   openTabs.value = tabs;
   if (activeTabId.value === sessionId) {
-    const neighbor = tabs[Math.min(idx, tabs.length - 1)] ?? null;
+    const left = splitEnabled.value ? leftPaneTabs() : tabs;
+    const neighbor = left[Math.min(idx, left.length - 1)] ?? null;
     activeTabId.value = neighbor;
   }
   persistTabs();
@@ -657,7 +835,13 @@ export async function resumeSession(sessionId: string): Promise<string | null> {
     } else {
       const tabs = openTabs.value.map((id) => (id === sessionId ? newId : id));
       openTabs.value = tabs;
-      activeTabId.value = newId;
+      if (rightPaneTabs.value.includes(sessionId)) {
+        rightPaneTabs.value = rightPaneTabs.value.map((id) => id === sessionId ? newId : id);
+        if (rightPaneActiveId.value === sessionId) rightPaneActiveId.value = newId;
+        persistSplitState();
+      } else {
+        activeTabId.value = newId;
+      }
     }
     const next = new Set(exitedSessions.value);
     next.delete(sessionId);

@@ -643,6 +643,14 @@ app.get('/health', (c) => {
   });
 });
 
+app.get('/waiting', (c) => {
+  const ids: string[] = [];
+  for (const [id, proc] of activeSessions) {
+    if (proc.waitingForInput) ids.push(id);
+  }
+  return c.json(ids);
+});
+
 app.post('/spawn', async (c) => {
   const body = await c.req.json();
   const { sessionId, prompt, cwd, permissionProfile, allowedTools, claudeSessionId, resumeSessionId } = body;

@@ -22,7 +22,6 @@ const createType = signal('manual');
 const createTags = signal('');
 const createLoading = signal(false);
 const isStuck = signal(false);
-const dispatchDropdownOpen = signal(false);
 const filtersCollapsed = signal(false);
 const TYPES = ['', 'manual', 'ab_test', 'analytics', 'error_report', 'programmatic'];
 const STATUSES = ['', 'new', 'reviewed', 'dispatched', 'resolved', 'archived', 'deleted'];
@@ -254,11 +253,6 @@ export function FeedbackListPage({ appId }: { appId: string }) {
     return () => es.close();
   }, [appId]);
 
-  useEffect(() => {
-    const close = () => (dispatchDropdownOpen.value = false);
-    document.addEventListener('click', close);
-    return () => document.removeEventListener('click', close);
-  }, []);
 
   const basePath = `/app/${appId}/feedback`;
 
@@ -404,28 +398,15 @@ export function FeedbackListPage({ appId }: { appId: string }) {
               </>
             ) : (
               <>
-                <div class="dispatch-dropdown-wrap" style="position:relative" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    class="btn btn-sm btn-primary"
-                    onClick={() => (dispatchDropdownOpen.value = !dispatchDropdownOpen.value)}
-                  >
-                    Dispatch &#9662;
-                  </button>
-                  {dispatchDropdownOpen.value && (
-                    <div class="dispatch-dropdown" onClick={(e) => e.stopPropagation()}>
-                      <button
-                        class="dispatch-dropdown-item"
-                        onClick={async () => {
-                          dispatchDropdownOpen.value = false;
-                          await batchQuickDispatch(Array.from(selected.value), currentAppId.value);
-                          loadFeedback();
-                        }}
-                      >
-                        &#9654; Dispatch selected
-                      </button>
-                    </div>
-                  )}
-                </div>
+                <button
+                  class="btn btn-sm btn-primary"
+                  onClick={async () => {
+                    await batchQuickDispatch(Array.from(selected.value), currentAppId.value);
+                    loadFeedback();
+                  }}
+                >
+                  Dispatch
+                </button>
                 <select
                   class="btn btn-sm"
                   onChange={(e) => {

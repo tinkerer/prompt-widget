@@ -47,7 +47,7 @@ export function spawnInTmux(params: {
   const name = tmuxName(sessionId);
 
   const shellCmd = [command, ...args].map(a => {
-    if (a.includes("'") || a.includes(' ') || a.includes('"') || a.includes('\\') || a.includes('$') || a.includes('\n')) {
+    if (a.includes("'") || a.includes(' ') || a.includes('"') || a.includes('\\') || a.includes('$') || a.includes('\n') || a.includes('(') || a.includes(')') || a.includes('*')) {
       return `'${a.replace(/'/g, "'\\''")}'`;
     }
     return a;

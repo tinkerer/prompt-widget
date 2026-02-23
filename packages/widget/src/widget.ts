@@ -42,8 +42,10 @@ export class PromptWidgetElement {
   private savedDraft = '';
   private savedCollectors = new Set(['console', 'environment', 'network', 'performance']);
   private pickerMultiSelect = false;
+  private excludeWidget = true;
   private dispatchMode: 'off' | 'once' | 'auto' = 'off';
   private annotatorOpen = false;
+  private adminAlwaysShow = false;
   private escHandler = (e: KeyboardEvent) => {
     if (e.key === 'Escape' && this.isOpen) {
       // Let sub-overlays (annotator, element picker) handle Escape first
@@ -219,6 +221,40 @@ export class PromptWidgetElement {
     setTimeout(() => this.shadow.addEventListener('click', closeHandler), 0);
   }
 
+  private toggleCameraMenu() {
+    const existing = this.shadow.querySelector('.pw-camera-menu');
+    if (existing) { existing.remove(); return; }
+
+    const group = this.shadow.querySelector('.pw-camera-group');
+    if (!group) return;
+
+    const menu = document.createElement('div');
+    menu.className = 'pw-camera-menu';
+
+    const label = document.createElement('label');
+    label.className = 'pw-camera-menu-item';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = this.excludeWidget;
+    cb.addEventListener('change', () => {
+      this.excludeWidget = cb.checked;
+    });
+    const span = document.createElement('span');
+    span.textContent = 'Exclude widget';
+    label.append(cb, span);
+    menu.appendChild(label);
+
+    group.appendChild(menu);
+
+    const closeHandler = (e: Event) => {
+      if (!menu.contains(e.target as Node)) {
+        menu.remove();
+        this.shadow.removeEventListener('click', closeHandler);
+      }
+    };
+    setTimeout(() => this.shadow.addEventListener('click', closeHandler), 0);
+  }
+
   private render() {
     const style = document.createElement('style');
     style.textContent = WIDGET_CSS;
@@ -313,9 +349,18 @@ export class PromptWidgetElement {
           <label class="pw-check"><input type="checkbox" value="performance" checked /><span>Perf</span></label>
         </div>
         <div class="pw-toolbar">
+          ${this.sessionBridge.screenshotIncludeWidget ? `
+          <div class="pw-camera-group">
+            <button class="pw-camera-btn" id="pw-capture-btn" title="Capture screenshot">
+              <svg viewBox="0 0 24 24"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z"/><path d="M9 2 7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9zm3 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"/></svg>
+            </button>
+            <button class="pw-camera-dropdown-toggle" id="pw-camera-dropdown" title="Screenshot options">
+              <svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
+            </button>
+          </div>` : `
           <button class="pw-camera-btn" id="pw-capture-btn" title="Capture screenshot">
             <svg viewBox="0 0 24 24"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z"/><path d="M9 2 7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9zm3 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"/></svg>
-          </button>
+          </button>`}
           <div class="pw-picker-group">
             <button class="pw-picker-btn" id="pw-picker-btn" title="Select an element">
               <svg viewBox="0 0 24 24"><path d="M3 3h4V1H1v6h2V3zm0 14H1v6h6v-2H3v-4zm14 4h-4v2h6v-6h-2v4zM17 3V1h6v6h-2V3h-4zM12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0 6a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/></svg>
@@ -354,10 +399,13 @@ export class PromptWidgetElement {
 
     const adminBtn = panel.querySelector('#pw-admin-btn') as HTMLButtonElement | null;
 
+    const cameraDropdownBtn = panel.querySelector('#pw-camera-dropdown') as HTMLButtonElement | null;
+
     closeBtn.addEventListener('click', () => this.close());
     captureBtn.addEventListener('click', () => this.captureScreen());
     pickerBtn.addEventListener('click', () => this.startElementPicker());
     pickerDropdownBtn?.addEventListener('click', (e) => { e.stopPropagation(); this.togglePickerMenu(); });
+    cameraDropdownBtn?.addEventListener('click', (e) => { e.stopPropagation(); this.toggleCameraMenu(); });
     adminBtn?.addEventListener('click', () => this.toggleAdminOptions());
     sendBtn.addEventListener('click', () => this.handleSubmit());
 
@@ -424,7 +472,8 @@ export class PromptWidgetElement {
     const btn = this.shadow.querySelector('#pw-capture-btn') as HTMLButtonElement;
     btn.disabled = true;
 
-    const blob = await captureScreenshot();
+    const excludeWidget = this.sessionBridge.screenshotIncludeWidget && this.excludeWidget;
+    const blob = await captureScreenshot({ excludeWidget });
     if (blob) {
       this.addScreenshot(blob);
     }
@@ -879,7 +928,8 @@ export class PromptWidgetElement {
     const screenshots: Blob[] = [];
 
     if (opts.screenshot) {
-      const blob = await captureScreenshot();
+      const excludeWidget = this.sessionBridge.screenshotIncludeWidget && this.excludeWidget;
+      const blob = await captureScreenshot({ excludeWidget });
       if (blob) screenshots.push(blob);
     }
 

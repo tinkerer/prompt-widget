@@ -3,6 +3,7 @@ import { eq, desc, ne, and } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
 import { killSession } from '../agent-sessions.js';
 import { resumeAgentSession } from '../dispatch.js';
+import { getWaitingSessions } from '../session-service-client.js';
 
 export const agentSessionRoutes = new Hono();
 
@@ -39,10 +40,14 @@ agentSessionRoutes.get('/', async (c) => {
       .all();
   }
 
+  const waitingIds = await getWaitingSessions();
+  const waitingSet = new Set(waitingIds);
+
   const sessions = rows.map((r) => ({
     ...r.session,
     feedbackTitle: r.feedbackTitle || null,
     agentName: r.agentName || null,
+    waitingForInput: waitingSet.has(r.session.id),
   }));
 
   return c.json(sessions);

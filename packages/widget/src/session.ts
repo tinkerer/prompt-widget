@@ -169,7 +169,7 @@ export class SessionBridge {
     try {
       switch (command) {
         case 'screenshot': {
-          const blob = await captureScreenshot();
+          const blob = await captureScreenshot({ excludeWidget: this.screenshotIncludeWidget });
           if (!blob) {
             this.respondError(requestId, 'Screenshot capture failed');
             return;

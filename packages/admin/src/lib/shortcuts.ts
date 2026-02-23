@@ -73,7 +73,7 @@ function handleKeyDown(e: KeyboardEvent) {
       const isArrow = e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown';
       const isDigit = /^Digit[0-9]$/.test(code);
       const isMinusEqual = code === 'Minus' || code === 'Equal';
-      const isSessionAction = code === 'KeyW' || code === 'KeyR' || code === 'KeyK';
+      const isSessionAction = code === 'KeyW' || code === 'KeyR' || code === 'KeyK' || code === 'KeyP';
       const isBackquote = code === 'Backquote';
       const isTab = e.key === 'Tab';
       const isPipe = code === 'Backslash' && e.shiftKey;

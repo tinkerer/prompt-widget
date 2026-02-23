@@ -1,4 +1,5 @@
 import { useRef, useCallback } from 'preact/hooks';
+import { copyWithTooltip } from '../lib/clipboard.js';
 import { SessionViewToggle, type ViewMode } from './SessionViewToggle.js';
 import {
   type PopoutPanelState,
@@ -313,7 +314,12 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
         )}
         {!hasTabs && activeId && (
           <>
-            <span style="color:var(--pw-terminal-text-dim);font-size:12px;font-family:monospace;margin-right:8px">{activeId.slice(-8)}</span>
+            <span
+              class="tmux-id-label"
+              title="Copy tmux attach command to clipboard"
+              onClick={(e) => { e.stopPropagation(); copyWithTooltip(`TMUX= tmux -L prompt-widget attach-session -t pw-${activeId}`, e as any); }}
+              style="margin-right:8px"
+            >pw-{activeId.slice(-6)}</span>
             {session?.feedbackId && (() => {
               const appId = selectedAppId.value;
               const feedbackPath = appId ? `/app/${appId}/feedback/${session.feedbackId}` : `/feedback/${session.feedbackId}`;
