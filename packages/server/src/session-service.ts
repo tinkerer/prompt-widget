@@ -19,6 +19,9 @@ import {
 } from './tmux-pty.js';
 
 const PORT = parseInt(process.env.SESSION_SERVICE_PORT || '3002', 10);
+
+// Strip CLAUDECODE env var so spawned Claude sessions don't think they're nested
+delete process.env.CLAUDECODE;
 const MAX_OUTPUT_LOG = 500 * 1024; // 500KB
 const FLUSH_INTERVAL = 10_000; // 10s
 
@@ -32,7 +35,8 @@ const messageBuffer = new MessageBuffer();
 const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][0-9A-B]|\x1b\[[\?]?[0-9;]*[hlm]/g;
 
 // Minimum visible bytes after a bell to consider "real output" (clears waiting)
-const BELL_CLEAR_THRESHOLD = 80;
+// Claude Code TUI redraws status/spinners which leak visible chars, so set high
+const BELL_CLEAR_THRESHOLD = 2000;
 
 // Check bottom of pane text for interactive prompts (used on recovery to seed state)
 function looksLikePrompt(paneText: string): boolean {
@@ -57,6 +61,7 @@ interface AgentProcess {
   flushTimer: ReturnType<typeof setInterval>;
   waitingForInput: boolean;
   bytesSinceBell: number;
+  bellClearAfter: number; // timestamp after which output can clear waiting state
   hasStarted: boolean;
 }
 
@@ -81,7 +86,7 @@ function buildClaudeArgs(
     case 'interactive': {
       const args: string[] = [];
       if (claudeSessionId) args.push('--session-id', claudeSessionId);
-      if (allowedTools) args.push('--allowedTools', allowedTools);
+      if (allowedTools) args.push(`--allowedTools=${allowedTools}`);
       if (prompt) args.push(prompt);
       return { command: 'claude', args };
     }
@@ -89,7 +94,7 @@ function buildClaudeArgs(
       const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose'];
       if (claudeSessionId) args.push('--session-id', claudeSessionId);
       if (allowedTools) {
-        args.push('--allowedTools', allowedTools);
+        args.push(`--allowedTools=${allowedTools}`);
       }
       return { command: 'claude', args };
     }
@@ -242,6 +247,7 @@ function spawnSession(params: {
     flushTimer: setInterval(() => flushOutput(sessionId), FLUSH_INTERVAL),
     waitingForInput: false,
     bytesSinceBell: 0,
+    bellClearAfter: 0,
     hasStarted: false,
   };
 
@@ -286,9 +292,10 @@ function spawnSession(params: {
       if (!proc.waitingForInput) {
         proc.waitingForInput = true;
         proc.bytesSinceBell = 0;
+        proc.bellClearAfter = 0;
         sendSequenced(proc, { kind: 'waiting_state', waiting: true });
       }
-    } else if (proc.waitingForInput) {
+    } else if (proc.waitingForInput && Date.now() >= proc.bellClearAfter) {
       const visible = data.replace(ANSI_RE, '').length;
       proc.bytesSinceBell += visible;
       if (proc.bytesSinceBell >= BELL_CLEAR_THRESHOLD) {
@@ -421,6 +428,7 @@ function tryRecoverSession(session: typeof schema.agentSessions.$inferSelect): b
       flushTimer: setInterval(() => flushOutput(session.id), FLUSH_INTERVAL),
       waitingForInput: isWaiting,
       bytesSinceBell: 0,
+      bellClearAfter: isWaiting ? Date.now() + 3000 : 0, // ignore reattach dump
       hasStarted: (session.outputBytes || 0) > 100,
     };
     activeSessions.set(session.id, proc);
@@ -443,9 +451,10 @@ function tryRecoverSession(session: typeof schema.agentSessions.$inferSelect): b
         if (!proc.waitingForInput) {
           proc.waitingForInput = true;
           proc.bytesSinceBell = 0;
+          proc.bellClearAfter = 0;
           sendSequenced(proc, { kind: 'waiting_state', waiting: true });
         }
-      } else if (proc.waitingForInput) {
+      } else if (proc.waitingForInput && Date.now() >= proc.bellClearAfter) {
         const visible = data.replace(ANSI_RE, '').length;
         proc.bytesSinceBell += visible;
         if (proc.bytesSinceBell >= BELL_CLEAR_THRESHOLD) {
