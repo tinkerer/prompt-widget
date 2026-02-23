@@ -373,7 +373,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
           {activeId && (isExited ? (
             <button onClick={() => resumeSession(activeId)} title="Resume">Resume</button>
           ) : (
-            <button class="btn-kill" onClick={() => { killSession(activeId); closeTab(activeId); }} title="Kill">Kill</button>
+            <button class="btn-kill" onClick={() => killSession(activeId)} title="Kill">Kill</button>
           ))}
           <button onClick={() => popBackIn(activeId)} title="Pop back into tab bar">{'\u2199'} Pop in</button>
           <button class="btn-close-panel" onClick={() => { updatePanel(panel.id, { visible: false }); persistPopoutState(); }} title="Hide panel">&times;</button>

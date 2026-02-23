@@ -805,11 +805,11 @@ export async function permanentlyDeleteSession(sessionId: string) {
 export async function killSession(sessionId: string) {
   try {
     await api.killAgentSession(sessionId);
-    // Optimistically update sidebar status to 'killed' immediately
     allSessions.value = allSessions.value.map((s) =>
       s.id === sessionId ? { ...s, status: 'killed' } : s
     );
     markSessionExited(sessionId);
+    closeTab(sessionId);
   } catch (err: any) {
     console.error('Kill failed:', err.message);
   }
