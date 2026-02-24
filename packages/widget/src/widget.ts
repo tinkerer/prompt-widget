@@ -13,7 +13,7 @@ import {
 } from '@prompt-widget/shared';
 import { WIDGET_CSS } from './styles.js';
 import { installCollectors, collectContext } from './collectors.js';
-import { captureScreenshot } from './screenshot.js';
+import { captureScreenshot, stopScreencastStream } from './screenshot.js';
 import { SessionBridge } from './session.js';
 import { startPicker, type SelectedElementInfo } from './element-picker.js';
 import { OverlayPanelManager, type PanelType } from './overlay-panels.js';
@@ -43,6 +43,9 @@ export class PromptWidgetElement {
   private savedCollectors = new Set(['console', 'environment', 'network', 'performance']);
   private pickerMultiSelect = false;
   private excludeWidget = true;
+  private excludeCursor = false;
+  private keepStream = false;
+  private countdownTimer: ReturnType<typeof setInterval> | null = null;
   private dispatchMode: 'off' | 'once' | 'auto' = 'off';
   private annotatorOpen = false;
   private adminAlwaysShow = false;
@@ -79,6 +82,7 @@ export class PromptWidgetElement {
 
     this.loadHistory();
     this.loadDispatchMode();
+    this.loadAdminAlwaysShow();
     installCollectors(this.config.collectors);
     this.render();
     this.bindShortcut();
@@ -119,6 +123,23 @@ export class PromptWidgetElement {
     } catch { /* ignore */ }
   }
 
+  private loadAdminAlwaysShow() {
+    try {
+      this.adminAlwaysShow = localStorage.getItem('pw-admin-always-show') === '1';
+    } catch { /* ignore */ }
+  }
+
+  private setAdminAlwaysShow(on: boolean) {
+    this.adminAlwaysShow = on;
+    try {
+      if (on) {
+        localStorage.setItem('pw-admin-always-show', '1');
+      } else {
+        localStorage.removeItem('pw-admin-always-show');
+      }
+    } catch { /* ignore */ }
+  }
+
   private setDispatchMode(mode: 'off' | 'once' | 'auto') {
     this.dispatchMode = mode;
     try {
@@ -156,25 +177,41 @@ export class PromptWidgetElement {
     const menu = document.createElement('div');
     menu.className = 'pw-send-menu';
 
-    const items: Array<{ label: string; mode: 'off' | 'once' | 'auto'; desc: string }> = [
+    const actions: Array<{ label: string; mode: 'off' | 'once'; desc: string }> = [
       { label: 'Submit', mode: 'off', desc: 'Submit feedback only' },
       { label: 'Dispatch', mode: 'once', desc: 'Submit & dispatch this time' },
-      { label: 'Auto-dispatch', mode: 'auto', desc: 'Always dispatch on submit' },
     ];
 
-    for (const item of items) {
+    for (const item of actions) {
       const btn = document.createElement('button');
-      btn.className = `pw-send-menu-item${this.dispatchMode === item.mode ? ' pw-active' : ''}`;
-      const check = this.dispatchMode === item.mode ? '\u2713' : '';
-      btn.innerHTML = `<span class="pw-menu-check">${check}</span>${item.label}`;
+      btn.className = 'pw-send-menu-item';
+      btn.textContent = item.label;
       btn.title = item.desc;
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
         this.setDispatchMode(item.mode);
         menu.remove();
+        this.handleSubmit();
       });
       menu.appendChild(btn);
     }
+
+    const divider = document.createElement('div');
+    divider.className = 'pw-send-menu-divider';
+    menu.appendChild(divider);
+
+    const label = document.createElement('label');
+    label.className = 'pw-send-menu-item pw-send-menu-checkbox';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = this.dispatchMode === 'auto';
+    cb.addEventListener('change', () => {
+      this.setDispatchMode(cb.checked ? 'auto' : 'off');
+    });
+    const span = document.createElement('span');
+    span.textContent = 'Auto-dispatch';
+    label.append(cb, span);
+    menu.appendChild(label);
 
     group.appendChild(menu);
 
@@ -244,6 +281,81 @@ export class PromptWidgetElement {
     label.append(cb, span);
     menu.appendChild(label);
 
+    const cursorLabel = document.createElement('label');
+    cursorLabel.className = 'pw-camera-menu-item';
+    const cursorCb = document.createElement('input');
+    cursorCb.type = 'checkbox';
+    cursorCb.checked = this.excludeCursor;
+    cursorCb.addEventListener('change', () => {
+      this.excludeCursor = cursorCb.checked;
+    });
+    const cursorSpan = document.createElement('span');
+    cursorSpan.textContent = 'Exclude cursor';
+    cursorLabel.append(cursorCb, cursorSpan);
+    menu.appendChild(cursorLabel);
+
+    const keepLabel = document.createElement('label');
+    keepLabel.className = 'pw-camera-menu-item';
+    const keepCb = document.createElement('input');
+    keepCb.type = 'checkbox';
+    keepCb.checked = this.keepStream;
+    keepCb.addEventListener('change', () => {
+      this.keepStream = keepCb.checked;
+      if (!keepCb.checked) stopScreencastStream();
+    });
+    const keepSpan = document.createElement('span');
+    keepSpan.textContent = 'Multi-screenshot';
+    keepLabel.append(keepCb, keepSpan);
+    menu.appendChild(keepLabel);
+
+    const divider = document.createElement('div');
+    divider.className = 'pw-camera-menu-divider';
+    menu.appendChild(divider);
+
+    const timedBtn = document.createElement('button');
+    timedBtn.className = 'pw-camera-menu-item pw-camera-menu-btn';
+    timedBtn.textContent = 'Timed (3s)';
+    timedBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      menu.remove();
+      this.startTimedScreenshot(3);
+    });
+    menu.appendChild(timedBtn);
+
+    group.appendChild(menu);
+
+    const closeHandler = (e: Event) => {
+      if (!menu.contains(e.target as Node)) {
+        menu.remove();
+        this.shadow.removeEventListener('click', closeHandler);
+      }
+    };
+    setTimeout(() => this.shadow.addEventListener('click', closeHandler), 0);
+  }
+
+  private toggleAdminMenu() {
+    const existing = this.shadow.querySelector('.pw-admin-menu');
+    if (existing) { existing.remove(); return; }
+
+    const group = this.shadow.querySelector('.pw-admin-group');
+    if (!group) return;
+
+    const menu = document.createElement('div');
+    menu.className = 'pw-admin-menu';
+
+    const label = document.createElement('label');
+    label.className = 'pw-admin-menu-item';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = this.adminAlwaysShow;
+    cb.addEventListener('change', () => {
+      this.setAdminAlwaysShow(cb.checked);
+    });
+    const span = document.createElement('span');
+    span.textContent = 'Always show';
+    label.append(cb, span);
+    menu.appendChild(label);
+
     group.appendChild(menu);
 
     const closeHandler = (e: Event) => {
@@ -273,17 +385,16 @@ export class PromptWidgetElement {
     this.shadow.appendChild(btn);
   }
 
-  private toggleAdminOptions() {
-    console.log('[pw] toggleAdminOptions called');
+  private toggleAdminOptions(force?: 'show') {
     const existing = this.shadow.querySelector('.pw-admin-options');
     if (existing) {
-      console.log('[pw] removing existing admin options');
+      if (force === 'show') return;
       existing.remove();
       return;
     }
 
     const panel = this.shadow.querySelector('.pw-panel');
-    if (!panel) { console.log('[pw] no panel found'); return; }
+    if (!panel) return;
 
     const options = document.createElement('div');
     options.className = 'pw-admin-options';
@@ -357,10 +468,12 @@ export class PromptWidgetElement {
             <button class="pw-camera-dropdown-toggle" id="pw-camera-dropdown" title="Screenshot options">
               <svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
             </button>
-          </div>` : `
+          </div>
+          <span class="pw-camera-countdown pw-hidden" id="pw-camera-countdown"></span>` : `
           <button class="pw-camera-btn" id="pw-capture-btn" title="Capture screenshot">
             <svg viewBox="0 0 24 24"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z"/><path d="M9 2 7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9zm3 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"/></svg>
-          </button>`}
+          </button>
+          <span class="pw-camera-countdown pw-hidden" id="pw-camera-countdown"></span>`}
           <div class="pw-picker-group">
             <button class="pw-picker-btn" id="pw-picker-btn" title="Select an element">
               <svg viewBox="0 0 24 24"><path d="M3 3h4V1H1v6h2V3zm0 14H1v6h6v-2H3v-4zm14 4h-4v2h6v-6h-2v4zM17 3V1h6v6h-2V3h-4zM12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0 6a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/></svg>
@@ -369,7 +482,10 @@ export class PromptWidgetElement {
               <svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
             </button>
           </div>
-          <button class="pw-admin-btn" id="pw-admin-btn" title="Admin panels"><svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"/></svg></button>
+          <div class="pw-admin-group">
+            <button class="pw-admin-btn" id="pw-admin-btn" title="Admin panels"><svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"/></svg></button>
+            <button class="pw-admin-dropdown-toggle" id="pw-admin-dropdown" title="Admin options"><svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg></button>
+          </div>
           ${this.sessionBridge.autoDispatch ? `
           <div class="pw-send-group">
             <button class="pw-send-btn" id="pw-send-btn" title="Send feedback">
@@ -398,6 +514,7 @@ export class PromptWidgetElement {
     const pickerDropdownBtn = panel.querySelector('#pw-picker-dropdown') as HTMLButtonElement | null;
 
     const adminBtn = panel.querySelector('#pw-admin-btn') as HTMLButtonElement | null;
+    const adminDropdownBtn = panel.querySelector('#pw-admin-dropdown') as HTMLButtonElement | null;
 
     const cameraDropdownBtn = panel.querySelector('#pw-camera-dropdown') as HTMLButtonElement | null;
 
@@ -407,6 +524,7 @@ export class PromptWidgetElement {
     pickerDropdownBtn?.addEventListener('click', (e) => { e.stopPropagation(); this.togglePickerMenu(); });
     cameraDropdownBtn?.addEventListener('click', (e) => { e.stopPropagation(); this.toggleCameraMenu(); });
     adminBtn?.addEventListener('click', () => this.toggleAdminOptions());
+    adminDropdownBtn?.addEventListener('click', (e) => { e.stopPropagation(); this.toggleAdminMenu(); });
     sendBtn.addEventListener('click', () => this.handleSubmit());
 
     const dropdownBtn = panel.querySelector('#pw-send-dropdown') as HTMLButtonElement | null;
@@ -465,20 +583,65 @@ export class PromptWidgetElement {
       }
     });
 
+    if (this.adminAlwaysShow) {
+      this.toggleAdminOptions('show');
+    }
+
     setTimeout(() => input.focus(), 50);
   }
 
   private async captureScreen() {
     const btn = this.shadow.querySelector('#pw-capture-btn') as HTMLButtonElement;
+    const countdownEl = this.shadow.querySelector('#pw-camera-countdown') as HTMLElement | null;
     btn.disabled = true;
 
+    const onStatus = (msg: string) => {
+      if (countdownEl) {
+        countdownEl.textContent = msg;
+        countdownEl.classList.remove('pw-hidden');
+      }
+    };
+
     const excludeWidget = this.sessionBridge.screenshotIncludeWidget && this.excludeWidget;
-    const blob = await captureScreenshot({ excludeWidget });
+    const blob = await captureScreenshot({ excludeWidget, excludeCursor: this.excludeCursor, keepStream: this.keepStream, onStatus });
     if (blob) {
       this.addScreenshot(blob);
     }
 
+    if (countdownEl) {
+      countdownEl.classList.add('pw-hidden');
+      countdownEl.textContent = '';
+    }
     btn.disabled = false;
+  }
+
+  private startTimedScreenshot(seconds: number) {
+    if (this.countdownTimer) return;
+
+    const countdownEl = this.shadow.querySelector('#pw-camera-countdown') as HTMLElement | null;
+    const btn = this.shadow.querySelector('#pw-capture-btn') as HTMLButtonElement;
+    if (btn) btn.disabled = true;
+
+    let remaining = seconds;
+    if (countdownEl) {
+      countdownEl.textContent = String(remaining);
+      countdownEl.classList.remove('pw-hidden');
+    }
+
+    this.countdownTimer = setInterval(() => {
+      remaining--;
+      if (remaining > 0) {
+        if (countdownEl) countdownEl.textContent = String(remaining);
+      } else {
+        clearInterval(this.countdownTimer!);
+        this.countdownTimer = null;
+        if (countdownEl) {
+          countdownEl.classList.add('pw-hidden');
+          countdownEl.textContent = '';
+        }
+        this.captureScreen();
+      }
+    }, 1000);
   }
 
   private addScreenshot(blob: Blob) {
@@ -556,9 +719,11 @@ export class PromptWidgetElement {
       const cls = el.classes.filter(c => !c.startsWith('pw-')).slice(0, 2);
       if (cls.length) display += '.' + cls.join('.');
 
+      const fullPath = el.selector || display;
+
       const chip = document.createElement('div');
       chip.className = 'pw-selected-element';
-      chip.innerHTML = `<code>${display}</code><button class="pw-selected-element-remove" title="Remove">\u00d7</button>`;
+      chip.innerHTML = `<code title="${fullPath.replace(/"/g, '&quot;')}">${display}</code><button class="pw-selected-element-remove" title="Remove">\u00d7</button>`;
 
       const idx = i;
       chip.querySelector('.pw-selected-element-remove')!.addEventListener('click', () => {
@@ -766,7 +931,7 @@ export class PromptWidgetElement {
     }
 
     try {
-      await this.submitFeedback({ type: 'manual', title: '', description, autoDispatch: shouldDispatch }, this.getCheckedCollectors());
+      const result = await this.submitFeedback({ type: 'manual', title: '', description, autoDispatch: shouldDispatch }, this.getCheckedCollectors());
 
       if (description) {
         this.history.push(description);
@@ -780,7 +945,11 @@ export class PromptWidgetElement {
       input.value = '';
 
       this.emit('submit', { type: 'manual', title: '', description });
-      this.showFlash();
+
+      const endpointUrl = new URL(this.config.endpoint, window.location.origin);
+      const feedbackUrl = `${endpointUrl.origin}/admin/#/app/${result.appId}/feedback/${result.id}`;
+      try { await navigator.clipboard.writeText(feedbackUrl); } catch {}
+      this.showFlash(feedbackUrl);
     } catch (err) {
       errorEl.textContent = err instanceof Error ? err.message : 'Submission failed';
       errorEl.classList.remove('pw-hidden');
@@ -789,13 +958,17 @@ export class PromptWidgetElement {
     }
   }
 
-  private showFlash() {
+  private showFlash(feedbackUrl?: string) {
     const panel = this.shadow.querySelector('.pw-panel');
     if (!panel) return;
 
     const flash = document.createElement('div');
     flash.className = 'pw-flash';
-    flash.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>`;
+    if (feedbackUrl) {
+      flash.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg><span class="pw-flash-label">Link copied</span>`;
+    } else {
+      flash.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>`;
+    }
     panel.appendChild(flash);
 
     setTimeout(() => this.close(), 1000);
@@ -929,7 +1102,7 @@ export class PromptWidgetElement {
 
     if (opts.screenshot) {
       const excludeWidget = this.sessionBridge.screenshotIncludeWidget && this.excludeWidget;
-      const blob = await captureScreenshot({ excludeWidget });
+      const blob = await captureScreenshot({ excludeWidget, excludeCursor: this.excludeCursor, keepStream: this.keepStream });
       if (blob) screenshots.push(blob);
     }
 
@@ -1006,6 +1179,7 @@ export class PromptWidgetElement {
 
   destroy() {
     this.close();
+    stopScreencastStream();
     this.overlayManager.destroy();
     this.sessionBridge.disconnect();
     this.host.remove();

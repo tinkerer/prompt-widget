@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'preact/hooks';
-import { theme, setTheme, shortcutsEnabled, tooltipsEnabled, showTabs, arrowTabSwitching, multiDigitTabs, autoNavigateToFeedback, type Theme } from '../lib/settings.js';
+import { theme, setTheme, shortcutsEnabled, tooltipsEnabled, showTabs, arrowTabSwitching, multiDigitTabs, autoNavigateToFeedback, showHotkeyHints, autoJumpWaiting, popoutMode, type Theme, type PopoutMode } from '../lib/settings.js';
+import { perfOverlayEnabled, perfServerEnabled } from '../lib/perf.js';
 import { getAllShortcuts } from '../lib/shortcuts.js';
 import { Guide, GUIDES, resetGuide } from '../components/Guide.js';
 import { api } from '../lib/api.js';
@@ -332,6 +333,21 @@ export function SettingsPage() {
 
           <div class="settings-toggle-row">
             <div>
+              <div class="settings-toggle-label">Show hotkey hints</div>
+              <div class="settings-toggle-desc">Show action menu (Kill, Resolve, Close) on active tab when holding Ctrl+Shift</div>
+            </div>
+            <label class="toggle-switch">
+              <input
+                type="checkbox"
+                checked={showHotkeyHints.value}
+                onChange={(e) => (showHotkeyHints.value = (e.target as HTMLInputElement).checked)}
+              />
+              <span class="toggle-slider" />
+            </label>
+          </div>
+
+          <div class="settings-toggle-row">
+            <div>
               <div class="settings-toggle-label">Multi-digit tab numbers</div>
               <div class="settings-toggle-desc">Ctrl+Shift+1 jumps to tab 1, then 2 within 500ms refines to tab 12</div>
             </div>
@@ -396,6 +412,21 @@ export function SettingsPage() {
 
           <div class="settings-toggle-row">
             <div>
+              <div class="settings-toggle-label">Auto-jump to next waiting session</div>
+              <div class="settings-toggle-desc">After providing input to a waiting session, automatically jump to the next one waiting</div>
+            </div>
+            <label class="toggle-switch">
+              <input
+                type="checkbox"
+                checked={autoJumpWaiting.value}
+                onChange={(e) => (autoJumpWaiting.value = (e.target as HTMLInputElement).checked)}
+              />
+              <span class="toggle-slider" />
+            </label>
+          </div>
+
+          <div class="settings-toggle-row">
+            <div>
               <div class="settings-toggle-label">Auto-navigate to feedback</div>
               <div class="settings-toggle-desc">When switching sessions, navigate to the associated feedback item</div>
             </div>
@@ -407,6 +438,23 @@ export function SettingsPage() {
               />
               <span class="toggle-slider" />
             </label>
+          </div>
+
+          <div class="settings-toggle-row">
+            <div>
+              <div class="settings-toggle-label">Default popout action</div>
+              <div class="settings-toggle-desc">Where sessions open when you click the popout button</div>
+            </div>
+            <select
+              class="view-mode-select"
+              value={popoutMode.value}
+              onChange={(e) => { popoutMode.value = (e.target as HTMLSelectElement).value as PopoutMode; }}
+            >
+              <option value="panel">Panel</option>
+              <option value="window">Window</option>
+              <option value="tab">Tab</option>
+              <option value="terminal">Terminal.app</option>
+            </select>
           </div>
         </div>
 
@@ -463,6 +511,38 @@ export function SettingsPage() {
               </button>
             </div>
           ))}
+        </div>
+
+        <div class="settings-section">
+          <h3>Developer</h3>
+          <div class="settings-toggle-row">
+            <div>
+              <div class="settings-toggle-label">Performance overlay</div>
+              <div class="settings-toggle-desc">Show a timing badge for API calls on each page load</div>
+            </div>
+            <label class="toggle-switch">
+              <input
+                type="checkbox"
+                checked={perfOverlayEnabled.value}
+                onChange={(e) => (perfOverlayEnabled.value = (e.target as HTMLInputElement).checked)}
+              />
+              <span class="toggle-slider" />
+            </label>
+          </div>
+          <div class="settings-toggle-row">
+            <div>
+              <div class="settings-toggle-label">Persist performance data</div>
+              <div class="settings-toggle-desc">Send timing data to the server on route changes</div>
+            </div>
+            <label class="toggle-switch">
+              <input
+                type="checkbox"
+                checked={perfServerEnabled.value}
+                onChange={(e) => (perfServerEnabled.value = (e.target as HTMLInputElement).checked)}
+              />
+              <span class="toggle-slider" />
+            </label>
+          </div>
         </div>
 
         <div class="settings-section">

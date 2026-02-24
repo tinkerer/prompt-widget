@@ -24,8 +24,8 @@ import {
   sidebarAnimating,
   focusedPanelId,
   hotkeyMenuOpen,
-  waitingSessions,
-  setSessionWaiting,
+  sessionInputStates,
+  setSessionInputState,
   splitEnabled,
   rightPaneTabs,
   rightPaneActiveId,
@@ -37,13 +37,115 @@ import {
 } from '../lib/sessions.js';
 import { startTabDrag, type TabDragSource } from '../lib/tab-drag.js';
 import { navigate, selectedAppId } from '../lib/state.js';
-import { showTabs } from '../lib/settings.js';
+import { showTabs, showHotkeyHints, popoutMode, type PopoutMode } from '../lib/settings.js';
 import { ctrlShiftHeld } from '../lib/shortcuts.js';
 import { api } from '../lib/api.js';
 import { copyWithTooltip } from '../lib/clipboard.js';
 
 const statusMenuOpen = signal<{ sessionId: string; x: number; y: number } | null>(null);
+export const idMenuOpen = signal(false);
 const panelResizing = signal(false);
+
+function PaneHeader({
+  sessionId,
+  sessionMap,
+  exited,
+  canSplit,
+  showCollapse,
+  onToggleMinimized,
+}: {
+  sessionId: string | null;
+  sessionMap: Map<string, any>;
+  exited: Set<string>;
+  canSplit?: boolean;
+  showCollapse?: boolean;
+  onToggleMinimized?: () => void;
+}) {
+  const sess = sessionId ? sessionMap.get(sessionId) : null;
+  const appId = selectedAppId.value;
+  const feedbackPath = sess?.feedbackId
+    ? appId ? `/app/${appId}/feedback/${sess.feedbackId}` : `/feedback/${sess.feedbackId}`
+    : null;
+  const viewMode = sessionId ? getViewMode(sessionId, sess?.permissionProfile) : 'terminal';
+  const isExited = sessionId ? exited.has(sessionId) : false;
+
+  return (
+    <div class="terminal-active-header">
+      {sessionId && (
+        <>
+          <div class="id-dropdown-wrapper">
+            <span
+              class="tmux-id-label"
+              onClick={() => { idMenuOpen.value = !idMenuOpen.value; }}
+            >
+              pw-{sessionId.slice(-6)} <span class="id-dropdown-caret">{'\u25BE'}</span>
+            </span>
+            {idMenuOpen.value && (
+              <div class="id-dropdown-menu" onClick={() => { idMenuOpen.value = false; }}>
+                <button onClick={(e) => { e.stopPropagation(); idMenuOpen.value = false; copyWithTooltip(sessionId, e as any); }}>
+                  Copy {sessionId} <kbd>C</kbd>
+                </button>
+                <button onClick={(e) => { e.stopPropagation(); idMenuOpen.value = false; copyWithTooltip(`TMUX= tmux -L prompt-widget attach-session -t pw-${sessionId}`, e as any); }}>
+                  Copy tmux command <kbd>T</kbd>
+                </button>
+                <div class="id-dropdown-separator" />
+                <button onClick={() => { executePopout(sessionId, 'panel'); }}>Panel <kbd>P</kbd></button>
+                <button onClick={() => { executePopout(sessionId, 'window'); }}>Window <kbd>W</kbd></button>
+                <button onClick={() => { executePopout(sessionId, 'tab'); }}>Browser Tab <kbd>B</kbd></button>
+                {!isExited && (
+                  <button onClick={() => { executePopout(sessionId, 'terminal'); }}>Terminal.app <kbd>A</kbd></button>
+                )}
+                {canSplit && (
+                  <>
+                    <div class="id-dropdown-separator" />
+                    <button onClick={() => { enableSplit(); }}>{'\u2AFF'} Split Panes <kbd>S</kbd></button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+          {feedbackPath && (
+            <a
+              href={`#${feedbackPath}`}
+              onClick={(e) => { e.preventDefault(); navigate(feedbackPath); }}
+              class="feedback-title-link"
+              title={sess?.feedbackTitle || 'View feedback'}
+            >
+              {sess?.feedbackTitle || 'View feedback'}
+            </a>
+          )}
+        </>
+      )}
+      <span style="flex:1" />
+      {sessionId && (
+        <>
+          <select
+            class="view-mode-select"
+            value={viewMode}
+            onChange={(e) => setViewMode(sessionId, (e.target as HTMLSelectElement).value as ViewMode)}
+          >
+            <option value="terminal">Term</option>
+            <option value="structured">Struct</option>
+            <option value="split">Split</option>
+          </select>
+          {!isExited && sess?.feedbackId && (
+            <button class="resolve-btn" onClick={() => resolveSession(sessionId, sess.feedbackId)}>Resolve</button>
+          )}
+          {isExited ? (
+            <button class="resume-btn" onClick={() => resumeSession(sessionId)}>Resume</button>
+          ) : (
+            <button class="kill-btn" onClick={() => killSession(sessionId)}>Kill</button>
+          )}
+        </>
+      )}
+      {showCollapse && onToggleMinimized && (
+        <button class="terminal-collapse-btn" onClick={onToggleMinimized}>
+          {panelMinimized.value ? '\u25B2' : '\u25BC'}
+        </button>
+      )}
+    </div>
+  );
+}
 
 async function resolveSession(sessionId: string, feedbackId?: string) {
   await killSession(sessionId);
@@ -55,6 +157,23 @@ async function resolveSession(sessionId: string, feedbackId?: string) {
     }
   }
   closeTab(sessionId);
+}
+
+function executePopout(sessionId: string, mode: PopoutMode) {
+  switch (mode) {
+    case 'panel':
+      popOutTab(sessionId);
+      break;
+    case 'window':
+      window.open(`#/session/${sessionId}`, '_blank', 'width=900,height=600,menubar=no,toolbar=no');
+      break;
+    case 'tab':
+      window.open(`#/session/${sessionId}`, '_blank');
+      break;
+    case 'terminal':
+      api.openSessionInTerminal(sessionId);
+      break;
+  }
 }
 
 function TabBadge({ tabNum }: { tabNum: number }) {
@@ -97,11 +216,11 @@ function PaneTabBar({
     <div ref={tabsRef} class="terminal-tabs" onWheel={(e) => { const delta = e.deltaX || e.deltaY; if (delta) { e.preventDefault(); (e.currentTarget as HTMLElement).scrollLeft += delta; } }}>
       {tabs.map((sid) => {
         const isExited = exited.has(sid);
-        const isWaiting = !isExited && waitingSessions.value.has(sid);
+        const inputState = !isExited ? (sessionInputStates.value.get(sid) || null) : null;
         const isActive = sid === activeId;
         const sess = sessionMap.get(sid);
         const isPlain = sess?.permissionProfile === 'plain';
-        const raw = isPlain ? `Terminal ${sid.slice(-6)}` : (sess?.feedbackTitle || sess?.agentName || `Session ${sid.slice(-6)}`);
+        const raw = isPlain ? `\u{1F5A5}\uFE0F ${sess?.paneTitle || sid.slice(-6)}` : (sess?.feedbackTitle || sess?.agentName || `Session ${sid.slice(-6)}`);
         const tabLabel = raw.length > 24 ? raw.slice(0, 24) + '\u2026' : raw;
         const globalIdx = globalSessions.indexOf(sid);
         const tabNum = globalIdx >= 0 ? globalIdx + 1 : null;
@@ -121,7 +240,7 @@ function PaneTabBar({
             title={sess?.feedbackTitle || sess?.agentName || sid}
           >
             <span
-              class={`status-dot ${isExited ? 'exited' : ''}${isWaiting ? ' waiting' : ''}`}
+              class={`status-dot ${isExited ? 'exited' : ''}${isPlain ? ' plain' : ''}${inputState ? ` ${inputState}` : ''}`}
               onClick={(e) => {
                 e.stopPropagation();
                 const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -159,14 +278,13 @@ export function GlobalTerminalPanel() {
   const dragging = useRef(false);
   const tabsRef = useRef<HTMLDivElement>(null);
   const splitDragging = useRef(false);
-
   useEffect(() => {
     if (!activeId) return;
     requestAnimationFrame(() => {
       const container = tabsRef.current;
       if (!container) return;
       const el = container.querySelector('.terminal-tab.active') as HTMLElement | null;
-      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+      if (el) el.scrollIntoView({ behavior: 'instant', block: 'nearest', inline: 'nearest' });
     });
   }, [activeId, tabs.length]);
 
@@ -178,8 +296,49 @@ export function GlobalTerminalPanel() {
   }, [statusMenuOpen.value]);
 
   useEffect(() => {
+    if (!idMenuOpen.value) return;
+    const close = () => { idMenuOpen.value = false; };
+    document.addEventListener('click', close);
+    return () => document.removeEventListener('click', close);
+  }, [idMenuOpen.value]);
+
+  useEffect(() => {
+    if (!idMenuOpen.value || !activeId) return;
+    const onKey = (e: KeyboardEvent) => {
+      const key = e.key.toLowerCase();
+      let handled = true;
+      if (key === 'c') {
+        navigator.clipboard.writeText(activeId);
+      } else if (key === 't') {
+        navigator.clipboard.writeText(`TMUX= tmux -L prompt-widget attach-session -t pw-${activeId}`);
+      } else if (key === 'p') {
+        executePopout(activeId, 'panel');
+      } else if (key === 'w') {
+        executePopout(activeId, 'window');
+      } else if (key === 'b') {
+        executePopout(activeId, 'tab');
+      } else if (key === 'a' && !exited.has(activeId)) {
+        executePopout(activeId, 'terminal');
+      } else if (key === 's' && tabs.length >= 2 && !isSplit) {
+        enableSplit();
+      } else if (key === 'escape') {
+        // just close
+      } else {
+        handled = false;
+      }
+      if (handled) {
+        e.preventDefault();
+        e.stopPropagation();
+        idMenuOpen.value = false;
+      }
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [idMenuOpen.value, activeId]);
+
+  useEffect(() => {
     const held = ctrlShiftHeld.value;
-    if (!held || !activeId) {
+    if (!held || !activeId || !showHotkeyHints.value) {
       hotkeyMenuOpen.value = null;
       return;
     }
@@ -252,13 +411,7 @@ export function GlobalTerminalPanel() {
 
   const hasTabs = showTabs.value;
   const toggleMinimized = () => { panelMinimized.value = !panelMinimized.value; persistPanelState(); };
-  const activeSess = activeId ? sessionMap.get(activeId) : null;
   const appId = selectedAppId.value;
-  const feedbackPath = activeSess?.feedbackId
-    ? appId ? `/app/${appId}/feedback/${activeSess.feedbackId}` : `/feedback/${activeSess.feedbackId}`
-    : null;
-  const activeViewMode = activeId ? getViewMode(activeId, activeSess?.permissionProfile) : 'terminal';
-  const isActiveExited = activeId ? exited.has(activeId) : false;
 
   const collapseBtn = (
     <button class="terminal-collapse-btn" onClick={toggleMinimized}>
@@ -287,11 +440,6 @@ export function GlobalTerminalPanel() {
             onActivate={openSession}
           />
           <div class="terminal-tab-actions">
-            {canSplit && (
-              <button class="terminal-split-btn" onClick={() => enableSplit()} title="Split into two panes">
-                {'\u2AFF'} Split
-              </button>
-            )}
             <button class="terminal-new-btn" onClick={() => spawnTerminal(appId)} title="New terminal">+</button>
             {collapseBtn}
           </div>
@@ -309,24 +457,24 @@ export function GlobalTerminalPanel() {
           >
             {!menuExited && (
               <button onClick={() => { statusMenuOpen.value = null; killSession(menuSid); }}>
-                Kill <kbd>⌃⇧K</kbd>
+                Kill {showHotkeyHints.value && <kbd>⌃⇧K</kbd>}
               </button>
             )}
             {!menuExited && menuSess?.feedbackId && (
               <button onClick={() => { statusMenuOpen.value = null; resolveSession(menuSid, menuSess.feedbackId); }}>
-                Resolve <kbd>⌃⇧R</kbd>
+                Resolve {showHotkeyHints.value && <kbd>⌃⇧R</kbd>}
               </button>
             )}
             {!menuExited && (
-              <button onClick={() => { statusMenuOpen.value = null; api.openSessionInTerminal(menuSid); }}>
-                Open in Terminal
+              <button onClick={() => { statusMenuOpen.value = null; executePopout(menuSid, popoutMode.value); }}>
+                Pop out
               </button>
             )}
             {menuExited && (
               <button onClick={() => { statusMenuOpen.value = null; resumeSession(menuSid); }}>Resume</button>
             )}
             <button onClick={() => { statusMenuOpen.value = null; closeTab(menuSid); }}>
-              Close tab <kbd>⌃⇧W</kbd>
+              Close tab {showHotkeyHints.value && <kbd>⌃⇧W</kbd>}
             </button>
           </div>
         );
@@ -351,11 +499,9 @@ export function GlobalTerminalPanel() {
                 Resolve <kbd>R</kbd>
               </button>
             )}
-            {!hkExited && (
-              <button onClick={() => api.openSessionInTerminal(hk.sessionId)}>
-                Open in Terminal <kbd>T</kbd>
-              </button>
-            )}
+            <button onClick={() => { idMenuOpen.value = !idMenuOpen.value; }}>
+              Session menu <kbd>P</kbd>
+            </button>
             {hkExited && (
               <button onClick={() => resumeSession(hk.sessionId)}>Resume</button>
             )}
@@ -366,68 +512,14 @@ export function GlobalTerminalPanel() {
         );
       })()}
       {!isSplit && (
-        <div class="terminal-active-header">
-          {activeId && (
-            <>
-              <span
-                class="tmux-id-label"
-                title="Copy tmux attach command to clipboard"
-                onClick={(e) => { copyWithTooltip(`TMUX= tmux -L prompt-widget attach-session -t pw-${activeId}`, e as any); }}
-              >
-                pw-{activeId.slice(-6)}
-              </span>
-              {feedbackPath && (
-                <a
-                  href={`#${feedbackPath}`}
-                  onClick={(e) => { e.preventDefault(); navigate(feedbackPath); }}
-                  class="feedback-title-link"
-                  title={activeSess?.feedbackTitle || 'View feedback'}
-                >
-                  {activeSess?.feedbackTitle || 'View feedback'}
-                </a>
-              )}
-            </>
-          )}
-          <span style="flex:1" />
-          {activeId && (
-            <>
-              <select
-                class="view-mode-select"
-                value={activeViewMode}
-                onChange={(e) => setViewMode(activeId, (e.target as HTMLSelectElement).value as ViewMode)}
-              >
-                <option value="terminal">Term</option>
-                <option value="structured">Struct</option>
-                <option value="split">Split</option>
-              </select>
-              <button
-                class="popout-btn"
-                onClick={() => popOutTab(activeId)}
-                title="Pop out to floating panel (Ctrl+Shift+-)"
-              >
-                {'\u2197'} Pop out
-              </button>
-              {!isActiveExited && (
-                <button
-                  class="popout-btn"
-                  onClick={() => api.openSessionInTerminal(activeId)}
-                  title="Open tmux session in Terminal.app"
-                >
-                  {'\u2328'} Terminal
-                </button>
-              )}
-              {!isActiveExited && activeSess?.feedbackId && (
-                <button class="resolve-btn" onClick={() => resolveSession(activeId, activeSess.feedbackId)}>Resolve</button>
-              )}
-              {isActiveExited ? (
-                <button class="resume-btn" onClick={() => resumeSession(activeId)}>Resume</button>
-              ) : (
-                <button class="kill-btn" onClick={() => killSession(activeId)}>Kill</button>
-              )}
-            </>
-          )}
-          {!hasTabs && collapseBtn}
-        </div>
+        <PaneHeader
+          sessionId={activeId}
+          sessionMap={sessionMap}
+          exited={exited}
+          canSplit={canSplit}
+          showCollapse={!hasTabs}
+          onToggleMinimized={toggleMinimized}
+        />
       )}
       {!minimized && !isSplit && (
         <div class="terminal-body">
@@ -437,7 +529,7 @@ export function GlobalTerminalPanel() {
                 sessionId={sid}
                 isActive={sid === activeId}
                 onExit={() => markSessionExited(sid)}
-                onWaitingChange={(w) => setSessionWaiting(sid, w)}
+                onInputStateChange={(s) => setSessionInputState(sid, s)}
                 permissionProfile={sessionMap.get(sid)?.permissionProfile}
                 mode={getViewMode(sid)}
               />
@@ -467,6 +559,7 @@ export function GlobalTerminalPanel() {
                 {collapseBtn}
               </div>
             </div>
+            <PaneHeader sessionId={activeId} sessionMap={sessionMap} exited={exited} />
             <div class="terminal-body">
               {leftTabs.map((sid) => (
                 <div key={sid} style={{ display: sid === activeId ? 'flex' : 'none', width: '100%', flex: 1, minHeight: 0 }}>
@@ -474,7 +567,7 @@ export function GlobalTerminalPanel() {
                     sessionId={sid}
                     isActive={sid === activeId}
                     onExit={() => markSessionExited(sid)}
-                    onWaitingChange={(w) => setSessionWaiting(sid, w)}
+                    onInputStateChange={(s) => setSessionInputState(sid, s)}
                     permissionProfile={sessionMap.get(sid)?.permissionProfile}
                     mode={getViewMode(sid)}
                   />
@@ -507,6 +600,7 @@ export function GlobalTerminalPanel() {
                 </button>
               </div>
             </div>
+            <PaneHeader sessionId={rightActive} sessionMap={sessionMap} exited={exited} />
             <div class="terminal-body">
               {rightTabs.map((sid) => (
                 <div key={sid} style={{ display: sid === rightActive ? 'flex' : 'none', width: '100%', flex: 1, minHeight: 0 }}>
@@ -514,7 +608,7 @@ export function GlobalTerminalPanel() {
                     sessionId={sid}
                     isActive={sid === rightActive}
                     onExit={() => markSessionExited(sid)}
-                    onWaitingChange={(w) => setSessionWaiting(sid, w)}
+                    onInputStateChange={(s) => setSessionInputState(sid, s)}
                     permissionProfile={sessionMap.get(sid)?.permissionProfile}
                     mode={getViewMode(sid)}
                   />

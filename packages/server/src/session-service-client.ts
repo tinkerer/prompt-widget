@@ -92,13 +92,20 @@ export async function getSessionStatus(sessionId: string): Promise<SessionStatus
   }
 }
 
-export async function getWaitingSessions(): Promise<string[]> {
+export type InputState = 'active' | 'idle' | 'waiting';
+
+export interface SessionLiveState {
+  inputState: InputState;
+  paneTitle: string;
+}
+
+export async function getSessionLiveStates(): Promise<Record<string, SessionLiveState>> {
   try {
     const res = await fetch(`${SESSION_SERVICE_URL}/waiting`);
-    if (!res.ok) return [];
-    return await res.json() as string[];
+    if (!res.ok) return {};
+    return await res.json() as Record<string, SessionLiveState>;
   } catch {
-    return [];
+    return {};
   }
 }
 

@@ -17,8 +17,6 @@ const formTmuxConfigId = signal('');
 const formPermissionProfile = signal('interactive');
 const formAllowedTools = signal('');
 const formAgentPath = signal('');
-const formScreenshotIncludeWidget = signal(false);
-const formAutoDispatch = signal(false);
 const formError = signal('');
 const formLoading = signal(false);
 const tmuxConfigs = signal<any[]>([]);
@@ -76,8 +74,6 @@ function openCreate() {
   formPermissionProfile.value = 'interactive';
   formAllowedTools.value = '';
   formAgentPath.value = '';
-  formScreenshotIncludeWidget.value = false;
-  formAutoDispatch.value = false;
   formError.value = '';
   showForm.value = true;
 }
@@ -93,8 +89,6 @@ function openEdit(app: any) {
   formPermissionProfile.value = app.defaultPermissionProfile || 'interactive';
   formAllowedTools.value = app.defaultAllowedTools || '';
   formAgentPath.value = app.agentPath || '';
-  formScreenshotIncludeWidget.value = !!app.screenshotIncludeWidget;
-  formAutoDispatch.value = !!app.autoDispatch;
   formError.value = '';
   showForm.value = true;
 }
@@ -119,8 +113,8 @@ async function saveApp(e: Event) {
     defaultPermissionProfile: formPermissionProfile.value,
     defaultAllowedTools: formAllowedTools.value || null,
     agentPath: formAgentPath.value || null,
-    screenshotIncludeWidget: formScreenshotIncludeWidget.value,
-    autoDispatch: formAutoDispatch.value,
+    screenshotIncludeWidget: true,
+    autoDispatch: true,
   };
 
   try {
@@ -349,28 +343,6 @@ export function ApplicationsPage() {
                     style="width:100%"
                   />
                   <span style="font-size:11px;color:var(--pw-text-faint)">Custom path to Claude CLI binary</span>
-                </div>
-                <div class="form-group">
-                  <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-                    <input
-                      type="checkbox"
-                      checked={formScreenshotIncludeWidget.value}
-                      onChange={(e) => (formScreenshotIncludeWidget.value = (e.target as HTMLInputElement).checked)}
-                    />
-                    Show "Exclude widget" screenshot option
-                  </label>
-                  <span style="font-size:11px;color:var(--pw-text-faint)">Shows a dropdown on the camera button to exclude the widget from screenshots</span>
-                </div>
-                <div class="form-group">
-                  <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-                    <input
-                      type="checkbox"
-                      checked={formAutoDispatch.value}
-                      onChange={(e) => (formAutoDispatch.value = (e.target as HTMLInputElement).checked)}
-                    />
-                    Auto-dispatch to default agent
-                  </label>
-                  <span style="font-size:11px;color:var(--pw-text-faint)">Automatically dispatch new feedback to the default agent endpoint</span>
                 </div>
               </>
             )}

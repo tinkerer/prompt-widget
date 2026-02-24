@@ -52,7 +52,9 @@ function matchesModifiers(e: KeyboardEvent, mods?: Shortcut['modifiers']): boole
   const shift = mods?.shift || false;
   const alt = mods?.alt || false;
   const meta = mods?.meta || false;
-  return e.ctrlKey === ctrl && e.shiftKey === shift && e.altKey === alt && e.metaKey === meta;
+  const eCtrl = stickyMode || e.ctrlKey;
+  const eShift = stickyMode || e.shiftKey;
+  return eCtrl === ctrl && eShift === shift && e.altKey === alt && e.metaKey === meta;
 }
 
 function normalizeCode(code: string): string {
@@ -63,24 +65,25 @@ function normalizeCode(code: string): string {
 function handleKeyDown(e: KeyboardEvent) {
   if (!shortcutsEnabled.value) return;
   const code = normalizeCode(e.code);
-  const ctrlOrMeta = e.ctrlKey || e.metaKey;
+  const ctrlOrMeta = stickyMode || e.ctrlKey || e.metaKey;
+  const shiftHeld = stickyMode || e.shiftKey;
   const inXterm = !!document.activeElement?.closest?.('.xterm');
-  if (isInputFocused() && (e.key !== 'Escape' || inXterm)) {
+  if (!stickyMode && isInputFocused() && (e.key !== 'Escape' || inXterm)) {
     // Spotlight shortcut works from any context
-    if (ctrlOrMeta && e.shiftKey && e.code === 'Space') { /* allow through */ }
+    if (ctrlOrMeta && shiftHeld && e.code === 'Space') { /* allow through */ }
     else if (ctrlOrMeta && e.key === 'k') { /* allow through */ }
     else {
       const isArrow = e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown';
       const isDigit = /^Digit[0-9]$/.test(code);
       const isMinusEqual = code === 'Minus' || code === 'Equal';
-      const isSessionAction = code === 'KeyW' || code === 'KeyR' || code === 'KeyK' || code === 'KeyP';
+      const isSessionAction = code === 'KeyW' || code === 'KeyR' || code === 'KeyK' || code === 'KeyP' || code === 'KeyA';
       const isBackquote = code === 'Backquote';
       const isTab = e.key === 'Tab';
-      const isPipe = code === 'Backslash' && e.shiftKey;
+      const isPipe = code === 'Backslash' && shiftHeld;
       // Panel shortcuts (digits, minus, equal, close, backquote, tab, pipe) work from any input;
       // arrows only pass through in xterm (Ctrl+Shift+Arrow is text selection in normal inputs)
-      const allowedInAnyInput = ctrlOrMeta && e.shiftKey && (isDigit || isMinusEqual || isSessionAction || isBackquote || isTab || isPipe);
-      const allowedInXterm = inXterm && ctrlOrMeta && e.shiftKey && isArrow;
+      const allowedInAnyInput = ctrlOrMeta && shiftHeld && (isDigit || isMinusEqual || isSessionAction || isBackquote || isTab || isPipe);
+      const allowedInXterm = inXterm && ctrlOrMeta && shiftHeld && isArrow;
       if (!(allowedInAnyInput || allowedInXterm)) return;
     }
   }
@@ -142,16 +145,75 @@ function clearSequence() {
 }
 
 // Track Ctrl+Shift held state for tab number overlay
+let stickyMode = false;
+let stickyPrevFocus: Element | null = null;
+const shiftTaps: number[] = [];
+
 function updateCtrlShift(e: KeyboardEvent) {
+  if (stickyMode) return;
   ctrlShiftHeld.value = e.ctrlKey && e.shiftKey;
 }
 
 function clearCtrlShift() {
+  if (stickyMode) return;
   ctrlShiftHeld.value = false;
+}
+
+function handleStickyShortcut(e: KeyboardEvent) {
+  if (e.key !== 'Shift' || e.repeat) return;
+  if (!(e.ctrlKey || e.metaKey)) {
+    shiftTaps.length = 0;
+    return;
+  }
+
+  if (stickyMode) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    exitStickyMode();
+    return;
+  }
+
+  const now = Date.now();
+  shiftTaps.push(now);
+  while (shiftTaps.length > 0 && now - shiftTaps[0] > 800) shiftTaps.shift();
+
+  if (shiftTaps.length >= 3) {
+    shiftTaps.length = 0;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    stickyMode = true;
+    ctrlShiftHeld.value = true;
+    stickyPrevFocus = document.activeElement;
+    (document.activeElement as HTMLElement)?.blur?.();
+  }
+}
+
+function handleStickyKeys(e: KeyboardEvent) {
+  if (!stickyMode) return;
+  if (e.key === 'Escape' || e.key === 'Enter') {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    exitStickyMode();
+    return;
+  }
+  // In sticky mode, run shortcuts as if Ctrl+Shift were held, then swallow
+  // so nothing reaches the PTY
+  handleKeyDown(e);
+  e.preventDefault();
+  e.stopImmediatePropagation();
+}
+
+function exitStickyMode() {
+  stickyMode = false;
+  ctrlShiftHeld.value = false;
+  if (stickyPrevFocus instanceof HTMLElement) {
+    stickyPrevFocus.focus();
+  }
+  stickyPrevFocus = null;
 }
 
 // Install global handler
 // Capture phase so we intercept before xterm.js processes the event
-document.addEventListener('keydown', (e) => { updateCtrlShift(e); handleKeyDown(e); }, true);
-document.addEventListener('keyup', updateCtrlShift, true);
+document.addEventListener('keydown', (e) => { handleStickyShortcut(e); handleStickyKeys(e); updateCtrlShift(e); handleKeyDown(e); }, true);
+document.addEventListener('keyup', (e) => { if (stickyMode) { e.stopImmediatePropagation(); return; } updateCtrlShift(e); }, true);
 window.addEventListener('blur', clearCtrlShift);

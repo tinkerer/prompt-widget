@@ -36,6 +36,30 @@ const formAppId = signal<string>('');
 const formError = signal('');
 const formLoading = signal(false);
 const showAdvanced = signal(false);
+const showToolPresets = signal(false);
+
+const TOOL_PRESETS = [
+  { label: 'Read from /tmp', value: 'Read(/tmp/*)' },
+  { label: 'Write to /tmp', value: 'Write(/tmp/*)' },
+  { label: 'All file operations', value: 'Edit, Read, Write' },
+  { label: 'Run tests (npm)', value: 'Bash(npm test)' },
+  { label: 'Run npm scripts', value: 'Bash(npm run *)' },
+  { label: 'Git operations', value: 'Bash(git *)' },
+  { label: 'Git commit', value: 'Bash(git commit:*)' },
+  { label: 'Git add', value: 'Bash(git add:*)' },
+] as const;
+
+function addToolPreset(value: string) {
+  const current = formAllowedTools.value.trim();
+  const existing = current.split(',').map(s => s.trim()).filter(Boolean);
+  const adding = value.split(',').map(s => s.trim()).filter(Boolean);
+  const merged = [...existing];
+  for (const tool of adding) {
+    if (!merged.includes(tool)) merged.push(tool);
+  }
+  formAllowedTools.value = merged.join(', ');
+  showToolPresets.value = false;
+}
 
 async function loadAgents() {
   loading.value = true;
@@ -69,6 +93,7 @@ function openCreate() {
   formAutoPlan.value = false;
   formError.value = '';
   showAdvanced.value = false;
+  showToolPresets.value = false;
   showForm.value = true;
 }
 
@@ -86,6 +111,7 @@ function openEdit(agent: any) {
   formAutoPlan.value = agent.autoPlan || false;
   formError.value = '';
   showAdvanced.value = !!(agent.mode === 'webhook' || (agent.promptTemplate && agent.promptTemplate !== DEFAULT_PROMPT_TEMPLATE) || agent.allowedTools || agent.url);
+  showToolPresets.value = false;
   showForm.value = true;
 }
 
@@ -277,6 +303,53 @@ export function AgentsPage() {
               </div>
             )}
 
+            {formMode.value !== 'webhook' && formPermissionProfile.value !== 'yolo' && (
+              <div class="form-group">
+                <label style="display:flex;align-items:center;gap:8px">
+                  Allowed Tools
+                  <span style="position:relative">
+                    <button
+                      type="button"
+                      class="btn btn-sm"
+                      style="font-size:10px;padding:1px 6px"
+                      onClick={() => (showToolPresets.value = !showToolPresets.value)}
+                    >
+                      + Add common {showToolPresets.value ? '\u25B4' : '\u25BE'}
+                    </button>
+                    {showToolPresets.value && (
+                      <div style="position:absolute;top:100%;left:0;z-index:100;background:var(--pw-bg-surface);border:1px solid var(--pw-border);border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.15);min-width:220px;margin-top:4px;padding:4px 0">
+                        {TOOL_PRESETS.map((p) => (
+                          <button
+                            key={p.value}
+                            type="button"
+                            onClick={() => addToolPreset(p.value)}
+                            style="display:block;width:100%;text-align:left;padding:6px 12px;background:none;border:none;color:var(--pw-text);font-size:12px;cursor:pointer"
+                            onMouseOver={(e) => ((e.target as HTMLElement).style.background = 'var(--pw-bg-hover)')}
+                            onMouseOut={(e) => ((e.target as HTMLElement).style.background = 'none')}
+                          >
+                            <div style="font-weight:500">{p.label}</div>
+                            <div style="font-size:11px;color:var(--pw-text-faint);font-family:'SF Mono',Monaco,Menlo,monospace">{p.value}</div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </span>
+                </label>
+                <textarea
+                  value={formAllowedTools.value}
+                  onInput={(e) => (formAllowedTools.value = (e.target as HTMLTextAreaElement).value)}
+                  onFocus={() => (showToolPresets.value = false)}
+                  placeholder="Edit, Read, Bash(git *), ..."
+                  style="width:100%;min-height:60px;font-family:'SF Mono',Monaco,Menlo,monospace;font-size:12px"
+                />
+                <span class="form-hint">
+                  {formPermissionProfile.value === 'interactive'
+                    ? 'Pre-approved tools that won\'t require manual approval'
+                    : 'Comma-separated list of tools for --allowedTools'}
+                </span>
+              </div>
+            )}
+
             <div class="agent-form-row">
               <label class="agent-checkbox-label">
                 <input
@@ -339,23 +412,9 @@ export function AgentsPage() {
                         style="width:100%;min-height:160px;font-family:monospace;font-size:12px"
                       />
                       <span style="font-size:11px;color:var(--pw-text-faint)">
-                        Variables: {'{{feedback.id}}'}, {'{{feedback.title}}'}, {'{{feedback.description}}'}, {'{{feedback.sourceUrl}}'}, {'{{feedback.tags}}'}, {'{{feedback.consoleLogs}}'}, {'{{feedback.networkErrors}}'}, {'{{feedback.data}}'}, {'{{app.name}}'}, {'{{app.projectDir}}'}, {'{{app.description}}'}, {'{{instructions}}'}
+                        Variables: {'{{feedback.id}}'}, {'{{feedback.title}}'}, {'{{feedback.description}}'}, {'{{feedback.sourceUrl}}'}, {'{{feedback.tags}}'}, {'{{feedback.consoleLogs}}'}, {'{{feedback.networkErrors}}'}, {'{{feedback.data}}'}, {'{{feedback.screenshot}}'}, {'{{app.name}}'}, {'{{app.projectDir}}'}, {'{{app.description}}'}, {'{{instructions}}'}
                       </span>
                     </div>
-                    {formPermissionProfile.value === 'auto' && (
-                      <div class="form-group">
-                        <label>Allowed Tools</label>
-                        <textarea
-                          value={formAllowedTools.value}
-                          onInput={(e) => (formAllowedTools.value = (e.target as HTMLTextAreaElement).value)}
-                          placeholder="Edit,Read,Bash(git *)"
-                          style="width:100%;min-height:60px;font-family:monospace;font-size:12px"
-                        />
-                        <span class="form-hint">
-                          Comma-separated. e.g. Edit,Read,Write,Bash(git *)
-                        </span>
-                      </div>
-                    )}
                     <label class="agent-checkbox-label">
                       <input
                         type="checkbox"

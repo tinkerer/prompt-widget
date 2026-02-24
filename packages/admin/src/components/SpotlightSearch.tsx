@@ -65,7 +65,7 @@ export function SpotlightSearch({ onClose }: Props) {
         matched.push({
           type: 'session',
           id: s.id,
-          title: isPlain ? `Terminal ${s.id.slice(-6)}` : (s.feedbackTitle || s.agentName || `Session ${s.id.slice(-6)}`),
+          title: isPlain ? `\u{1F5A5}\uFE0F ${s.paneTitle || s.id.slice(-6)}` : (s.feedbackTitle || s.agentName || `Session ${s.id.slice(-6)}`),
           subtitle: s.status,
           icon: isPlain ? '\u{1F4BB}' : '\u26A1',
           route: '',

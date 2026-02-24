@@ -2,6 +2,7 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Server } from 'node:http';
+import { execFileSync } from 'node:child_process';
 import * as pty from 'node-pty';
 import { eq, inArray, desc } from 'drizzle-orm';
 import { db, schema } from './db/index.js';
@@ -31,26 +32,56 @@ const messageBuffer = new MessageBuffer();
 
 // ---------- PTY process management ----------
 
-// Strip ANSI escape sequences to measure visible content length
-const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][0-9A-B]|\x1b\[[\?]?[0-9;]*[hlm]/g;
+// Poll tmux pane titles + content to detect Claude Code permission prompts.
+// Claude Code sets pane_title to "✳ <task>" when idle, but we only want to
+// flag sessions that are showing an actionable prompt (Yes/No, accept edits, etc.)
+const WAITING_TITLE_PREFIX = '✳';
+// Patterns that indicate a real permission/action prompt (not just idle with hints)
+const ACTION_PROMPT_RE = /Do you want|Enter to select|Yes, and always allow/;
 
-// Minimum visible bytes after a bell to consider "real output" (clears waiting)
-// Claude Code TUI redraws status/spinners which leak visible chars, so set high
-const BELL_CLEAR_THRESHOLD = 2000;
+function pollTmuxWaitingState(): void {
+  try {
+    const out = execFileSync('tmux', ['-L', 'prompt-widget', 'list-panes', '-a', '-F', '#{session_name} #{pane_title}'], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+    for (const line of out.trim().split('\n')) {
+      const spaceIdx = line.indexOf(' ');
+      if (spaceIdx === -1) continue;
+      const name = line.slice(0, spaceIdx);
+      const title = line.slice(spaceIdx + 1);
+      if (!name.startsWith('pw-')) continue;
+      const sessionId = name.slice(3);
+      const proc = activeSessions.get(sessionId);
+      if (!proc || proc.status !== 'running') continue;
 
-// Check bottom of pane text for interactive prompts (used on recovery to seed state)
-function looksLikePrompt(paneText: string): boolean {
-  const bottom = paneText.split('\n').slice(-10).join('\n').toLowerCase();
-  if (/\[y\/n\]|\(y\/n\)|\(yes\/no\)|\[yes\/no\]/.test(bottom)) return true;
-  if (/\ballow\b.*\bdeny\b|\bdeny\b.*\ballow\b/.test(bottom)) return true;
-  if (/\ballow once\b|\ballow always\b/.test(bottom)) return true;
-  if (/would you like to proceed/.test(bottom)) return true;
-  if (/do you want to (proceed|continue)\?/.test(bottom)) return true;
-  return false;
+      // Store pane title for all sessions
+      proc.paneTitle = title;
+
+      if (proc.permissionProfile === 'plain') continue;
+
+      let newState: InputState = 'active';
+      if (title.startsWith(WAITING_TITLE_PREFIX)) {
+        // Title says idle — check pane content for an actionable prompt
+        try {
+          const pane = execFileSync('tmux', ['-L', 'prompt-widget', 'capture-pane', '-t', name, '-p'], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+          const tail = pane.slice(-500);
+          newState = ACTION_PROMPT_RE.test(tail) ? 'waiting' : 'idle';
+        } catch {
+          newState = 'idle';
+        }
+      }
+
+      if (newState !== proc.inputState) {
+        proc.inputState = newState;
+        sendSequenced(proc, { kind: 'input_state', state: newState });
+      }
+    }
+  } catch {}
 }
+
+type InputState = 'active' | 'idle' | 'waiting';
 
 interface AgentProcess {
   sessionId: string;
+  permissionProfile: PermissionProfile;
   ptyProcess: pty.IPty;
   outputBuffer: string;
   totalBytes: number;
@@ -59,9 +90,8 @@ interface AgentProcess {
   adminSockets: Set<WebSocket>;
   status: 'running' | 'completed' | 'failed' | 'killed';
   flushTimer: ReturnType<typeof setInterval>;
-  waitingForInput: boolean;
-  bytesSinceBell: number;
-  bellClearAfter: number; // timestamp after which output can clear waiting state
+  inputState: InputState;
+  paneTitle: string;
   hasStarted: boolean;
 }
 
@@ -226,17 +256,19 @@ function spawnSession(params: {
     ptyProcess = result.ptyProcess;
     tmuxSessionName = result.tmuxSessionName;
   } else {
+    const { CLAUDECODE, ...cleanedEnv } = process.env as Record<string, string>;
     ptyProcess = pty.spawn(command, args, {
       name: 'xterm-256color',
       cols: 120,
       rows: 40,
       cwd,
-      env: { ...process.env, TERM: 'xterm-256color' } as Record<string, string>,
+      env: { ...cleanedEnv, TERM: 'xterm-256color' },
     });
   }
 
   const proc: AgentProcess = {
     sessionId,
+    permissionProfile,
     ptyProcess,
     outputBuffer: '',
     totalBytes: 0,
@@ -245,13 +277,13 @@ function spawnSession(params: {
     adminSockets: new Set(),
     status: 'running',
     flushTimer: setInterval(() => flushOutput(sessionId), FLUSH_INTERVAL),
-    waitingForInput: false,
-    bytesSinceBell: 0,
-    bellClearAfter: 0,
+    inputState: 'active' as InputState,
+    paneTitle: '',
     hasStarted: false,
   };
 
   activeSessions.set(sessionId, proc);
+
 
   // Attach any WS connections that arrived before the PTY was ready
   const pending = pendingConnections.get(sessionId);
@@ -285,24 +317,6 @@ function spawnSession(params: {
 
     if (!proc.hasStarted && proc.totalBytes > 100) {
       proc.hasStarted = true;
-    }
-
-    // Bell detection: Claude Code emits \a when waiting for input
-    if (data.includes('\x07')) {
-      if (!proc.waitingForInput) {
-        proc.waitingForInput = true;
-        proc.bytesSinceBell = 0;
-        proc.bellClearAfter = 0;
-        sendSequenced(proc, { kind: 'waiting_state', waiting: true });
-      }
-    } else if (proc.waitingForInput && Date.now() >= proc.bellClearAfter) {
-      const visible = data.replace(ANSI_RE, '').length;
-      proc.bytesSinceBell += visible;
-      if (proc.bytesSinceBell >= BELL_CLEAR_THRESHOLD) {
-        proc.waitingForInput = false;
-        proc.bytesSinceBell = 0;
-        sendSequenced(proc, { kind: 'waiting_state', waiting: false });
-      }
     }
 
     sendSequenced(proc, { kind: 'output', data });
@@ -402,6 +416,11 @@ function writeToSession(sessionId: string, data: string): void {
   const proc = activeSessions.get(sessionId);
   if (proc && proc.status === 'running') {
     proc.ptyProcess.write(data);
+    // Immediately clear waiting/idle on real user input (not xterm.js escape responses)
+    if (proc.inputState !== 'active' && !data.startsWith('\x1b')) {
+      proc.inputState = 'active';
+      sendSequenced(proc, { kind: 'input_state', state: 'active' });
+    }
   }
 }
 
@@ -413,11 +432,9 @@ function tryRecoverSession(session: typeof schema.agentSessions.$inferSelect): b
     const captured = captureTmuxPane(session.id);
     const ptyProcess = reattachTmux({ sessionId: session.id, cols: 120, rows: 40 });
 
-    // Seed waiting state from visible pane content
-    const isWaiting = captured ? looksLikePrompt(captured) : false;
-
     const proc: AgentProcess = {
       sessionId: session.id,
+      permissionProfile: (session.permissionProfile || 'interactive') as PermissionProfile,
       ptyProcess,
       outputBuffer: captured || session.outputLog || '',
       totalBytes: session.outputBytes || 0,
@@ -426,9 +443,8 @@ function tryRecoverSession(session: typeof schema.agentSessions.$inferSelect): b
       adminSockets: new Set(),
       status: 'running',
       flushTimer: setInterval(() => flushOutput(session.id), FLUSH_INTERVAL),
-      waitingForInput: isWaiting,
-      bytesSinceBell: 0,
-      bellClearAfter: isWaiting ? Date.now() + 3000 : 0, // ignore reattach dump
+      inputState: 'active' as InputState,
+    paneTitle: '',
       hasStarted: (session.outputBytes || 0) > 100,
     };
     activeSessions.set(session.id, proc);
@@ -446,23 +462,6 @@ function tryRecoverSession(session: typeof schema.agentSessions.$inferSelect): b
         proc.outputBuffer = proc.outputBuffer.slice(-MAX_OUTPUT_LOG);
       }
       if (!proc.hasStarted && proc.totalBytes > 100) proc.hasStarted = true;
-
-      if (data.includes('\x07')) {
-        if (!proc.waitingForInput) {
-          proc.waitingForInput = true;
-          proc.bytesSinceBell = 0;
-          proc.bellClearAfter = 0;
-          sendSequenced(proc, { kind: 'waiting_state', waiting: true });
-        }
-      } else if (proc.waitingForInput && Date.now() >= proc.bellClearAfter) {
-        const visible = data.replace(ANSI_RE, '').length;
-        proc.bytesSinceBell += visible;
-        if (proc.bytesSinceBell >= BELL_CLEAR_THRESHOLD) {
-          proc.waitingForInput = false;
-          proc.bytesSinceBell = 0;
-          sendSequenced(proc, { kind: 'waiting_state', waiting: false });
-        }
-      }
 
       sendSequenced(proc, { kind: 'output', data });
     });
@@ -509,7 +508,7 @@ function attachAdminSocket(sessionId: string, ws: WebSocket): boolean {
   const proc = activeSessions.get(sessionId);
   if (proc) {
     // Send full history + lastInputAckSeq so client can resume its counter
-    ws.send(JSON.stringify({ type: 'history', data: proc.outputBuffer, lastInputAckSeq: proc.lastInputAckSeq, waitingForInput: proc.waitingForInput }));
+    ws.send(JSON.stringify({ type: 'history', data: proc.outputBuffer, lastInputAckSeq: proc.lastInputAckSeq, inputState: proc.inputState }));
     proc.adminSockets.add(ws);
     return true;
   }
@@ -644,11 +643,13 @@ app.get('/health', (c) => {
 });
 
 app.get('/waiting', (c) => {
-  const ids: string[] = [];
+  const states: Record<string, { inputState: InputState; paneTitle: string }> = {};
   for (const [id, proc] of activeSessions) {
-    if (proc.waitingForInput) ids.push(id);
+    if (proc.inputState !== 'active' || proc.paneTitle) {
+      states[id] = { inputState: proc.inputState, paneTitle: proc.paneTitle };
+    }
   }
-  return c.json(ids);
+  return c.json(states);
 });
 
 app.post('/spawn', async (c) => {
@@ -713,7 +714,7 @@ app.get('/status/:id', (c) => {
       outputSeq: proc.outputSeq,
       totalBytes: proc.totalBytes,
       healthy: isSessionHealthy(proc),
-      waitingForInput: proc.waitingForInput,
+      inputState: proc.inputState,
     });
   }
   const session = db
@@ -732,6 +733,7 @@ app.get('/status/:id', (c) => {
   }
   return c.json({ error: 'Not found' }, 404);
 });
+
 
 // ---------- WebSocket server ----------
 
@@ -816,6 +818,10 @@ wsServer.on('connection', (ws, req) => {
 // ---------- Start ----------
 
 recoverTmuxSessions();
+
+// Poll tmux pane titles every 3s to detect Claude Code waiting state
+pollTmuxWaitingState(); // immediate first check
+setInterval(pollTmuxWaitingState, 3000);
 
 const server = serve({ fetch: app.fetch, port: PORT }, () => {
   console.log(`[session-service] Running on http://localhost:${PORT}`);

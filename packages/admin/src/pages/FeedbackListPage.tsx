@@ -2,7 +2,7 @@ import { signal, effect } from '@preact/signals';
 import { useEffect, useRef } from 'preact/hooks';
 import { api } from '../lib/api.js';
 import { navigate, currentRoute } from '../lib/state.js';
-import { quickDispatch, quickDispatchState, batchQuickDispatch, openSession } from '../lib/sessions.js';
+import { quickDispatch, quickDispatchState, batchQuickDispatch, openSession, sessionInputStates, startSessionPolling } from '../lib/sessions.js';
 import { copyWithTooltip } from '../lib/clipboard.js';
 
 const items = signal<any[]>([]);
@@ -11,7 +11,7 @@ const page = signal(1);
 const totalPages = signal(0);
 const loading = signal(false);
 const filterType = signal('');
-const filterStatuses = signal<Set<string>>(new Set());
+const filterStatuses = signal<Set<string>>(new Set(['new', 'dispatched']));
 const searchQuery = signal('');
 const selected = signal<Set<string>>(new Set());
 const currentAppId = signal<string | null>(null);
@@ -23,8 +23,39 @@ const createTags = signal('');
 const createLoading = signal(false);
 const isStuck = signal(false);
 const filtersCollapsed = signal(false);
+const sortMode = signal<string>('newest');
 const TYPES = ['', 'manual', 'ab_test', 'analytics', 'error_report', 'programmatic'];
 const STATUSES = ['', 'new', 'reviewed', 'dispatched', 'resolved', 'archived', 'deleted'];
+const SORT_OPTIONS = [
+  { value: 'newest', label: 'Newest first' },
+  { value: 'oldest', label: 'Oldest first' },
+  { value: 'updated', label: 'Recently updated' },
+  { value: 'state-waiting', label: 'Waiting first' },
+  { value: 'state-active', label: 'Active first' },
+  { value: 'state-idle', label: 'Idle first' },
+];
+
+function getItemSessionState(item: any): string | null {
+  if (item.status !== 'dispatched' || !item.latestSessionId) return null;
+  if (item.latestSessionStatus !== 'running') return item.latestSessionStatus || null;
+  return sessionInputStates.value.get(item.latestSessionId) || 'active';
+}
+
+function applySortMode(list: any[]): any[] {
+  const mode = sortMode.value;
+  if (!mode.startsWith('state-')) return list;
+  const target = mode.replace('state-', '');
+  const stateOrder = (item: any) => {
+    const state = getItemSessionState(item);
+    if (state === target) return 0;
+    if (state === 'waiting') return 1;
+    if (state === 'active') return 2;
+    if (state === 'idle') return 3;
+    if (state) return 4;
+    return 5;
+  };
+  return [...list].sort((a, b) => stateOrder(a) - stateOrder(b));
+}
 
 async function loadFeedback() {
   loading.value = true;
@@ -34,8 +65,11 @@ async function loadFeedback() {
     if (filterStatuses.value.size > 0) params.status = Array.from(filterStatuses.value).join(',');
     if (searchQuery.value) params.search = searchQuery.value;
     if (currentAppId.value) params.appId = currentAppId.value;
+    const mode = sortMode.value;
+    if (mode === 'oldest') { params.sortOrder = 'asc'; }
+    else if (mode === 'updated') { params.sortBy = 'updatedAt'; }
     const result = await api.getFeedback(params);
-    items.value = result.items;
+    items.value = applySortMode(result.items);
     total.value = result.total;
     totalPages.value = result.totalPages;
   } catch (err) {
@@ -51,6 +85,7 @@ effect(() => {
   void page.value;
   void currentAppId.value;
   void currentRoute.value;
+  void sortMode.value;
   loadFeedback();
 });
 
@@ -132,6 +167,16 @@ function formatDate(iso: string) {
 function StatusCell({ item }: { item: any }) {
   const isDispatched = item.status === 'dispatched';
   const dispatchStatus = item.dispatchStatus;
+  const sessionState = getItemSessionState(item);
+
+  if (isDispatched && item.latestSessionStatus === 'running' && sessionState) {
+    return (
+      <div class="status-cell-compound">
+        <span class={`session-state-dot ${sessionState}`} title={sessionState} />
+        <span class={`badge badge-dispatched`}>{sessionState}</span>
+      </div>
+    );
+  }
 
   if (isDispatched && dispatchStatus && dispatchStatus !== 'running') {
     return (
@@ -239,8 +284,9 @@ export function FeedbackListPage({ appId }: { appId: string }) {
 
   useEffect(() => {
     loadFeedback();
+    const stopPolling = startSessionPolling();
     const token = localStorage.getItem('pw-admin-token');
-    if (!token) return;
+    if (!token) return stopPolling;
     const es = new EventSource(`/api/v1/admin/feedback/events?token=${encodeURIComponent(token)}`);
     const onEvent = (e: MessageEvent) => {
       const data = JSON.parse(e.data);
@@ -250,8 +296,18 @@ export function FeedbackListPage({ appId }: { appId: string }) {
     };
     es.addEventListener('new-feedback', onEvent);
     es.addEventListener('feedback-updated', onEvent);
-    return () => es.close();
+    return () => { es.close(); stopPolling(); };
   }, [appId]);
+
+  // Re-sort when session states change (for state-based sort modes)
+  useEffect(() => {
+    const unsub = sessionInputStates.subscribe(() => {
+      if (sortMode.value.startsWith('state-')) {
+        items.value = applySortMode([...items.value]);
+      }
+    });
+    return unsub;
+  }, []);
 
 
   const basePath = `/app/${appId}/feedback`;
@@ -354,6 +410,18 @@ export function FeedbackListPage({ appId }: { appId: string }) {
           <option value="">All types</option>
           {TYPES.filter(Boolean).map((t) => (
             <option value={t}>{t.replace(/_/g, ' ')}</option>
+          ))}
+        </select>
+        <select
+          value={sortMode.value}
+          onChange={(e) => {
+            sortMode.value = (e.target as HTMLSelectElement).value;
+            page.value = 1;
+          }}
+          class="sort-select"
+        >
+          {SORT_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
           ))}
         </select>
         <button

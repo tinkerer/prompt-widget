@@ -1,7 +1,8 @@
 import { signal } from '@preact/signals';
 import { api } from './api.js';
-import { autoNavigateToFeedback } from './settings.js';
+import { autoNavigateToFeedback, autoJumpWaiting } from './settings.js';
 import { navigate, selectedAppId } from './state.js';
+import { timed } from './perf.js';
 import type { ViewMode } from '../components/SessionViewToggle.js';
 
 function loadJson<T>(key: string, fallback: T): T {
@@ -685,16 +686,16 @@ export async function loadAllSessions(includeDeleted = false) {
         if (!tabs.includes(sid)) tabs.push(sid);
       }
     }
-    const sessions = await api.getAgentSessions(undefined, tabs.length > 0 ? tabs : undefined, includeDeleted);
+    const sessions = await timed('sessions:list', () => api.getAgentSessions(undefined, tabs.length > 0 ? tabs : undefined, includeDeleted));
     allSessions.value = sessions;
 
-    // Update waiting state from API for all sessions (covers sessions without open tabs)
-    const next = new Set(waitingSessions.value);
+    // Update input states from API for all sessions
+    const next = new Map(sessionInputStates.value);
     for (const s of sessions) {
-      if (s.waitingForInput) next.add(s.id);
+      if (s.inputState && s.inputState !== 'active') next.set(s.id, s.inputState);
       else next.delete(s.id);
     }
-    waitingSessions.value = next;
+    sessionInputStates.value = next;
   } catch {
     // ignore
   } finally {
@@ -923,13 +924,50 @@ export function showActionToast(key: string, label: string, color = 'var(--pw-pr
   toastTimer = setTimeout(() => { actionToast.value = null; }, 1500);
 }
 
-export const waitingSessions = signal<Set<string>>(new Set());
+export type InputState = 'active' | 'idle' | 'waiting';
+export const sessionInputStates = signal<Map<string, InputState>>(new Map());
 
-export function setSessionWaiting(sessionId: string, waiting: boolean) {
-  const next = new Set(waitingSessions.value);
-  if (waiting) next.add(sessionId);
-  else next.delete(sessionId);
-  waitingSessions.value = next;
+export function setSessionInputState(sessionId: string, state: InputState) {
+  const prev = sessionInputStates.value;
+  const wasWaiting = prev.get(sessionId) === 'waiting';
+  const next = new Map(prev);
+  if (state === 'active') next.delete(sessionId);
+  else next.set(sessionId, state);
+  sessionInputStates.value = next;
+
+  if (wasWaiting && state !== 'waiting' && autoJumpWaiting.value) {
+    const waitingSessions = allSessions.value.filter(
+      (s: any) => s.id !== sessionId && s.status === 'running' && next.get(s.id) === 'waiting'
+    );
+    if (waitingSessions.length > 0) {
+      setTimeout(() => activateSessionInPlace(waitingSessions[0].id), 100);
+    }
+  }
+}
+
+export function cycleWaitingSession() {
+  const waiting = allSessions.value.filter(
+    (s: any) => s.status === 'running' && sessionInputStates.value.get(s.id) === 'waiting'
+  );
+  if (waiting.length === 0) return;
+  // In split mode, consider both panes' active sessions
+  const current = splitEnabled.value
+    ? (rightPaneActiveId.value && waiting.some((s: any) => s.id === rightPaneActiveId.value)
+      ? rightPaneActiveId.value
+      : activeTabId.value)
+    : activeTabId.value;
+  const currentIdx = waiting.findIndex((s: any) => s.id === current);
+  const next = waiting[(currentIdx + 1) % waiting.length];
+  activateSessionInPlace(next.id);
+}
+
+export function activateSessionInPlace(sessionId: string) {
+  if (splitEnabled.value && rightPaneTabs.value.includes(sessionId)) {
+    rightPaneActiveId.value = sessionId;
+    persistSplitState();
+    return;
+  }
+  openSession(sessionId);
 }
 
 export const hotkeyMenuOpen = signal<{ sessionId: string; x: number; y: number } | null>(null);

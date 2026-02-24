@@ -754,6 +754,49 @@ adminRoutes.put('/tmux-conf', async (c) => {
   return c.json({ saved: true });
 });
 
+// Perf metrics
+adminRoutes.post('/perf-metrics', async (c) => {
+  const body = await c.req.json() as { route?: string; timestamp?: number; durations?: Record<string, number> };
+  if (!body.route || !body.durations || typeof body.durations !== 'object') {
+    return c.json({ error: 'route and durations required' }, 400);
+  }
+
+  const now = new Date().toISOString();
+  const id = ulid();
+  db.insert(schema.perfMetrics).values({
+    id,
+    route: body.route,
+    durations: JSON.stringify(body.durations),
+    userAgent: c.req.header('User-Agent') || null,
+    createdAt: now,
+  }).run();
+  return c.json({ id }, 201);
+});
+
+adminRoutes.get('/perf-metrics', (c) => {
+  const route = c.req.query('route');
+  const limit = Math.min(parseInt(c.req.query('limit') || '50', 10) || 50, 500);
+
+  let rows;
+  if (route) {
+    rows = db.select().from(schema.perfMetrics)
+      .where(eq(schema.perfMetrics.route, route))
+      .orderBy(desc(schema.perfMetrics.createdAt))
+      .limit(limit)
+      .all();
+  } else {
+    rows = db.select().from(schema.perfMetrics)
+      .orderBy(desc(schema.perfMetrics.createdAt))
+      .limit(limit)
+      .all();
+  }
+
+  return c.json(rows.map((r) => ({
+    ...r,
+    durations: JSON.parse(r.durations),
+  })));
+});
+
 // Plain terminal session (no agent, no feedback)
 adminRoutes.post('/terminal', async (c) => {
   const body = await c.req.json().catch(() => ({}));

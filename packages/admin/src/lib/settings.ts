@@ -18,6 +18,11 @@ export const showTabs = signal<boolean>(loadSetting('pw-show-tabs', true));
 export const arrowTabSwitching = signal<boolean>(loadSetting('pw-arrow-tab-switching', true));
 export const multiDigitTabs = signal<boolean>(loadSetting('pw-multi-digit-tabs', true));
 export const autoNavigateToFeedback = signal<boolean>(loadSetting('pw-auto-navigate-feedback', false));
+export const showHotkeyHints = signal<boolean>(loadSetting('pw-show-hotkey-hints', true));
+export const autoJumpWaiting = signal<boolean>(loadSetting('pw-auto-jump-waiting', false));
+
+export type PopoutMode = 'panel' | 'window' | 'tab' | 'terminal';
+export const popoutMode = signal<PopoutMode>(loadSetting('pw-popout-mode', 'panel'));
 
 export function getEffectiveTheme(): 'light' | 'dark' {
   if (theme.value !== 'system') return theme.value;
@@ -70,6 +75,18 @@ effect(() => {
 
 effect(() => {
   localStorage.setItem('pw-auto-navigate-feedback', JSON.stringify(autoNavigateToFeedback.value));
+});
+
+effect(() => {
+  localStorage.setItem('pw-show-hotkey-hints', JSON.stringify(showHotkeyHints.value));
+});
+
+effect(() => {
+  localStorage.setItem('pw-popout-mode', JSON.stringify(popoutMode.value));
+});
+
+effect(() => {
+  localStorage.setItem('pw-auto-jump-waiting', JSON.stringify(autoJumpWaiting.value));
 });
 
 // Listen for system theme changes

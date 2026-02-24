@@ -3,6 +3,7 @@ import { api } from '../lib/api.js';
 import { navigate } from '../lib/state.js';
 import { openSession, resumeSession } from '../lib/sessions.js';
 import { copyWithTooltip } from '../lib/clipboard.js';
+import { CropEditor } from '../components/CropEditor.js';
 
 const feedback = signal<any>(null);
 const loading = signal(true);
@@ -15,6 +16,10 @@ const newTag = signal('');
 const agentSessions = signal<any[]>([]);
 const lastLoadedId = signal<string | null>(null);
 const lightboxSrc = signal<string | null>(null);
+const lightboxImageId = signal<string | null>(null);
+const lightboxFeedbackId = signal<string | null>(null);
+const cropMode = signal(false);
+const cacheBuster = signal(0);
 const editingTitle = signal(false);
 const editTitleValue = signal('');
 const editingDescription = signal(false);
@@ -27,7 +32,13 @@ effect(() => {
   const handler = (e: KeyboardEvent) => {
     if (e.key === 'Escape') {
       e.stopImmediatePropagation();
-      lightboxSrc.value = null;
+      if (cropMode.value) {
+        cropMode.value = false;
+      } else {
+        lightboxSrc.value = null;
+        lightboxImageId.value = null;
+        lightboxFeedbackId.value = null;
+      }
     }
   };
   document.addEventListener('keydown', handler, true);
@@ -501,10 +512,15 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
                   {fb.screenshots.map((s: any) => (
                     <img
                       class="screenshot-img"
-                      src={`/api/v1/images/${s.id}`}
+                      src={`/api/v1/images/${s.id}${cacheBuster.value ? `?t=${cacheBuster.value}` : ''}`}
                       alt={s.filename}
                       key={s.id}
-                      onClick={() => (lightboxSrc.value = `/api/v1/images/${s.id}`)}
+                      onClick={() => {
+                        lightboxSrc.value = `/api/v1/images/${s.id}${cacheBuster.value ? `?t=${cacheBuster.value}` : ''}`;
+                        lightboxImageId.value = s.id;
+                        lightboxFeedbackId.value = fb.id;
+                        cropMode.value = false;
+                      }}
                     />
                   ))}
                 </div>
@@ -606,10 +622,49 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
       </div>
 
       {lightboxSrc.value && (
-        <div class="sm-lightbox" onClick={() => (lightboxSrc.value = null)}>
+        <div class="sm-lightbox" onClick={() => {
+          if (!cropMode.value) {
+            lightboxSrc.value = null;
+            lightboxImageId.value = null;
+            lightboxFeedbackId.value = null;
+          }
+        }}>
           <div class="sm-lightbox-content" onClick={(e) => e.stopPropagation()}>
-            <img src={lightboxSrc.value} alt="Screenshot (full)" />
-            <button class="sm-lightbox-close" onClick={() => (lightboxSrc.value = null)}>&times;</button>
+            {cropMode.value && lightboxImageId.value && lightboxFeedbackId.value ? (
+              <CropEditor
+                src={lightboxSrc.value}
+                imageId={lightboxImageId.value}
+                feedbackId={lightboxFeedbackId.value}
+                onClose={() => (cropMode.value = false)}
+                onSaved={(mode, newScreenshot) => {
+                  if (mode === 'replace') {
+                    cacheBuster.value = Date.now();
+                    lightboxSrc.value = `/api/v1/images/${lightboxImageId.value}?t=${cacheBuster.value}`;
+                  } else if (newScreenshot) {
+                    const fb2 = feedback.value;
+                    if (fb2) {
+                      fb2.screenshots = [...(fb2.screenshots || []), { id: newScreenshot.id, filename: newScreenshot.filename }];
+                      feedback.value = { ...fb2 };
+                    }
+                    lightboxImageId.value = newScreenshot.id;
+                    lightboxSrc.value = `/api/v1/images/${newScreenshot.id}`;
+                  }
+                  cropMode.value = false;
+                }}
+              />
+            ) : (
+              <>
+                <img src={lightboxSrc.value} alt="Screenshot (full)" />
+                <button class="sm-lightbox-close" onClick={() => {
+                  lightboxSrc.value = null;
+                  lightboxImageId.value = null;
+                  lightboxFeedbackId.value = null;
+                }}>&times;</button>
+                <div class="sm-lightbox-toolbar">
+                  <button class="btn btn-sm" onClick={() => (cropMode.value = true)}>Crop</button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

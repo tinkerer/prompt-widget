@@ -57,8 +57,8 @@ export class SessionBridge {
   private apiKey: string | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 1000;
-  public screenshotIncludeWidget = false;
-  public autoDispatch = false;
+  public screenshotIncludeWidget = true;
+  public autoDispatch = true;
 
   constructor(endpoint: string, sessionId: string, collectors: Collector[], apiKey?: string) {
     this.endpoint = endpoint;
@@ -169,7 +169,7 @@ export class SessionBridge {
     try {
       switch (command) {
         case 'screenshot': {
-          const blob = await captureScreenshot({ excludeWidget: this.screenshotIncludeWidget });
+          const blob = await captureScreenshot({ excludeWidget: this.screenshotIncludeWidget, excludeCursor: !!params.excludeCursor });
           if (!blob) {
             this.respondError(requestId, 'Screenshot capture failed');
             return;

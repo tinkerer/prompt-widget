@@ -28,6 +28,11 @@ function tmuxName(sessionId: string): string {
 
 const TMUX_SOCKET = ['-L', 'prompt-widget'];
 
+function cleanEnv(extra?: Record<string, string>): Record<string, string> {
+  const { CLAUDECODE, ...rest } = process.env as Record<string, string>;
+  return { ...rest, ...extra, TERM: 'xterm-256color' };
+}
+
 export function tmuxSessionExists(sessionId: string): boolean {
   const name = tmuxName(sessionId);
   const r = spawnSync('tmux', [...TMUX_SOCKET, 'has-session', '-t', name], { stdio: 'pipe' });
@@ -80,7 +85,7 @@ export function spawnInTmux(params: {
       tmuxCmd,
     ], {
       stdio: 'pipe',
-      env: { ...process.env, ...env, TERM: 'xterm-256color' },
+      env: cleanEnv(env),
     });
   } catch (err) {
     if (scriptPath) try { unlinkSync(scriptPath); } catch {}
@@ -92,7 +97,7 @@ export function spawnInTmux(params: {
     cols,
     rows,
     cwd,
-    env: { ...process.env, ...env, TERM: 'xterm-256color' } as Record<string, string>,
+    env: cleanEnv(env),
   });
 
   return { ptyProcess, tmuxSessionName: name };
@@ -156,4 +161,17 @@ export function listPwTmuxSessions(): string[] {
 export function detachTmuxClients(sessionId: string): void {
   const name = tmuxName(sessionId);
   spawnSync('tmux', [...TMUX_SOCKET, 'detach-client', '-s', name], { stdio: 'pipe' });
+}
+
+// Monitor a tmux pane for OSC 9/777 notifications (Claude Code waiting-for-input signals).
+// Uses pipe-pane to see raw output before tmux strips OSC sequences.
+export function installPipeMonitor(sessionId: string, port: number): void {
+  const name = tmuxName(sessionId);
+  // Only match OSC 9/777 notification sequences (Claude Code waiting-for-input signals).
+  // Do NOT match bare \x07 — it's the terminator for all OSC sequences (window titles etc.)
+  // and would fire constantly. The tmux alert-bell hook handles standalone BEL separately.
+  const pipeCmd = `perl -ne 'if (/\\x1b\\](9;|777;notify;)/) { system("curl -s -X POST http://localhost:${port}/bell/${name} >/dev/null 2>&1 &") }'`;
+  try {
+    execFileSync('tmux', [...TMUX_SOCKET, 'pipe-pane', '-t', name, '-o', pipeCmd], { stdio: 'pipe' });
+  } catch {}
 }

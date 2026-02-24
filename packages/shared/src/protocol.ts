@@ -4,11 +4,12 @@
 // --- Session content types ---
 
 export interface SessionOutputData {
-  kind: 'output' | 'history' | 'exit' | 'error' | 'status_change' | 'waiting_state';
+  kind: 'output' | 'history' | 'exit' | 'error' | 'status_change' | 'waiting_state' | 'input_state';
   data?: string;
   exitCode?: number;
   status?: string;
   waiting?: boolean;
+  state?: string;
 }
 
 export interface SessionInputData {

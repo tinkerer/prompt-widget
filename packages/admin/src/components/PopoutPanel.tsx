@@ -21,7 +21,7 @@ import {
   focusedPanelId,
   snapGuides,
   dockedOrientation,
-  setSessionWaiting,
+  setSessionInputState,
 } from '../lib/sessions.js';
 import { startTabDrag } from '../lib/tab-drag.js';
 import { ctrlShiftHeld } from '../lib/shortcuts.js';
@@ -283,7 +283,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
         }
       }}>
         {hasTabs && (
-          <div class="popout-tab-bar">
+          <div class="popout-tab-bar" onWheel={(e: WheelEvent) => { const delta = (e as any).deltaX || (e as any).deltaY; if (delta) { e.preventDefault(); (e.currentTarget as HTMLElement).scrollLeft += delta; } }}>
             {ids.map((sid) => {
               const gn = globalNum(sid);
               return (
@@ -387,7 +387,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
               sessionId={activeId}
               isActive={true}
               onExit={() => markSessionExited(activeId)}
-              onWaitingChange={(w) => setSessionWaiting(activeId, w)}
+              onInputStateChange={(s) => setSessionInputState(activeId, s)}
               permissionProfile={session?.permissionProfile}
               mode={viewMode}
             />

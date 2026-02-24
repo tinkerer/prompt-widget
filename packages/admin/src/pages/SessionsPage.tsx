@@ -2,7 +2,7 @@ import { signal } from '@preact/signals';
 import { useEffect, useRef } from 'preact/hooks';
 import { api } from '../lib/api.js';
 import { navigate, isEmbedded } from '../lib/state.js';
-import { allSessions, openSession, closeTab, loadAllSessions, deleteSession, permanentlyDeleteSession, spawnTerminal, waitingSessions } from '../lib/sessions.js';
+import { allSessions, openSession, closeTab, loadAllSessions, deleteSession, permanentlyDeleteSession, spawnTerminal, sessionInputStates } from '../lib/sessions.js';
 
 const filterStatus = signal('');
 const feedbackMap = signal<Record<string, string>>({});
@@ -173,7 +173,7 @@ export function SessionsPage({ appId }: { appId?: string | null }) {
           return (
             <div key={s.id} class={`session-card ${s.status}`} onClick={() => openSession(s.id)}>
               <div class="session-card-main">
-                <span class={`session-status-dot ${s.status}${s.status === 'running' && waitingSessions.value.has(s.id) ? ' waiting' : ''}`} />
+                <span class={`session-status-dot ${s.status}${s.status === 'running' && sessionInputStates.value.has(s.id) ? ` ${sessionInputStates.value.get(s.id)}` : ''}`} />
                 <span class="session-card-label">
                   {feedbackTitle || agentLabel || `Session ${s.id.slice(-8)}`}
                 </span>

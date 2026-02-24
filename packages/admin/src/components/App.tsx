@@ -12,6 +12,7 @@ import { SessionsPage } from '../pages/SessionsPage.js';
 import { AggregatePage } from '../pages/AggregatePage.js';
 import { LiveConnectionsPage } from '../pages/LiveConnectionsPage.js';
 import { SettingsPage } from '../pages/SettingsPage.js';
+import { StandaloneSessionPage } from '../pages/StandaloneSessionPage.js';
 
 function parseAppRoute(route: string): { appId: string; sub: string; param?: string } | null {
   const m = route.match(/^\/app\/([^/]+)\/(.+)$/);
@@ -80,6 +81,9 @@ export function App() {
   } else if (route === '/settings/preferences') {
     selectedAppId.value = null;
     page = <SettingsPage />;
+  } else if (route.startsWith('/session/')) {
+    const sessionId = route.replace('/session/', '');
+    return <StandaloneSessionPage sessionId={sessionId} />;
   } else if (route.startsWith('/feedback/')) {
     // Legacy route — redirect
     const id = route.replace('/feedback/', '');

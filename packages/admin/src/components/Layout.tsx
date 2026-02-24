@@ -3,13 +3,15 @@ import { useEffect, useRef, useCallback, useState } from 'preact/hooks';
 import { signal } from '@preact/signals';
 import { currentRoute, clearToken, navigate, selectedAppId, applications, unlinkedCount, appFeedbackCounts } from '../lib/state.js';
 import { api } from '../lib/api.js';
-import { GlobalTerminalPanel } from './GlobalTerminalPanel.js';
+import { timed } from '../lib/perf.js';
+import { GlobalTerminalPanel, idMenuOpen } from './GlobalTerminalPanel.js';
 import { PopoutPanel } from './PopoutPanel.js';
+import { PerfOverlay } from './PerfOverlay.js';
 import { Tooltip } from './Tooltip.js';
 import { ShortcutHelpModal } from './ShortcutHelpModal.js';
 import { SpotlightSearch } from './SpotlightSearch.js';
 import { registerShortcut, ctrlShiftHeld } from '../lib/shortcuts.js';
-import { toggleTheme, showTabs, arrowTabSwitching } from '../lib/settings.js';
+import { toggleTheme, showTabs, arrowTabSwitching, showHotkeyHints, autoJumpWaiting } from '../lib/settings.js';
 import {
   openTabs,
   activeTabId,
@@ -55,7 +57,7 @@ import {
   persistPopoutState,
   cyclePanelFocus,
   toggleDockedOrientation,
-  waitingSessions,
+  sessionInputStates,
   splitEnabled,
   rightPaneTabs,
   rightPaneActiveId,
@@ -63,7 +65,7 @@ import {
   enableSplit,
   disableSplit,
   focusedPanelId,
-  goToPreviousTab,
+  cycleWaitingSession,
 } from '../lib/sessions.js';
 
 const liveConnectionCounts = signal<Record<string, number>>({});
@@ -130,12 +132,18 @@ export function Layout({ children }: { children: ComponentChildren }) {
   showSpotlightRef.current = showSpotlight;
 
   useEffect(() => {
-    pollLiveConnections();
-    const liveInterval = setInterval(pollLiveConnections, 5_000);
-    const stopSessionPolling = startSessionPolling();
+    // Defer sidebar polling so visible page content loads first
+    let liveInterval: ReturnType<typeof setInterval> | null = null;
+    let stopSessionPolling: (() => void) | null = null;
+    const deferTimer = setTimeout(() => {
+      timed('liveConnections', () => pollLiveConnections());
+      liveInterval = setInterval(pollLiveConnections, 5_000);
+      stopSessionPolling = startSessionPolling();
+    }, 100);
     return () => {
-      clearInterval(liveInterval);
-      stopSessionPolling();
+      clearTimeout(deferTimer);
+      if (liveInterval) clearInterval(liveInterval);
+      if (stopSessionPolling) stopSessionPolling();
     };
   }, []);
 
@@ -298,9 +306,33 @@ export function Layout({ children }: { children: ComponentChildren }) {
         key: 'P',
         code: 'KeyP',
         modifiers: { ctrl: true, shift: true },
-        label: 'Previous tab (last used)',
+        label: 'Session menu',
         category: 'Panels',
-        action: () => goToPreviousTab(),
+        action: () => { idMenuOpen.value = !idMenuOpen.value; },
+      }),
+      registerShortcut({
+        sequence: 'g w',
+        key: 'w',
+        label: 'Go to waiting session',
+        category: 'Navigation',
+        action: () => {
+          const waiting = allSessions.value.find((s: any) => s.status === 'running' && sessionInputStates.value.get(s.id) === 'waiting');
+          if (waiting) {
+            openSession(waiting.id);
+            showActionToast('w', 'Waiting', 'var(--pw-success)');
+          }
+        },
+      }),
+      registerShortcut({
+        key: 'A',
+        code: 'KeyA',
+        modifiers: { ctrl: true, shift: true },
+        label: 'Cycle waiting sessions',
+        category: 'Panels',
+        action: () => {
+          cycleWaitingSession();
+          showActionToast('A', 'Next waiting', 'var(--pw-success)');
+        },
       }),
       registerShortcut({
         sequence: 'g t',
@@ -442,6 +474,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
   const hasUnlinked = unlinkedCount.value > 0;
   const fbCounts = appFeedbackCounts.value;
   const runningSessions = sessions.filter((s: any) => s.status === 'running').length;
+  const waitingCount = sessions.filter((s: any) => s.status === 'running' && sessionInputStates.value.get(s.id) === 'waiting').length;
   const nonDeletedSessions = sessions.filter((s: any) => s.status !== 'deleted');
   const statusCounts: Record<string, number> = {};
   const typeCounts = { agent: 0, terminal: 0 };
@@ -656,10 +689,11 @@ export function Layout({ children }: { children: ComponentChildren }) {
               class={`sidebar-sessions ${sessionsDrawerOpen.value ? 'open' : 'closed'}`}
               style={sessionsDrawerOpen.value ? { height: `${sessionsHeight.value}px` } : undefined}
             >
-              <div class="sidebar-sessions-header" onClick={toggleSessionsDrawer}>
-                <span class={`sessions-chevron ${sessionsDrawerOpen.value ? 'expanded' : ''}`}>{'\u25B8'}</span>
+              <div class="sidebar-sessions-header">
+                <span class={`sessions-chevron ${sessionsDrawerOpen.value ? 'expanded' : ''}`} onClick={toggleSessionsDrawer}>{'\u25B8'}</span>
                 Sessions ({visibleSessions.length})
                 {runningSessions > 0 && <span class="sidebar-running-badge">{runningSessions} running</span>}
+                {waitingCount > 0 && <span class="sidebar-waiting-badge">{waitingCount} waiting</span>}
                 <button
                   class="sidebar-new-terminal-btn"
                   onClick={(e) => { e.stopPropagation(); spawnTerminal(selAppId); }}
@@ -727,44 +761,45 @@ export function Layout({ children }: { children: ComponentChildren }) {
                     </div>
                   )}
                   <div class="sidebar-sessions-list">
-                    {recentSessions
-                      .filter((s) => {
+                    {(() => {
+                      const filtered = recentSessions.filter((s) => {
                         if (!sessionSearchQuery.value) return true;
                         const q = sessionSearchQuery.value.toLowerCase();
                         const text = (s.feedbackTitle || s.agentName || s.id).toLowerCase();
                         return text.includes(q);
-                      })
-                      .map((s, i, arr) => {
+                      });
+                      const waitingList = filtered.filter((s) => s.status === 'running' && sessionInputStates.value.get(s.id) === 'waiting');
+                      const restList = filtered.filter((s) => !(s.status === 'running' && sessionInputStates.value.get(s.id) === 'waiting'));
+                      const globalSessions = allNumberedSessions();
+                      const renderItem = (s: any) => {
                         const isTabbed = tabSet.has(s.id);
                         const isInPanel = !!findPanelForSession(s.id);
                         const isNumbered = isTabbed || isInPanel;
-                        const prevTabbed = i > 0 && tabSet.has(arr[i - 1].id);
+                        const inputSt = s.status === 'running' ? (sessionInputStates.value.get(s.id) || null) : null;
                         const isPlain = s.permissionProfile === 'plain';
-                        const raw = isPlain ? `Terminal ${s.id.slice(-6)}` : (s.feedbackTitle || s.agentName || `Session ${s.id.slice(-6)}`);
+                        const raw = isPlain ? `\u{1F5A5}\uFE0F ${s.paneTitle || s.id.slice(-6)}` : (s.feedbackTitle || s.agentName || `Session ${s.id.slice(-6)}`);
                         const tooltip = isPlain
                           ? `Terminal \u2014 ${s.status}`
                           : s.feedbackTitle
                             ? `${s.feedbackTitle} \u2014 ${s.status}`
                             : `${s.agentName || 'Session'} \u2014 ${s.status}`;
-                        const globalSessions = allNumberedSessions();
                         const globalIdx = globalSessions.indexOf(s.id);
                         const globalNum = globalIdx >= 0 ? globalIdx + 1 : null;
                         return (
                           <div key={s.id}>
-                            {i > 0 && prevTabbed && !isTabbed && (
-                              <div class="sidebar-divider" style={{ margin: '4px 0' }} />
-                            )}
                             <div
                               class={`sidebar-session-item ${isTabbed ? 'tabbed' : ''} ${isInPanel ? 'in-panel' : ''}`}
                               onClick={() => openSession(s.id)}
                               title={tooltip}
                             >
-                              {ctrlShiftHeld.value && isNumbered && globalNum !== null ? (
+                              {ctrlShiftHeld.value && inputSt === 'waiting' ? (
+                                <span class="sidebar-tab-badge tab-badge-waiting">A</span>
+                              ) : ctrlShiftHeld.value && isNumbered && globalNum !== null ? (
                                 <SidebarTabBadge tabNum={globalNum} />
                               ) : (
                                 <span
-                                  class={`session-status-dot ${s.status}${s.status === 'running' && waitingSessions.value.has(s.id) ? ' waiting' : ''}`}
-                                  title={s.status === 'running' && waitingSessions.value.has(s.id) ? 'waiting for input' : s.status}
+                                  class={`session-status-dot ${s.status}${isPlain ? ' plain' : ''}${inputSt ? ` ${inputSt}` : ''}`}
+                                  title={inputSt === 'waiting' ? 'waiting for input' : inputSt === 'idle' ? 'idle' : s.status}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -786,7 +821,45 @@ export function Layout({ children }: { children: ComponentChildren }) {
                             </div>
                           </div>
                         );
-                      })}
+                      };
+                      return (
+                        <>
+                          {waitingList.length > 0 && (
+                            <>
+                              <div class="sidebar-section-label waiting-section-label">
+                                Waiting for input ({waitingList.length})
+                                <label
+                                  class="auto-jump-toggle"
+                                  title="Automatically jump to terminal waiting for input"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={autoJumpWaiting.value}
+                                    onChange={(e) => { autoJumpWaiting.value = (e.target as HTMLInputElement).checked; }}
+                                  />
+                                  auto jump
+                                </label>
+                              </div>
+                              {waitingList.map(renderItem)}
+                              {restList.length > 0 && <div class="sidebar-divider" style={{ margin: '6px 0' }} />}
+                            </>
+                          )}
+                          {restList.map((s, i, arr) => {
+                            const isTabbed = tabSet.has(s.id);
+                            const prevTabbed = i > 0 && tabSet.has(arr[i - 1].id);
+                            return (
+                              <div key={`rest-${s.id}`}>
+                                {i > 0 && prevTabbed && !isTabbed && (
+                                  <div class="sidebar-divider" style={{ margin: '4px 0' }} />
+                                )}
+                                {renderItem(s)}
+                              </div>
+                            );
+                          })}
+                        </>
+                      );
+                    })()}
                   </div>
                 </>
               )}
@@ -826,6 +899,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
           <span class="action-toast-label">{actionToast.value.label}</span>
         </div>
       )}
+      <PerfOverlay />
       {sidebarStatusMenu.value && (() => {
         const menuSid = sidebarStatusMenu.value!.sessionId;
         const menuSess = allSessions.value.find((s: any) => s.id === menuSid);
@@ -838,15 +912,15 @@ export function Layout({ children }: { children: ComponentChildren }) {
             onClick={(e) => e.stopPropagation()}
           >
             {isRunning && !menuExited && (
-              <button onClick={() => { sidebarStatusMenu.value = null; killSession(menuSid); }}>Kill <kbd>⌃⇧K</kbd></button>
+              <button onClick={() => { sidebarStatusMenu.value = null; killSession(menuSid); }}>Kill {showHotkeyHints.value && <kbd>⌃⇧K</kbd>}</button>
             )}
             {isRunning && !menuExited && menuSess?.feedbackId && (
-              <button onClick={() => { sidebarStatusMenu.value = null; sidebarResolveSession(menuSid, menuSess.feedbackId); }}>Resolve <kbd>⌃⇧R</kbd></button>
+              <button onClick={() => { sidebarStatusMenu.value = null; sidebarResolveSession(menuSid, menuSess.feedbackId); }}>Resolve {showHotkeyHints.value && <kbd>⌃⇧R</kbd>}</button>
             )}
             {menuExited && (
               <button onClick={() => { sidebarStatusMenu.value = null; resumeSession(menuSid); }}>Resume</button>
             )}
-            <button onClick={() => { sidebarStatusMenu.value = null; closeTab(menuSid); }}>Close tab <kbd>⌃⇧W</kbd></button>
+            <button onClick={() => { sidebarStatusMenu.value = null; closeTab(menuSid); }}>Close tab {showHotkeyHints.value && <kbd>⌃⇧W</kbd>}</button>
             <button onClick={() => { sidebarStatusMenu.value = null; deleteSession(menuSid); }}>Archive</button>
           </div>
         );

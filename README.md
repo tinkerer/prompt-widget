@@ -358,6 +358,10 @@ GET/POST/PATCH/DELETE  /api/v1/admin/agents
 POST  /api/v1/admin/applications/:id/regenerate-key
 ```
 
+## Performance profiling
+
+The admin dashboard has built-in instrumentation for API call timing. See [docs/performance-profiling.md](docs/performance-profiling.md) for details on the on-screen overlay, console logging (`pwPerf()` in the browser console), and server-side metric persistence.
+
 ## Development
 
 ```bash

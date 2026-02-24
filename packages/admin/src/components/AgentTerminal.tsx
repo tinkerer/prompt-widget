@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'preact/hooks';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import type { InputState } from '../lib/sessions.js';
 
 const MAX_RECONNECT_ATTEMPTS = 10;
 const RECONNECT_BACKOFF_CAP_MS = 30_000;
@@ -9,10 +10,10 @@ interface AgentTerminalProps {
   sessionId: string;
   isActive?: boolean;
   onExit?: (exitCode: number) => void;
-  onWaitingChange?: (waiting: boolean) => void;
+  onInputStateChange?: (state: InputState) => void;
 }
 
-export function AgentTerminal({ sessionId, isActive, onExit, onWaitingChange }: AgentTerminalProps) {
+export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange }: AgentTerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -134,9 +135,13 @@ export function AgentTerminal({ sessionId, isActive, onExit, onWaitingChange }: 
 
     let lastMoveCol = -1;
     let lastMoveRow = -1;
+    // Suppress motion injection while a tmux display-menu is likely open.
+    // Right-click opens the menu; motion events dismiss it prematurely.
+    let suppressMotion = false;
 
     function onMouseMove(e: MouseEvent) {
       if (mouseMode !== 1003) return;
+      if (suppressMotion) return;
       // Only inject no-button moves; xterm.js handles button-held moves via onData
       if (e.buttons !== 0) return;
       const screen = containerRef.current?.querySelector('.xterm-screen');
@@ -151,6 +156,15 @@ export function AgentTerminal({ sessionId, isActive, onExit, onWaitingChange }: 
       injectMouseEvent(e, 35, true);
     }
 
+    function onMouseDown(e: MouseEvent) {
+      if (e.button === 2) {
+        // Right-click opens a tmux display-menu; suppress motion until dismissed
+        suppressMotion = true;
+      } else {
+        suppressMotion = false;
+      }
+    }
+
     function onContextMenu(e: Event) {
       e.preventDefault();
     }
@@ -159,6 +173,7 @@ export function AgentTerminal({ sessionId, isActive, onExit, onWaitingChange }: 
     if (xtermScreen) {
       xtermScreen.addEventListener('contextmenu', onContextMenu);
       xtermScreen.addEventListener('mousemove', onMouseMove as EventListener);
+      xtermScreen.addEventListener('mousedown', onMouseDown as EventListener);
     }
 
     function sendOutputAck(seq: number) {
@@ -225,11 +240,11 @@ export function AgentTerminal({ sessionId, isActive, onExit, onWaitingChange }: 
                 term.write(`\r\n\x1b[33m--- Session exited (code: ${content.exitCode ?? 'unknown'}) ---\x1b[0m\r\n`);
                 hasExited.current = true;
                 onExit?.(content.exitCode ?? -1);
-                onWaitingChange?.(false);
+                onInputStateChange?.('active');
               } else if (content.kind === 'error' && content.data) {
                 term.write(`\r\n\x1b[31m${content.data}\x1b[0m\r\n`);
-              } else if (content.kind === 'waiting_state') {
-                onWaitingChange?.(!!content.waiting);
+              } else if (content.kind === 'input_state') {
+                onInputStateChange?.(content.state || 'active');
               }
               sendOutputAck(seq);
               break;
@@ -246,8 +261,8 @@ export function AgentTerminal({ sessionId, isActive, onExit, onWaitingChange }: 
               if (typeof msg.lastInputAckSeq === 'number' && msg.lastInputAckSeq > inputSeq) {
                 inputSeq = msg.lastInputAckSeq;
               }
-              if (msg.waitingForInput !== undefined) {
-                onWaitingChange?.(!!msg.waitingForInput);
+              if (msg.inputState) {
+                onInputStateChange?.(msg.inputState);
               }
               if (msg.data) {
                 if (waitingDots) { clearInterval(waitingDots); waitingDots = null; }
@@ -326,6 +341,10 @@ export function AgentTerminal({ sessionId, isActive, onExit, onWaitingChange }: 
     term.onData((data: string) => {
       const filtered = data.replace(TERMINAL_RESPONSE_RE, '');
       if (!filtered) return;
+      // Keyboard input means any open menu was dismissed
+      if (suppressMotion && !filtered.startsWith('\x1b[M') && !filtered.startsWith('\x1b[<')) {
+        suppressMotion = false;
+      }
       const ws = wsRef.current;
       if (ws && ws.readyState === WebSocket.OPEN) {
         inputSeq++;
@@ -383,12 +402,13 @@ export function AgentTerminal({ sessionId, isActive, onExit, onWaitingChange }: 
     return () => {
       cleanedUp.current = true;
       safeFitAndResizeRef.current = () => {};
-      onWaitingChange?.(false);
+      onInputStateChange?.('active');
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (waitingDots) clearInterval(waitingDots);
       if (xtermScreen) {
         xtermScreen.removeEventListener('contextmenu', onContextMenu);
         xtermScreen.removeEventListener('mousemove', onMouseMove as EventListener);
+        xtermScreen.removeEventListener('mousedown', onMouseDown as EventListener);
       }
       observer.disconnect();
       wsRef.current?.close();

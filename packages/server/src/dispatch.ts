@@ -34,7 +34,7 @@ App description: {{app.description}}
 {{feedback.data}}
 {{instructions}}
 
-consider screenshot`;
+{{feedback.screenshot}}`;
 
 export function renderPromptTemplate(
   template: string,
@@ -61,6 +61,14 @@ export function renderPromptTemplate(
     customData = `Custom data: ${JSON.stringify(fb.data, null, 2)}`;
   }
 
+  let screenshotText = '';
+  if (fb.screenshots?.length) {
+    screenshotText = fb.screenshots.map(
+      (s) => `Screenshot: /api/v1/images/${s.id}`
+    ).join('\n');
+    screenshotText += '\n\nconsider screenshot';
+  }
+
   const vars: Record<string, string> = {
     'feedback.id': fb.id,
     'feedback.title': fb.title || '',
@@ -70,6 +78,7 @@ export function renderPromptTemplate(
     'feedback.consoleLogs': consoleLogs,
     'feedback.networkErrors': networkErrors,
     'feedback.data': customData,
+    'feedback.screenshot': screenshotText,
     'app.name': app?.name || '',
     'app.projectDir': app?.projectDir || '',
     'app.description': app?.description || '',

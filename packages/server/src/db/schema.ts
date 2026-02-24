@@ -12,8 +12,8 @@ export const applications = sqliteTable('applications', {
   defaultPermissionProfile: text('default_permission_profile').default('interactive'),
   defaultAllowedTools: text('default_allowed_tools'),
   agentPath: text('agent_path'),
-  screenshotIncludeWidget: integer('screenshot_include_widget', { mode: 'boolean' }).notNull().default(false),
-  autoDispatch: integer('auto_dispatch', { mode: 'boolean' }).notNull().default(false),
+  screenshotIncludeWidget: integer('screenshot_include_widget', { mode: 'boolean' }).notNull().default(true),
+  autoDispatch: integer('auto_dispatch', { mode: 'boolean' }).notNull().default(true),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
@@ -117,6 +117,14 @@ export const tmuxConfigs = sqliteTable('tmux_configs', {
   isDefault: integer('is_default', { mode: 'boolean' }).notNull().default(false),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
+});
+
+export const perfMetrics = sqliteTable('perf_metrics', {
+  id: text('id').primaryKey(),
+  route: text('route').notNull(),
+  durations: text('durations').notNull(),
+  userAgent: text('user_agent'),
+  createdAt: text('created_at').notNull(),
 });
 
 export const pendingMessages = sqliteTable('pending_messages', {

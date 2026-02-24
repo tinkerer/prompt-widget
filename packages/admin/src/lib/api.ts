@@ -278,4 +278,23 @@ export const api = {
 
   getDefaultPromptTemplate: () =>
     request<{ template: string }>('/admin/default-prompt-template'),
+
+  replaceImage: (imageId: string, blob: Blob) => {
+    const fd = new FormData();
+    fd.append('image', blob, 'crop.png');
+    return request<{ id: string; size: number; replaced: boolean }>(`/images/${imageId}`, {
+      method: 'PUT',
+      body: fd,
+    });
+  },
+
+  saveImageAsNew: (feedbackId: string, blob: Blob) => {
+    const fd = new FormData();
+    fd.append('image', blob, 'crop.png');
+    fd.append('feedbackId', feedbackId);
+    return request<{ id: string; feedbackId: string; filename: string; size: number }>('/images', {
+      method: 'POST',
+      body: fd,
+    });
+  },
 };

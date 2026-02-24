@@ -25,7 +25,8 @@ agentRoutes.get('/sessions/:id', (c) => {
 // Capture screenshot of the live page
 agentRoutes.post('/sessions/:id/screenshot', async (c) => {
   try {
-    const result = await sendCommand(resolveId(c), 'screenshot') as { dataUrl: string; mimeType?: string };
+    const body = await c.req.json().catch(() => ({}));
+    const result = await sendCommand(resolveId(c), 'screenshot', { excludeCursor: body.excludeCursor ?? false }) as { dataUrl: string; mimeType?: string };
     if (c.req.query('format') === 'raw') {
       const base64 = result.dataUrl.split(',')[1];
       const buffer = Buffer.from(base64, 'base64');
@@ -475,7 +476,7 @@ agentRoutes.post('/sessions/:id/widget/submit', async (c) => {
 agentRoutes.post('/sessions/:id/widget/screenshot', async (c) => {
   const body = await c.req.json().catch(() => ({}));
   try {
-    const result = await sendCommand(resolveId(c), 'screenshot', { includeWidget: body.includeWidget !== false }) as { dataUrl: string; mimeType?: string };
+    const result = await sendCommand(resolveId(c), 'screenshot', { includeWidget: body.includeWidget !== false, excludeCursor: body.excludeCursor ?? false }) as { dataUrl: string; mimeType?: string };
     if (c.req.query('format') === 'raw') {
       const base64 = result.dataUrl.split(',')[1];
       const buffer = Buffer.from(base64, 'base64');

@@ -221,6 +221,20 @@ export function runMigrations() {
       ON pending_messages(session_id, direction, seq_num);
   `);
 
+  // Perf metrics table
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS perf_metrics (
+      id TEXT PRIMARY KEY,
+      route TEXT NOT NULL,
+      durations TEXT NOT NULL,
+      user_agent TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_perf_metrics_route ON perf_metrics(route);
+    CREATE INDEX IF NOT EXISTS idx_perf_metrics_created ON perf_metrics(created_at);
+  `);
+
   // Tmux configs table
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS tmux_configs (
