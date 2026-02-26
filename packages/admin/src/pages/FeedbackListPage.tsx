@@ -362,7 +362,7 @@ export function FeedbackListPage({ appId }: { appId: string }) {
               placeholder="Description (optional)"
               value={createDescription.value}
               onInput={(e) => (createDescription.value = (e.target as HTMLTextAreaElement).value)}
-              style="padding:6px 10px;font-size:13px;min-height:80px;resize:vertical;font-family:inherit"
+              style="width:100%;box-sizing:border-box;padding:6px 10px;font-size:13px;min-height:80px;resize:vertical;font-family:inherit"
             />
             <div style="display:flex;gap:8px;align-items:center">
               <select
@@ -397,7 +397,7 @@ export function FeedbackListPage({ appId }: { appId: string }) {
       )}
 
       <div ref={sentinelRef} class="filters-sentinel" />
-      <div class={`filters ${hasSelection ? 'has-selection' : ''} ${hasSelection && isStuck.value ? 'stuck' : ''}`}>
+      <div class={`filters ${hasSelection ? 'has-selection' : ''} ${isStuck.value ? 'stuck' : ''}`}>
         <input
           type="text"
           placeholder="Search..."
@@ -442,7 +442,7 @@ export function FeedbackListPage({ appId }: { appId: string }) {
           {filterStatuses.value.size > 0 && <span class="filter-count">{filterStatuses.value.size}</span>}
           <span class={`filter-toggle-chevron ${filtersCollapsed.value ? 'collapsed' : ''}`}>&#9662;</span>
         </button>
-        <div class={`filter-pills ${filtersCollapsed.value || hasSelection ? 'collapsed' : ''}`}>
+        <div class={`filter-pills ${filtersCollapsed.value ? 'collapsed' : ''}`}>
           {STATUSES.filter(Boolean).map((s) => {
             const active = filterStatuses.value.has(s);
             const pillClass = DISPATCH_STATUSES.has(s) ? `badge-dispatch-${s}` : `badge-${s}`;
