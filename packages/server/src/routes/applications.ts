@@ -2,6 +2,9 @@ import { Hono } from 'hono';
 import { ulid } from 'ulidx';
 import { eq } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
+import { execSync } from 'node:child_process';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join, basename } from 'node:path';
 import { applicationSchema, applicationUpdateSchema } from '@prompt-widget/shared';
 import { db, schema } from '../db/index.js';
 
@@ -19,6 +22,117 @@ applicationRoutes.get('/', async (c) => {
       hooks: JSON.parse(app.hooks),
     }))
   );
+});
+
+applicationRoutes.post('/scaffold', async (c) => {
+  const body = await c.req.json();
+  const { name, parentDir, projectName } = body;
+
+  if (!name || !parentDir || !projectName) {
+    return c.json({ error: 'name, parentDir, and projectName are required' }, 400);
+  }
+  if (!/^[a-zA-Z0-9_-]+$/.test(projectName)) {
+    return c.json({ error: 'projectName must be alphanumeric (with _ or -)' }, 400);
+  }
+  if (!existsSync(parentDir)) {
+    return c.json({ error: `parentDir does not exist: ${parentDir}` }, 400);
+  }
+
+  const projectDir = join(parentDir, projectName);
+  if (existsSync(projectDir)) {
+    return c.json({ error: `Directory already exists: ${projectDir}` }, 400);
+  }
+
+  const now = new Date().toISOString();
+  const id = ulid();
+  const apiKey = generateApiKey();
+
+  const host = c.req.header('host') || 'localhost:3001';
+  const proto = c.req.header('x-forwarded-proto') || 'http';
+  const serverUrl = `${proto}://${host}`;
+
+  mkdirSync(projectDir, { recursive: true });
+
+  writeFileSync(join(projectDir, 'index.html'), `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${name}</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 60px auto; padding: 0 20px; }
+    h1 { color: #333; }
+  </style>
+</head>
+<body>
+  <h1>${name}</h1>
+  <p>Your app is ready. The feedback widget is loaded below.</p>
+  <script src="${serverUrl}/widget.js" data-server="${serverUrl}" data-api-key="${apiKey}"></script>
+</body>
+</html>
+`);
+
+  writeFileSync(join(projectDir, 'package.json'), JSON.stringify({
+    name: projectName,
+    version: '0.0.1',
+    scripts: { start: 'npx serve .' },
+  }, null, 2) + '\n');
+
+  await db.insert(schema.applications).values({
+    id,
+    name,
+    apiKey,
+    projectDir,
+    serverUrl,
+    hooks: '{}',
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  return c.json({ id, apiKey, projectDir }, 201);
+});
+
+applicationRoutes.post('/clone', async (c) => {
+  const body = await c.req.json();
+  const { name, gitUrl, parentDir, dirName } = body;
+
+  if (!name || !gitUrl || !parentDir) {
+    return c.json({ error: 'name, gitUrl, and parentDir are required' }, 400);
+  }
+  if (!existsSync(parentDir)) {
+    return c.json({ error: `parentDir does not exist: ${parentDir}` }, 400);
+  }
+
+  const repoName = dirName || basename(gitUrl).replace(/\.git$/, '');
+  const projectDir = join(parentDir, repoName);
+  if (existsSync(projectDir)) {
+    return c.json({ error: `Directory already exists: ${projectDir}` }, 400);
+  }
+
+  try {
+    execSync(`git clone ${JSON.stringify(gitUrl)} ${JSON.stringify(projectDir)}`, {
+      timeout: 120_000,
+      stdio: 'pipe',
+    });
+  } catch (err: any) {
+    return c.json({ error: `git clone failed: ${err.stderr?.toString() || err.message}` }, 500);
+  }
+
+  const now = new Date().toISOString();
+  const id = ulid();
+  const apiKey = generateApiKey();
+
+  await db.insert(schema.applications).values({
+    id,
+    name,
+    apiKey,
+    projectDir,
+    hooks: '{}',
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  return c.json({ id, apiKey, projectDir }, 201);
 });
 
 applicationRoutes.get('/:id', async (c) => {

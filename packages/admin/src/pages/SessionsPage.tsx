@@ -2,7 +2,7 @@ import { signal } from '@preact/signals';
 import { useEffect, useRef } from 'preact/hooks';
 import { api } from '../lib/api.js';
 import { navigate, isEmbedded } from '../lib/state.js';
-import { allSessions, openSession, closeTab, loadAllSessions, deleteSession, permanentlyDeleteSession, spawnTerminal, sessionInputStates } from '../lib/sessions.js';
+import { allSessions, openSession, closeTab, deleteSession, permanentlyDeleteSession, spawnTerminal, sessionInputStates, includeDeletedInPolling } from '../lib/sessions.js';
 
 const filterStatus = signal('');
 const feedbackMap = signal<Record<string, string>>({});
@@ -76,9 +76,8 @@ export function SessionsPage({ appId }: { appId?: string | null }) {
 
   useEffect(() => {
     loadMaps();
-    loadAllSessions(true);
-    const id = setInterval(() => loadAllSessions(true), 5000);
-    return () => clearInterval(id);
+    includeDeletedInPolling.value = true;
+    return () => { includeDeletedInPolling.value = false; };
   }, []);
 
   const isAutoTerminal = isEmbedded.value && new URLSearchParams(window.location.search).get('autoTerminal') === '1';
@@ -104,7 +103,10 @@ export function SessionsPage({ appId }: { appId?: string | null }) {
         .filter(([, aid]) => aid === appId)
         .map(([id]) => id)
     );
-    appFiltered = sessions.filter((s) => s.agentEndpointId && appAgentIds.has(s.agentEndpointId));
+    appFiltered = sessions.filter((s) =>
+      s.appId === appId ||
+      (s.agentEndpointId && appAgentIds.has(s.agentEndpointId))
+    );
   }
 
   const filtered = filterStatus.value

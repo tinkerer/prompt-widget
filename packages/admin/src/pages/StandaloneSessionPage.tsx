@@ -24,19 +24,21 @@ export function StandaloneSessionPage({ sessionId }: { sessionId: string }) {
         <span style={{ fontWeight: 600 }}>pw-{sessionId.slice(-6)}</span>
         {isExited && <span style={{ color: 'var(--pw-text-muted)' }}>(exited)</span>}
         <span style="flex:1" />
-        <select
-          class="view-mode-select"
-          value={mode}
-          onChange={(e) => {
-            const v = (e.target as HTMLSelectElement).value as ViewMode;
-            viewMode.value = v;
-            setViewMode(sessionId, v);
-          }}
-        >
-          <option value="terminal">Term</option>
-          <option value="structured">Struct</option>
-          <option value="split">Split</option>
-        </select>
+        {(sess?.permissionProfile === 'auto' || sess?.permissionProfile === 'yolo') && (
+          <select
+            class="view-mode-select"
+            value={mode}
+            onChange={(e) => {
+              const v = (e.target as HTMLSelectElement).value as ViewMode;
+              viewMode.value = v;
+              setViewMode(sessionId, v);
+            }}
+          >
+            <option value="terminal">Term</option>
+            <option value="structured">Struct</option>
+            <option value="split">Split</option>
+          </select>
+        )}
       </div>
       <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
         <SessionViewToggle

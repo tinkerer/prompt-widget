@@ -64,7 +64,7 @@ feedbackRoutes.post('/', async (c) => {
   const now = new Date().toISOString();
   const id = ulid();
   const input = parsed.data;
-  const title = input.title || input.description.slice(0, 80) || 'Untitled';
+  const title = input.title || input.description.slice(0, 200) || 'Untitled';
 
   const apiKey = c.req.header('x-api-key');
   const appId = resolveAppId(apiKey, input.sessionId);
@@ -128,7 +128,7 @@ feedbackRoutes.post('/programmatic', async (c) => {
   const now = new Date().toISOString();
   const id = ulid();
   const input = parsed.data;
-  const progTitle = input.title || input.description.slice(0, 80) || 'Untitled';
+  const progTitle = input.title || input.description.slice(0, 200) || 'Untitled';
 
   const progApiKey = c.req.header('x-api-key');
   const progAppId = resolveAppId(progApiKey, input.sessionId);

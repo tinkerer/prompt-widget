@@ -20,6 +20,20 @@ export const multiDigitTabs = signal<boolean>(loadSetting('pw-multi-digit-tabs',
 export const autoNavigateToFeedback = signal<boolean>(loadSetting('pw-auto-navigate-feedback', false));
 export const showHotkeyHints = signal<boolean>(loadSetting('pw-show-hotkey-hints', true));
 export const autoJumpWaiting = signal<boolean>(loadSetting('pw-auto-jump-waiting', false));
+export const autoJumpInterrupt = signal<boolean>(loadSetting('pw-auto-jump-interrupt', false));
+export const autoJumpDelay = signal<boolean>(loadSetting('pw-auto-jump-delay', false));
+export const autoJumpShowPopup = signal<boolean>(loadSetting('pw-auto-jump-show-popup', true));
+
+export interface RecentResult {
+  type: 'application' | 'feedback' | 'session';
+  id: string;
+  title: string;
+  subtitle?: string;
+  icon: string;
+  route: string;
+}
+
+export const recentResults = signal<RecentResult[]>(loadSetting('pw-recent-results', []));
 
 export type PopoutMode = 'panel' | 'window' | 'tab' | 'terminal';
 export const popoutMode = signal<PopoutMode>(loadSetting('pw-popout-mode', 'panel'));
@@ -87,6 +101,22 @@ effect(() => {
 
 effect(() => {
   localStorage.setItem('pw-auto-jump-waiting', JSON.stringify(autoJumpWaiting.value));
+});
+
+effect(() => {
+  localStorage.setItem('pw-auto-jump-interrupt', JSON.stringify(autoJumpInterrupt.value));
+});
+
+effect(() => {
+  localStorage.setItem('pw-auto-jump-delay', JSON.stringify(autoJumpDelay.value));
+});
+
+effect(() => {
+  localStorage.setItem('pw-auto-jump-show-popup', JSON.stringify(autoJumpShowPopup.value));
+});
+
+effect(() => {
+  localStorage.setItem('pw-recent-results', JSON.stringify(recentResults.value));
 });
 
 // Listen for system theme changes

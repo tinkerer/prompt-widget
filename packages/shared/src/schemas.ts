@@ -86,6 +86,7 @@ export const feedbackListSchema = z.object({
   tag: z.string().optional(),
   search: z.string().optional(),
   appId: z.string().optional(),
+  dispatchStatus: z.string().optional(),
   sortBy: z.enum(['createdAt', 'updatedAt']).default('createdAt'),
   sortOrder: z.enum(['asc', 'desc']).default('desc'),
 });

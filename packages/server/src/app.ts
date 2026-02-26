@@ -21,13 +21,23 @@ app.use(
   cors({
     origin: '*',
     allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowHeaders: ['Content-Type', 'Authorization'],
+    allowHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
   })
 );
 
 app.get('/api/v1/health', (c) =>
   c.json({ status: 'ok', timestamp: new Date().toISOString() })
 );
+
+app.get('/api/v1/bookmarklet', (c) => {
+  const proto = c.req.header('x-forwarded-proto') || 'http';
+  const host = c.req.header('host') || 'localhost:3001';
+  const baseUrl = `${proto}://${host}`;
+  // Use iframe approach to bypass CSP restrictions on target pages
+  const js = `javascript:void((function(){var e=document.getElementById('pw-bookmarklet-frame');if(e){e.remove();return}var f=document.createElement('iframe');f.id='pw-bookmarklet-frame';f.src='${baseUrl}/widget/bookmarklet.html?host='+encodeURIComponent(location.href);f.style.cssText='position:fixed;bottom:0;right:0;width:420px;height:100%;border:none;z-index:2147483647;pointer-events:none;';f.allow='clipboard-write';window.addEventListener('message',function(m){if(m.data&&m.data.type==='pw-bookmarklet-remove'){var el=document.getElementById('pw-bookmarklet-frame');if(el)el.remove()}});document.body.appendChild(f)})())`;
+  c.header('Content-Type', 'text/plain; charset=utf-8');
+  return c.body(js);
+});
 
 app.route('/api/v1/feedback', feedbackRoutes);
 app.route('/api/v1/admin', adminRoutes);
@@ -45,6 +55,37 @@ app.get('/GETTING_STARTED.md', (c) => {
   const baseUrl = `${proto}://${host}`;
   c.header('Content-Type', 'text/markdown; charset=utf-8');
   return c.body(gettingStartedMarkdown(baseUrl));
+});
+
+// Bookmarklet embed page — loads the widget inside an iframe to bypass CSP
+app.get('/widget/bookmarklet.html', (c) => {
+  const proto = c.req.header('x-forwarded-proto') || 'http';
+  const host = c.req.header('host') || 'localhost:3001';
+  const baseUrl = `${proto}://${host}`;
+  return c.html(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>html,body{margin:0;padding:0;background:transparent;overflow:hidden;pointer-events:none;}
+prompt-widget-host{pointer-events:auto;}</style></head>
+<body>
+<script src="${baseUrl}/widget/prompt-widget.js"
+  data-endpoint="${baseUrl}/api/v1/feedback"
+  data-mode="always"
+  data-bookmarklet-host-url></script>
+<script>
+(function(){
+  var params = new URLSearchParams(location.search);
+  var hostUrl = params.get('host') || '';
+  var s = document.querySelector('script[data-bookmarklet-host-url]');
+  if (s) s.setAttribute('data-bookmarklet-host-url', hostUrl);
+  // Pass host URL to widget via meta update after connect
+  window.addEventListener('message', function(e) {
+    if (e.data && e.data.type === 'pw-bookmarklet-close') {
+      parent.postMessage({type:'pw-bookmarklet-remove'}, '*');
+    }
+  });
+})();
+</script>
+</body></html>`);
 });
 
 // Serve widget JS from the widget package build output

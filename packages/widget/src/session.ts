@@ -59,6 +59,7 @@ export class SessionBridge {
   private reconnectDelay = 1000;
   public screenshotIncludeWidget = true;
   public autoDispatch = true;
+  public hostUrl: string | undefined;
 
   constructor(endpoint: string, sessionId: string, collectors: Collector[], apiKey?: string) {
     this.endpoint = endpoint;
@@ -144,7 +145,7 @@ export class SessionBridge {
   private sendMeta() {
     this.send({
       type: 'meta',
-      url: location.href,
+      url: this.hostUrl || location.href,
       viewport: `${window.innerWidth}x${window.innerHeight}`,
     });
   }
@@ -169,7 +170,7 @@ export class SessionBridge {
     try {
       switch (command) {
         case 'screenshot': {
-          const blob = await captureScreenshot({ excludeWidget: this.screenshotIncludeWidget, excludeCursor: !!params.excludeCursor });
+          const blob = await captureScreenshot({ excludeWidget: this.screenshotIncludeWidget, excludeCursor: !!params.excludeCursor, method: params.method === 'display-media' ? 'display-media' : 'html-to-image' });
           if (!blob) {
             this.respondError(requestId, 'Screenshot capture failed');
             return;

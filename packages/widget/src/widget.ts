@@ -12,8 +12,9 @@ import {
   DEFAULT_SHORTCUT,
 } from '@prompt-widget/shared';
 import { WIDGET_CSS } from './styles.js';
+import { ImageEditor } from './image-editor.js';
 import { installCollectors, collectContext } from './collectors.js';
-import { captureScreenshot, stopScreencastStream } from './screenshot.js';
+import { captureScreenshot, stopScreencastStream, type ScreenshotMethod } from './screenshot.js';
 import { SessionBridge } from './session.js';
 import { startPicker, type SelectedElementInfo } from './element-picker.js';
 import { OverlayPanelManager, type PanelType } from './overlay-panels.js';
@@ -42,9 +43,11 @@ export class PromptWidgetElement {
   private savedDraft = '';
   private savedCollectors = new Set(['console', 'environment', 'network', 'performance']);
   private pickerMultiSelect = false;
+  private pickerExcludeWidget = true;
   private excludeWidget = true;
   private excludeCursor = false;
   private keepStream = false;
+  private screenshotMethod: ScreenshotMethod = 'html-to-image';
   private countdownTimer: ReturnType<typeof setInterval> | null = null;
   private dispatchMode: 'off' | 'once' | 'auto' = 'off';
   private annotatorOpen = false;
@@ -90,6 +93,12 @@ export class PromptWidgetElement {
     this.sessionBridge = new SessionBridge(this.config.endpoint, this.getSessionId(), this.config.collectors, this.config.appKey);
     if (script?.dataset.screenshotIncludeWidget === 'true') {
       this.sessionBridge.screenshotIncludeWidget = true;
+    }
+    // Bookmarklet iframe mode: report the host page URL instead of the iframe URL
+    if (script?.hasAttribute('data-bookmarklet-host-url')) {
+      const params = new URLSearchParams(window.location.search);
+      const hostUrl = params.get('host');
+      if (hostUrl) this.sessionBridge.hostUrl = hostUrl;
     }
     this.sessionBridge.connect();
 
@@ -234,6 +243,19 @@ export class PromptWidgetElement {
     const menu = document.createElement('div');
     menu.className = 'pw-picker-menu';
 
+    const excludeLabel = document.createElement('label');
+    excludeLabel.className = 'pw-picker-menu-item';
+    const excludeCb = document.createElement('input');
+    excludeCb.type = 'checkbox';
+    excludeCb.checked = this.pickerExcludeWidget;
+    excludeCb.addEventListener('change', () => {
+      this.pickerExcludeWidget = excludeCb.checked;
+    });
+    const excludeSpan = document.createElement('span');
+    excludeSpan.textContent = 'Exclude widget';
+    excludeLabel.append(excludeCb, excludeSpan);
+    menu.appendChild(excludeLabel);
+
     const label = document.createElement('label');
     label.className = 'pw-picker-menu-item';
     const cb = document.createElement('input');
@@ -294,11 +316,22 @@ export class PromptWidgetElement {
     cursorLabel.append(cursorCb, cursorSpan);
     menu.appendChild(cursorLabel);
 
+    const htmlToImageLabel = document.createElement('label');
+    htmlToImageLabel.className = 'pw-camera-menu-item';
+    const htmlToImageCb = document.createElement('input');
+    htmlToImageCb.type = 'checkbox';
+    htmlToImageCb.checked = this.screenshotMethod === 'html-to-image';
+    const htmlToImageSpan = document.createElement('span');
+    htmlToImageSpan.textContent = 'html-to-image';
+    htmlToImageLabel.append(htmlToImageCb, htmlToImageSpan);
+    menu.appendChild(htmlToImageLabel);
+
     const keepLabel = document.createElement('label');
     keepLabel.className = 'pw-camera-menu-item';
     const keepCb = document.createElement('input');
     keepCb.type = 'checkbox';
     keepCb.checked = this.keepStream;
+    keepCb.disabled = this.screenshotMethod === 'html-to-image';
     keepCb.addEventListener('change', () => {
       this.keepStream = keepCb.checked;
       if (!keepCb.checked) stopScreencastStream();
@@ -307,6 +340,18 @@ export class PromptWidgetElement {
     keepSpan.textContent = 'Multi-screenshot';
     keepLabel.append(keepCb, keepSpan);
     menu.appendChild(keepLabel);
+
+    htmlToImageCb.addEventListener('change', () => {
+      this.screenshotMethod = htmlToImageCb.checked ? 'html-to-image' : 'display-media';
+      if (this.screenshotMethod === 'html-to-image') {
+        this.keepStream = false;
+        keepCb.checked = false;
+        keepCb.disabled = true;
+        stopScreencastStream();
+      } else {
+        keepCb.disabled = false;
+      }
+    });
 
     const divider = document.createElement('div');
     divider.className = 'pw-camera-menu-divider';
@@ -367,6 +412,100 @@ export class PromptWidgetElement {
     setTimeout(() => this.shadow.addEventListener('click', closeHandler), 0);
   }
 
+  private toggleContextMenu() {
+    const existing = this.shadow.querySelector('.pw-context-menu');
+    if (existing) { existing.remove(); return; }
+
+    const group = this.shadow.querySelector('.pw-context-group');
+    if (!group) return;
+
+    const menu = document.createElement('div');
+    menu.className = 'pw-context-menu';
+
+    const items: Array<{ value: string; label: string }> = [
+      { value: 'console', label: 'Console' },
+      { value: 'environment', label: 'Page info' },
+      { value: 'network', label: 'Network' },
+      { value: 'performance', label: 'Perf' },
+    ];
+
+    for (const item of items) {
+      const label = document.createElement('label');
+      label.className = 'pw-context-menu-item';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.value = item.value;
+      cb.checked = this.savedCollectors.has(item.value);
+      cb.addEventListener('change', () => {
+        if (cb.checked) this.savedCollectors.add(item.value);
+        else this.savedCollectors.delete(item.value);
+      });
+      const span = document.createElement('span');
+      span.textContent = item.label;
+      label.append(cb, span);
+      menu.appendChild(label);
+    }
+
+    group.appendChild(menu);
+
+    const closeHandler = (e: Event) => {
+      if (!menu.contains(e.target as Node)) {
+        menu.remove();
+        this.shadow.removeEventListener('click', closeHandler);
+      }
+    };
+    setTimeout(() => this.shadow.addEventListener('click', closeHandler), 0);
+  }
+
+  private initResize() {
+    const panel = this.shadow.querySelector('.pw-panel') as HTMLElement;
+    const handle = this.shadow.querySelector('.pw-resize-handle') as HTMLElement;
+    if (!panel || !handle) return;
+
+    const pos = this.config.position;
+
+    handle.addEventListener('mousedown', (e: MouseEvent) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const startW = panel.offsetWidth;
+      const startH = panel.offsetHeight;
+
+      const onMove = (ev: MouseEvent) => {
+        const dx = ev.clientX - startX;
+        const dy = ev.clientY - startY;
+
+        let newW = startW;
+        let newH = startH;
+
+        if (pos === 'bottom-right') {
+          newW = startW - dx;
+          newH = startH - dy;
+        } else if (pos === 'bottom-left') {
+          newW = startW + dx;
+          newH = startH - dy;
+        } else if (pos === 'top-right') {
+          newW = startW - dx;
+          newH = startH + dy;
+        } else {
+          newW = startW + dx;
+          newH = startH + dy;
+        }
+
+        panel.style.width = Math.max(280, newW) + 'px';
+        panel.style.height = Math.max(200, newH) + 'px';
+      };
+
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      };
+
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  }
+
   private render() {
     const style = document.createElement('style');
     style.textContent = WIDGET_CSS;
@@ -410,9 +549,14 @@ export class PromptWidgetElement {
     for (const item of items) {
       const btn = document.createElement('button');
       btn.className = 'pw-admin-option';
-      btn.innerHTML = `<span class="pw-admin-option-icon">${item.icon}</span>${item.label}`;
+      btn.innerHTML = `<span class="pw-admin-option-icon">${item.icon}</span>`;
+      btn.title = item.label;
       btn.addEventListener('click', () => {
-        this.overlayManager.openPanel(item.type);
+        if (this.isOnAdminPage()) {
+          this.navigateAdmin(item.type);
+        } else {
+          this.overlayManager.openPanel(item.type);
+        }
       });
       options.appendChild(btn);
     }
@@ -448,17 +592,14 @@ export class PromptWidgetElement {
     panel.className = `pw-panel ${this.config.position}`;
     panel.style.position = 'fixed';
     panel.innerHTML = `
-      <button class="pw-close">&times;</button>
+      <div class="pw-resize-handle"></div>
+      <div class="pw-header">
+        <button class="pw-close">&times;</button>
+      </div>
       <div class="pw-screenshots pw-hidden" id="pw-screenshots"></div>
       <div id="pw-selected-elements" class="pw-selected-elements pw-hidden"></div>
       <div class="pw-input-area">
         <textarea class="pw-textarea" id="pw-chat-input" placeholder="What's on your mind?" rows="3" autocomplete="off"></textarea>
-        <div class="pw-context-options">
-          <label class="pw-check"><input type="checkbox" value="console" checked /><span>Console</span></label>
-          <label class="pw-check"><input type="checkbox" value="environment" checked /><span>Page info</span></label>
-          <label class="pw-check"><input type="checkbox" value="network" checked /><span>Network</span></label>
-          <label class="pw-check"><input type="checkbox" value="performance" checked /><span>Perf</span></label>
-        </div>
         <div class="pw-toolbar">
           ${this.sessionBridge.screenshotIncludeWidget ? `
           <div class="pw-camera-group">
@@ -479,6 +620,14 @@ export class PromptWidgetElement {
               <svg viewBox="0 0 24 24"><path d="M3 3h4V1H1v6h2V3zm0 14H1v6h6v-2H3v-4zm14 4h-4v2h6v-6h-2v4zM17 3V1h6v6h-2V3h-4zM12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0 6a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/></svg>
             </button>
             <button class="pw-picker-dropdown-toggle" id="pw-picker-dropdown" title="Picker options">
+              <svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
+            </button>
+          </div>
+          <div class="pw-context-group">
+            <button class="pw-context-btn" id="pw-context-btn" title="Context options">
+              <svg viewBox="0 0 24 24"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>
+            </button>
+            <button class="pw-context-dropdown-toggle" id="pw-context-dropdown" title="Context options">
               <svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
             </button>
           </div>
@@ -518,11 +667,16 @@ export class PromptWidgetElement {
 
     const cameraDropdownBtn = panel.querySelector('#pw-camera-dropdown') as HTMLButtonElement | null;
 
+    const contextBtn = panel.querySelector('#pw-context-btn') as HTMLButtonElement | null;
+    const contextDropdownBtn = panel.querySelector('#pw-context-dropdown') as HTMLButtonElement | null;
+
     closeBtn.addEventListener('click', () => this.close());
     captureBtn.addEventListener('click', () => this.captureScreen());
     pickerBtn.addEventListener('click', () => this.startElementPicker());
     pickerDropdownBtn?.addEventListener('click', (e) => { e.stopPropagation(); this.togglePickerMenu(); });
     cameraDropdownBtn?.addEventListener('click', (e) => { e.stopPropagation(); this.toggleCameraMenu(); });
+    contextBtn?.addEventListener('click', (e) => { e.stopPropagation(); this.toggleContextMenu(); });
+    contextDropdownBtn?.addEventListener('click', (e) => { e.stopPropagation(); this.toggleContextMenu(); });
     adminBtn?.addEventListener('click', () => this.toggleAdminOptions());
     adminDropdownBtn?.addEventListener('click', (e) => { e.stopPropagation(); this.toggleAdminMenu(); });
     sendBtn.addEventListener('click', () => this.handleSubmit());
@@ -534,11 +688,6 @@ export class PromptWidgetElement {
 
     // Restore saved state
     if (this.savedDraft) input.value = this.savedDraft;
-    // Restore checkbox states
-    panel.querySelectorAll('.pw-context-options input[type="checkbox"]').forEach(cb => {
-      const el = cb as HTMLInputElement;
-      if (el.value) el.checked = this.savedCollectors.has(el.value);
-    });
     // Restore screenshots and selected elements
     this.renderScreenshotThumbs();
     this.renderSelectedElementChips();
@@ -587,6 +736,7 @@ export class PromptWidgetElement {
       this.toggleAdminOptions('show');
     }
 
+    this.initResize();
     setTimeout(() => input.focus(), 50);
   }
 
@@ -603,7 +753,7 @@ export class PromptWidgetElement {
     };
 
     const excludeWidget = this.sessionBridge.screenshotIncludeWidget && this.excludeWidget;
-    const blob = await captureScreenshot({ excludeWidget, excludeCursor: this.excludeCursor, keepStream: this.keepStream, onStatus });
+    const blob = await captureScreenshot({ excludeWidget, excludeCursor: this.excludeCursor, keepStream: this.keepStream, method: this.screenshotMethod, onStatus });
     if (blob) {
       this.addScreenshot(blob);
     }
@@ -687,7 +837,7 @@ export class PromptWidgetElement {
 
   private startElementPicker() {
     const panel = this.shadow.querySelector('.pw-panel') as HTMLElement;
-    if (panel) panel.style.opacity = '0.3';
+    if (panel && this.pickerExcludeWidget) panel.style.opacity = '0.3';
 
     this.pickerCleanup = startPicker((infos) => {
       if (panel) panel.style.opacity = '1';
@@ -696,7 +846,7 @@ export class PromptWidgetElement {
         this.selectedElements.push(...infos);
         this.renderSelectedElementChips();
       }
-    }, this.host, { multiSelect: this.pickerMultiSelect });
+    }, this.host, { multiSelect: this.pickerMultiSelect, excludeWidget: this.pickerExcludeWidget });
   }
 
   private renderSelectedElementChips() {
@@ -741,128 +891,30 @@ export class PromptWidgetElement {
 
     const overlay = document.createElement('div');
     overlay.className = 'pw-annotator';
-
-    const toolbar = document.createElement('div');
-    toolbar.className = 'pw-annotator-toolbar';
-
-    const highlightBtn = document.createElement('button');
-    highlightBtn.textContent = 'Highlight';
-    highlightBtn.className = 'active';
-
-    const undoBtn = document.createElement('button');
-    undoBtn.textContent = 'Undo';
-
-    const saveBtn = document.createElement('button');
-    saveBtn.textContent = 'Done';
-    saveBtn.className = 'pw-annotator-save';
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Cancel';
-
-    toolbar.append(highlightBtn, undoBtn, saveBtn, cancelBtn);
-
-    const canvasWrap = document.createElement('div');
-    canvasWrap.className = 'pw-annotator-canvas-wrap';
-
-    const img = new Image();
-    img.src = URL.createObjectURL(blob);
-
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d')!;
-
-    const hint = document.createElement('div');
-    hint.className = 'pw-annotator-hint';
-    hint.textContent = 'Click and drag to highlight areas';
-
-    overlay.append(canvasWrap, toolbar, hint);
-    canvasWrap.append(img, canvas);
     this.shadow.appendChild(overlay);
 
-    type Rect = { x: number; y: number; w: number; h: number };
-    const rects: Rect[] = [];
-    let drawing = false;
-    let didDraw = false;
-    let startX = 0;
-    let startY = 0;
-
-    const clampX = (v: number) => Math.max(0, Math.min(v, canvas.width));
-    const clampY = (v: number) => Math.max(0, Math.min(v, canvas.height));
-
-    img.onload = () => {
-      const displayW = img.clientWidth;
-      const displayH = img.clientHeight;
-      canvas.width = displayW;
-      canvas.height = displayH;
-      canvas.style.width = displayW + 'px';
-      canvas.style.height = displayH + 'px';
-    };
-
-    const redraw = () => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      for (const r of rects) {
-        ctx.fillStyle = 'rgba(255, 220, 40, 0.3)';
-        ctx.fillRect(r.x, r.y, r.w, r.h);
-        ctx.strokeStyle = 'rgba(255, 200, 0, 0.8)';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(r.x, r.y, r.w, r.h);
-      }
-    };
-
-    const getCanvasCoords = (e: MouseEvent) => {
-      const rect = canvas.getBoundingClientRect();
-      return { x: clampX(e.clientX - rect.left), y: clampY(e.clientY - rect.top) };
-    };
-
-    canvas.addEventListener('mousedown', (e) => {
-      drawing = true;
-      didDraw = false;
-      const { x, y } = getCanvasCoords(e);
-      startX = x;
-      startY = y;
-    });
-
-    // Listen on overlay so dragging outside the canvas still tracks
-    overlay.addEventListener('mousemove', (e) => {
-      if (!drawing) return;
-      const { x: curX, y: curY } = getCanvasCoords(e);
-      redraw();
-      ctx.fillStyle = 'rgba(255, 220, 40, 0.3)';
-      ctx.fillRect(startX, startY, curX - startX, curY - startY);
-      ctx.strokeStyle = 'rgba(255, 200, 0, 0.8)';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(startX, startY, curX - startX, curY - startY);
-    });
-
-    overlay.addEventListener('mouseup', (e) => {
-      if (!drawing) return;
-      drawing = false;
-      didDraw = true;
-      const { x: endX, y: endY } = getCanvasCoords(e);
-      const w = endX - startX;
-      const h = endY - startY;
-      if (Math.abs(w) > 4 && Math.abs(h) > 4) {
-        rects.push({ x: startX, y: startY, w, h });
-      }
-      redraw();
-    });
-
-    undoBtn.addEventListener('click', () => {
-      rects.pop();
-      redraw();
-    });
-
     const dismiss = () => {
+      editor.destroy();
       overlay.remove();
       this.annotatorOpen = false;
       document.removeEventListener('keydown', escHandler, true);
     };
 
-    cancelBtn.addEventListener('click', dismiss);
-
-    // Click outside the canvas/toolbar dismisses — but not after a drag
-    overlay.addEventListener('click', (e) => {
-      if (didDraw) { didDraw = false; return; }
-      if (e.target === overlay) dismiss();
+    const editor = new ImageEditor({
+      container: overlay,
+      image: blob,
+      tools: ['highlight', 'crop'],
+      initialTool: 'highlight',
+      saveActions: [{
+        label: 'Done',
+        primary: true,
+        handler: async (resultBlob) => {
+          this.pendingScreenshots[index] = resultBlob;
+          this.renderScreenshotThumbs();
+          dismiss();
+        },
+      }],
+      onCancel: () => dismiss(),
     });
 
     const escHandler = (e: KeyboardEvent) => {
@@ -874,43 +926,10 @@ export class PromptWidgetElement {
     };
     document.addEventListener('keydown', escHandler, true);
     this.annotatorOpen = true;
-
-    saveBtn.addEventListener('click', () => {
-      if (rects.length === 0) {
-        dismiss();
-        return;
-      }
-
-      // Burn annotations into the image at full resolution
-      const fullCanvas = document.createElement('canvas');
-      fullCanvas.width = img.naturalWidth;
-      fullCanvas.height = img.naturalHeight;
-      const fctx = fullCanvas.getContext('2d')!;
-      fctx.drawImage(img, 0, 0);
-
-      const scaleX = img.naturalWidth / canvas.width;
-      const scaleY = img.naturalHeight / canvas.height;
-      for (const r of rects) {
-        fctx.fillStyle = 'rgba(255, 220, 40, 0.3)';
-        fctx.fillRect(r.x * scaleX, r.y * scaleY, r.w * scaleX, r.h * scaleY);
-        fctx.strokeStyle = 'rgba(255, 200, 0, 0.8)';
-        fctx.lineWidth = 3 * scaleX;
-        fctx.strokeRect(r.x * scaleX, r.y * scaleY, r.w * scaleX, r.h * scaleY);
-      }
-
-      fullCanvas.toBlob((newBlob) => {
-        if (newBlob) {
-          this.pendingScreenshots[index] = newBlob;
-          this.renderScreenshotThumbs();
-        }
-        dismiss();
-      }, 'image/png');
-    });
   }
 
   private getCheckedCollectors(): Collector[] {
-    const checkboxes = this.shadow.querySelectorAll('.pw-context-options input[type="checkbox"]:checked');
-    return Array.from(checkboxes).map((cb) => (cb as HTMLInputElement).value as Collector);
+    return Array.from(this.savedCollectors) as Collector[];
   }
 
   private async handleSubmit() {
@@ -1041,6 +1060,36 @@ export class PromptWidgetElement {
     return sid;
   }
 
+  private isOnAdminPage(): boolean {
+    // Check pathname for /admin (works for both /admin and /admin/)
+    if (window.location.pathname.startsWith('/admin')) return true;
+    // Also check if hash routes look like admin SPA routes
+    const hash = window.location.hash;
+    if (hash.startsWith('#/app/') || hash.startsWith('#/settings/')) return true;
+    return false;
+  }
+
+  private getAdminAppId(): string {
+    // Extract the active app ID from the admin SPA's hash route
+    const hash = window.location.hash.slice(1);
+    const m = hash.match(/^\/app\/([^/]+)\//);
+    if (m) return m[1];
+    return this.appId;
+  }
+
+  private navigateAdmin(type: PanelType) {
+    const appId = this.getAdminAppId();
+    const routes: Record<PanelType, string> = {
+      feedback: `/app/${appId}/feedback`,
+      detail: `/app/${appId}/feedback`,
+      sessions: `/app/${appId}/sessions`,
+      aggregate: `/app/${appId}/aggregate`,
+      settings: '/settings/preferences',
+      terminal: `/app/${appId}/sessions`,
+    };
+    window.location.hash = routes[type];
+  }
+
   private bindShortcut() {
     const parts = this.config.shortcut.toLowerCase().split('+');
     document.addEventListener('keydown', (e) => {
@@ -1082,11 +1131,6 @@ export class PromptWidgetElement {
     // Save state before removing panel
     const input = this.shadow.querySelector('#pw-chat-input') as HTMLTextAreaElement;
     if (input) this.savedDraft = input.value;
-    this.savedCollectors.clear();
-    this.shadow.querySelectorAll('.pw-context-options input[type="checkbox"]:checked').forEach(cb => {
-      const val = (cb as HTMLInputElement).value;
-      if (val) this.savedCollectors.add(val);
-    });
     const panel = this.shadow.querySelector('.pw-panel');
     if (panel) panel.remove();
   }
@@ -1102,7 +1146,7 @@ export class PromptWidgetElement {
 
     if (opts.screenshot) {
       const excludeWidget = this.sessionBridge.screenshotIncludeWidget && this.excludeWidget;
-      const blob = await captureScreenshot({ excludeWidget, excludeCursor: this.excludeCursor, keepStream: this.keepStream });
+      const blob = await captureScreenshot({ excludeWidget, excludeCursor: this.excludeCursor, keepStream: this.keepStream, method: this.screenshotMethod });
       if (blob) screenshots.push(blob);
     }
 
@@ -1162,7 +1206,11 @@ export class PromptWidgetElement {
 
   openAdmin(panel?: PanelType, opts?: { param?: string }) {
     if (panel) {
-      this.overlayManager.openPanel(panel, opts);
+      if (this.isOnAdminPage()) {
+        this.navigateAdmin(panel);
+      } else {
+        this.overlayManager.openPanel(panel, opts);
+      }
     } else {
       if (!this.isOpen) this.open();
       this.toggleAdminOptions();

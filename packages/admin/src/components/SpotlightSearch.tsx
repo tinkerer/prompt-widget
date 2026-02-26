@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'preact/hooks';
 import { applications, navigate } from '../lib/state.js';
-import { allSessions, openSession } from '../lib/sessions.js';
+import { allSessions, openSession, getSessionLabel } from '../lib/sessions.js';
+import { recentResults, type RecentResult } from '../lib/settings.js';
 import { api } from '../lib/api.js';
 
 interface SearchResult {
@@ -56,16 +57,18 @@ export function SpotlightSearch({ onClose }: Props) {
     // Search sessions (local)
     for (const s of allSessions.value) {
       if (s.status === 'deleted') continue;
-      const label = s.feedbackTitle || s.agentName || s.id;
-      if (
-        label.toLowerCase().includes(lower) ||
-        s.id.toLowerCase().includes(lower)
-      ) {
+      const customLabel = getSessionLabel(s.id);
+      const label = customLabel || s.feedbackTitle || s.agentName || s.id;
+      const searchable = [label, s.id, s.paneTitle, s.paneCommand, s.panePath].filter(Boolean).join(' ').toLowerCase();
+      if (searchable.includes(lower)) {
         const isPlain = s.permissionProfile === 'plain';
+        const plainLabel = s.paneCommand
+          ? `${s.paneCommand}:${s.panePath || ''} \u2014 ${s.paneTitle || s.id.slice(-6)}`
+          : (s.paneTitle || s.id.slice(-6));
         matched.push({
           type: 'session',
           id: s.id,
-          title: isPlain ? `\u{1F5A5}\uFE0F ${s.paneTitle || s.id.slice(-6)}` : (s.feedbackTitle || s.agentName || `Session ${s.id.slice(-6)}`),
+          title: customLabel || (isPlain ? `\u{1F5A5}\uFE0F ${plainLabel}` : (s.feedbackTitle || s.agentName || `Session ${s.id.slice(-6)}`)),
           subtitle: s.status,
           icon: isPlain ? '\u{1F4BB}' : '\u26A1',
           route: '',
@@ -112,6 +115,8 @@ export function SpotlightSearch({ onClose }: Props) {
   }, [query]);
 
   function selectResult(result: SearchResult) {
+    const entry: RecentResult = { type: result.type, id: result.id, title: result.title, subtitle: result.subtitle, icon: result.icon, route: result.route };
+    recentResults.value = [entry, ...recentResults.value.filter((r) => r.id !== result.id)].slice(0, 10);
     if (result.type === 'session') {
       openSession(result.id);
     } else {
@@ -121,18 +126,30 @@ export function SpotlightSearch({ onClose }: Props) {
   }
 
   function handleKeyDown(e: KeyboardEvent) {
+    const showingRecent = !query && recentResults.value.length > 0;
+    const listLen = showingRecent ? recentResults.value.length : results.length;
     if (e.key === 'Escape') {
       e.preventDefault();
       onClose();
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setSelectedIndex((i) => Math.min(i + 1, results.length - 1));
+      setSelectedIndex((i) => Math.min(i + 1, listLen - 1));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       setSelectedIndex((i) => Math.max(i - 1, 0));
-    } else if (e.key === 'Enter' && results.length > 0) {
+    } else if (e.key === 'Enter') {
       e.preventDefault();
-      selectResult(results[selectedIndex]);
+      if (showingRecent && selectedIndex < recentResults.value.length) {
+        const r = recentResults.value[selectedIndex];
+        if (r.type === 'session') {
+          openSession(r.id);
+        } else {
+          navigate(r.route);
+        }
+        onClose();
+      } else if (results.length > 0) {
+        selectResult(results[selectedIndex]);
+      }
     }
   }
 
@@ -162,6 +179,32 @@ export function SpotlightSearch({ onClose }: Props) {
           {loading && <span class="spotlight-spinner" />}
           <kbd class="spotlight-esc">esc</kbd>
         </div>
+        {!query && recentResults.value.length > 0 && (
+          <div class="spotlight-results" ref={listRef}>
+            <div class="spotlight-category spotlight-recent-header">
+              <span>Recent</span>
+              <button class="spotlight-clear-recent" onClick={() => { recentResults.value = []; }}>Clear</button>
+            </div>
+            {recentResults.value.map((r, i) => (
+              <div
+                key={r.id}
+                class={`spotlight-result ${i === selectedIndex ? 'selected' : ''}`}
+                onClick={() => {
+                  if (r.type === 'session') { openSession(r.id); } else { navigate(r.route); }
+                  onClose();
+                }}
+                onMouseEnter={() => setSelectedIndex(i)}
+              >
+                <span class="spotlight-result-icon">{r.icon}</span>
+                <div class="spotlight-result-text">
+                  <span class="spotlight-result-title">{r.title}</span>
+                  {r.subtitle && <span class="spotlight-result-subtitle">{r.subtitle}</span>}
+                </div>
+                <span class="spotlight-result-type">{r.type}</span>
+              </div>
+            ))}
+          </div>
+        )}
         {results.length > 0 && (
           <div class="spotlight-results" ref={listRef}>
             {grouped.map(([category, items]) => (

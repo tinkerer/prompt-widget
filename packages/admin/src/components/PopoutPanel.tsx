@@ -22,6 +22,7 @@ import {
   snapGuides,
   dockedOrientation,
   setSessionInputState,
+  getSessionLabel,
 } from '../lib/sessions.js';
 import { startTabDrag } from '../lib/tab-drag.js';
 import { ctrlShiftHeld } from '../lib/shortcuts.js';
@@ -29,7 +30,10 @@ import { navigate, selectedAppId } from '../lib/state.js';
 import { api } from '../lib/api.js';
 
 async function resolveSession(sessionId: string, feedbackId?: string) {
-  await killSession(sessionId);
+  const alreadyExited = exitedSessions.value.has(sessionId);
+  if (!alreadyExited) {
+    await killSession(sessionId);
+  }
   if (feedbackId) {
     try {
       await api.updateFeedback(feedbackId, { status: 'resolved' });
@@ -248,10 +252,11 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
   const globalSessions = allNumberedSessions();
 
   function tabLabel(sid: string) {
+    const custom = getSessionLabel(sid);
+    if (custom) return custom;
     const s = sessionMap.get(sid);
     const isPlain = s?.permissionProfile === 'plain';
-    const raw = isPlain ? `Term ${sid.slice(-6)}` : (s?.feedbackTitle || s?.agentName || `Sess ${sid.slice(-6)}`);
-    return raw.length > 20 ? raw.slice(0, 20) + '\u2026' : raw;
+    return isPlain ? `Term ${sid.slice(-6)}` : (s?.feedbackTitle || s?.agentName || `Sess ${sid.slice(-6)}`);
   }
 
   function globalNum(sid: string): number | null {
@@ -338,7 +343,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
         )}
         <span style="flex:1" />
         <div class="popout-header-actions">
-          {activeId && (
+          {activeId && (session?.permissionProfile === 'auto' || session?.permissionProfile === 'yolo') && (
             <select
               class="view-mode-select"
               value={viewMode}
@@ -367,7 +372,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
           >
             {docked ? '\u25A1 Float' : '\u25E8 Dock'}
           </button>
-          {activeId && !isExited && session?.feedbackId && (
+          {activeId && session?.feedbackId && (
             <button class="btn-resolve" onClick={() => resolveSession(activeId, session.feedbackId)} title="Resolve">Resolve</button>
           )}
           {activeId && (isExited ? (

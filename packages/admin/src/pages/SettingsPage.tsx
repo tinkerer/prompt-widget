@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'preact/hooks';
-import { theme, setTheme, shortcutsEnabled, tooltipsEnabled, showTabs, arrowTabSwitching, multiDigitTabs, autoNavigateToFeedback, showHotkeyHints, autoJumpWaiting, popoutMode, type Theme, type PopoutMode } from '../lib/settings.js';
+import { theme, setTheme, shortcutsEnabled, tooltipsEnabled, showTabs, arrowTabSwitching, multiDigitTabs, autoNavigateToFeedback, showHotkeyHints, autoJumpWaiting, autoJumpInterrupt, autoJumpDelay, popoutMode, type Theme, type PopoutMode } from '../lib/settings.js';
 import { perfOverlayEnabled, perfServerEnabled } from '../lib/perf.js';
 import { getAllShortcuts } from '../lib/shortcuts.js';
 import { Guide, GUIDES, resetGuide } from '../components/Guide.js';
@@ -420,6 +420,36 @@ export function SettingsPage() {
                 type="checkbox"
                 checked={autoJumpWaiting.value}
                 onChange={(e) => (autoJumpWaiting.value = (e.target as HTMLInputElement).checked)}
+              />
+              <span class="toggle-slider" />
+            </label>
+          </div>
+
+          <div class="settings-toggle-row" style={{ paddingLeft: 24 }}>
+            <div>
+              <div class="settings-toggle-label">Interrupt typing</div>
+              <div class="settings-toggle-desc">Jump immediately even if you're in the middle of typing</div>
+            </div>
+            <label class="toggle-switch">
+              <input
+                type="checkbox"
+                checked={autoJumpInterrupt.value}
+                onChange={(e) => (autoJumpInterrupt.value = (e.target as HTMLInputElement).checked)}
+              />
+              <span class="toggle-slider" />
+            </label>
+          </div>
+
+          <div class="settings-toggle-row" style={{ paddingLeft: 24 }}>
+            <div>
+              <div class="settings-toggle-label">3 second delay</div>
+              <div class="settings-toggle-desc">Wait 3 seconds before jumping (cancel with Ctrl+Shift+X)</div>
+            </div>
+            <label class="toggle-switch">
+              <input
+                type="checkbox"
+                checked={autoJumpDelay.value}
+                onChange={(e) => (autoJumpDelay.value = (e.target as HTMLInputElement).checked)}
               />
               <span class="toggle-slider" />
             </label>

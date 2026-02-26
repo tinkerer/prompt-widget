@@ -122,6 +122,18 @@ export const api = {
   deleteApplication: (id: string) =>
     request(`/admin/applications/${id}`, { method: 'DELETE' }),
 
+  scaffoldApp: (data: { name: string; parentDir: string; projectName: string }) =>
+    request<{ id: string; apiKey: string; projectDir: string }>('/admin/applications/scaffold', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  cloneApp: (data: { name: string; gitUrl: string; parentDir: string; dirName?: string }) =>
+    request<{ id: string; apiKey: string; projectDir: string }>('/admin/applications/clone', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
   regenerateApplicationKey: (id: string) =>
     request<{ id: string; apiKey: string }>(`/admin/applications/${id}/regenerate-key`, {
       method: 'POST',
@@ -162,6 +174,20 @@ export const api = {
 
   openSessionInTerminal: (id: string) =>
     request<{ ok: boolean; tmuxName: string }>(`/admin/agent-sessions/${id}/open-terminal`, {
+      method: 'POST',
+    }),
+
+  getJsonl: async (id: string): Promise<string> => {
+    const token = getToken();
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const res = await fetch(`${BASE}/admin/agent-sessions/${id}/jsonl`, { headers });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.text();
+  },
+
+  tailJsonl: (id: string) =>
+    request<{ sessionId: string; jsonlPath: string }>(`/admin/agent-sessions/${id}/tail-jsonl`, {
       method: 'POST',
     }),
 

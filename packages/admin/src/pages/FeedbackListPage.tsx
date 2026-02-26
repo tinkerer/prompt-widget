@@ -11,7 +11,7 @@ const page = signal(1);
 const totalPages = signal(0);
 const loading = signal(false);
 const filterType = signal('');
-const filterStatuses = signal<Set<string>>(new Set(['new', 'dispatched']));
+const filterStatuses = signal<Set<string>>(new Set(['new', 'running', 'failed']));
 const searchQuery = signal('');
 const selected = signal<Set<string>>(new Set());
 const currentAppId = signal<string | null>(null);
@@ -25,7 +25,8 @@ const isStuck = signal(false);
 const filtersCollapsed = signal(false);
 const sortMode = signal<string>('newest');
 const TYPES = ['', 'manual', 'ab_test', 'analytics', 'error_report', 'programmatic'];
-const STATUSES = ['', 'new', 'reviewed', 'dispatched', 'resolved', 'archived', 'deleted'];
+const STATUSES = ['', 'new', 'reviewed', 'running', 'completed', 'killed', 'failed', 'resolved', 'archived', 'deleted'];
+const DISPATCH_STATUSES = new Set(['running', 'completed', 'killed', 'failed']);
 const SORT_OPTIONS = [
   { value: 'newest', label: 'Newest first' },
   { value: 'oldest', label: 'Oldest first' },
@@ -62,7 +63,16 @@ async function loadFeedback() {
   try {
     const params: Record<string, string | number> = { page: page.value, limit: 20 };
     if (filterType.value) params.type = filterType.value;
-    if (filterStatuses.value.size > 0) params.status = Array.from(filterStatuses.value).join(',');
+    const regularStatuses: string[] = [];
+    const dispatchStatuses: string[] = [];
+    for (const s of filterStatuses.value) {
+      if (DISPATCH_STATUSES.has(s)) dispatchStatuses.push(s);
+      else regularStatuses.push(s);
+    }
+    if (regularStatuses.length > 0 || dispatchStatuses.length > 0) {
+      if (regularStatuses.length > 0) params.status = regularStatuses.join(',');
+      if (dispatchStatuses.length > 0) params.dispatchStatus = dispatchStatuses.join(',');
+    }
     if (searchQuery.value) params.search = searchQuery.value;
     if (currentAppId.value) params.appId = currentAppId.value;
     const mode = sortMode.value;
@@ -435,10 +445,11 @@ export function FeedbackListPage({ appId }: { appId: string }) {
         <div class={`filter-pills ${filtersCollapsed.value || hasSelection ? 'collapsed' : ''}`}>
           {STATUSES.filter(Boolean).map((s) => {
             const active = filterStatuses.value.has(s);
+            const pillClass = DISPATCH_STATUSES.has(s) ? `badge-dispatch-${s}` : `badge-${s}`;
             return (
               <button
                 key={s}
-                class={`status-filter-pill badge-${s} ${active ? 'active' : ''}`}
+                class={`status-filter-pill ${pillClass} ${active ? 'active' : ''}`}
                 onClick={() => {
                   const next = new Set(filterStatuses.value);
                   if (next.has(s)) next.delete(s);
@@ -511,10 +522,10 @@ export function FeedbackListPage({ appId }: { appId: string }) {
               </th>
               <th style="width:60px">ID</th>
               <th>Title</th>
-              <th>Type</th>
-              <th>Status</th>
-              <th>Tags</th>
-              <th>Created</th>
+              <th style="width:90px">Type</th>
+              <th style="width:110px">Status</th>
+              <th style="width:120px">Tags</th>
+              <th style="width:100px">Created</th>
               <th style="width:120px">Actions</th>
             </tr>
           </thead>
@@ -538,7 +549,7 @@ export function FeedbackListPage({ appId }: { appId: string }) {
                     {item.id.slice(-6)}
                   </code>
                 </td>
-                <td>
+                <td style="max-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
                   <a
                     href={`#${basePath}/${item.id}`}
                     onClick={(e) => {
@@ -546,6 +557,7 @@ export function FeedbackListPage({ appId }: { appId: string }) {
                       navigate(`${basePath}/${item.id}`);
                     }}
                     style="color:var(--pw-primary-text);text-decoration:none;font-weight:500"
+                    title={item.title}
                   >
                     {item.title}
                   </a>

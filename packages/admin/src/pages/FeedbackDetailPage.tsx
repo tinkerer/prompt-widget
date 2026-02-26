@@ -221,7 +221,7 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
                   if (e.key === 'Escape') (editingTitle.value = false);
                 }}
                 onBlur={saveTitle}
-                style="font-size:inherit;font-weight:inherit;padding:2px 6px;border:1px solid var(--pw-accent);border-radius:4px;background:var(--pw-input-bg);color:var(--pw-primary-text);width:400px"
+                style="font-size:inherit;font-weight:inherit;padding:2px 6px;border:1px solid var(--pw-accent);border-radius:4px;background:var(--pw-input-bg);color:var(--pw-primary-text);width:100%;max-width:800px"
                 ref={(el) => el?.focus()}
               />
             ) : (
@@ -661,7 +661,7 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
                   lightboxFeedbackId.value = null;
                 }}>&times;</button>
                 <div class="sm-lightbox-toolbar">
-                  <button class="btn btn-sm" onClick={() => (cropMode.value = true)}>Crop</button>
+                  <button class="btn btn-sm" onClick={() => (cropMode.value = true)}>Edit</button>
                 </div>
               </>
             )}

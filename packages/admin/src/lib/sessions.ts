@@ -1,6 +1,6 @@
 import { signal } from '@preact/signals';
 import { api } from './api.js';
-import { autoNavigateToFeedback, autoJumpWaiting } from './settings.js';
+import { autoNavigateToFeedback, autoJumpWaiting, autoJumpInterrupt, autoJumpDelay } from './settings.js';
 import { navigate, selectedAppId } from './state.js';
 import { timed } from './perf.js';
 import type { ViewMode } from '../components/SessionViewToggle.js';
@@ -25,6 +25,7 @@ export const splitEnabled = signal<boolean>(loadJson('pw-split-enabled', false))
 export const rightPaneTabs = signal<string[]>(loadJson('pw-right-pane-tabs', []));
 export const rightPaneActiveId = signal<string | null>(loadJson('pw-right-pane-active', null));
 export const splitRatio = signal<number>(loadJson('pw-split-ratio', 0.5));
+export const activeSplitSide = signal<'left' | 'right'>('left');
 
 export interface PopoutPanelState {
   id: string;
@@ -596,16 +597,9 @@ export const sessionSearchQuery = signal('');
 export const sessionsHeight = signal(loadJson('pw-sessions-height', 300));
 
 export type SessionStatusFilter = 'running' | 'pending' | 'completed' | 'failed' | 'killed';
-export type SessionTypeFilter = 'agent' | 'terminal';
-
 const DEFAULT_STATUS_FILTERS: SessionStatusFilter[] = ['running', 'pending'];
-const DEFAULT_TYPE_FILTERS: SessionTypeFilter[] = ['agent', 'terminal'];
-
 export const sessionStatusFilters = signal<Set<SessionStatusFilter>>(
   new Set(loadJson<SessionStatusFilter[]>('pw-session-status-filters', DEFAULT_STATUS_FILTERS))
-);
-export const sessionTypeFilters = signal<Set<SessionTypeFilter>>(
-  new Set(loadJson<SessionTypeFilter[]>('pw-session-type-filters', DEFAULT_TYPE_FILTERS))
 );
 export const sessionFiltersOpen = signal(loadJson('pw-session-filters-open', false));
 
@@ -615,14 +609,6 @@ export function toggleStatusFilter(status: SessionStatusFilter) {
   else next.add(status);
   sessionStatusFilters.value = next;
   localStorage.setItem('pw-session-status-filters', JSON.stringify([...next]));
-}
-
-export function toggleTypeFilter(type: SessionTypeFilter) {
-  const next = new Set(sessionTypeFilters.value);
-  if (next.has(type)) next.delete(type);
-  else next.add(type);
-  sessionTypeFilters.value = next;
-  localStorage.setItem('pw-session-type-filters', JSON.stringify([...next]));
 }
 
 export function toggleSessionFiltersOpen() {
@@ -636,11 +622,6 @@ export function sessionPassesFilters(s: any, tabSet: Set<string>): boolean {
 
   const statusFilters = sessionStatusFilters.value;
   if (!statusFilters.has(s.status)) return false;
-
-  const typeFilters = sessionTypeFilters.value;
-  const isPlain = s.permissionProfile === 'plain';
-  const sType: SessionTypeFilter = isPlain ? 'terminal' : 'agent';
-  if (!typeFilters.has(sType)) return false;
 
   return true;
 }
@@ -677,6 +658,14 @@ export function setSessionsHeight(h: number) {
   localStorage.setItem('pw-sessions-height', JSON.stringify(clamped));
 }
 
+export const terminalsHeight = signal(loadJson('pw-terminals-height', 150));
+
+export function setTerminalsHeight(h: number) {
+  const clamped = Math.max(80, Math.min(h, window.innerHeight - 200));
+  terminalsHeight.value = clamped;
+  localStorage.setItem('pw-terminals-height', JSON.stringify(clamped));
+}
+
 export async function loadAllSessions(includeDeleted = false) {
   sessionsLoading.value = true;
   try {
@@ -690,12 +679,18 @@ export async function loadAllSessions(includeDeleted = false) {
     allSessions.value = sessions;
 
     // Update input states from API for all sessions
-    const next = new Map(sessionInputStates.value);
+    const prev = sessionInputStates.value;
+    const next = new Map(prev);
+    let changed = false;
     for (const s of sessions) {
-      if (s.inputState && s.inputState !== 'active') next.set(s.id, s.inputState);
-      else next.delete(s.id);
+      const had = prev.get(s.id);
+      if (s.inputState && s.inputState !== 'active') {
+        if (had !== s.inputState) { next.set(s.id, s.inputState); changed = true; }
+      } else {
+        if (had !== undefined) { next.delete(s.id); changed = true; }
+      }
     }
-    sessionInputStates.value = next;
+    if (changed) sessionInputStates.value = next;
   } catch {
     // ignore
   } finally {
@@ -703,9 +698,11 @@ export async function loadAllSessions(includeDeleted = false) {
   }
 }
 
+export const includeDeletedInPolling = signal(false);
+
 export function startSessionPolling(): () => void {
-  loadAllSessions();
-  const id = setInterval(loadAllSessions, 5000);
+  loadAllSessions(includeDeletedInPolling.value);
+  const id = setInterval(() => loadAllSessions(includeDeletedInPolling.value), 5000);
   return () => clearInterval(id);
 }
 
@@ -717,7 +714,28 @@ export function goToPreviousTab() {
   }
 }
 
+export function focusSessionTerminal(sessionId: string) {
+  requestAnimationFrame(() => {
+    let container: Element | null = null;
+    if (splitEnabled.value && rightPaneTabs.value.includes(sessionId)) {
+      container = document.querySelector('[data-split-pane="split-right"]');
+    } else {
+      const panel = findPanelForSession(sessionId);
+      if (panel) {
+        container = document.querySelector(`[data-panel-id="${panel.id}"]`);
+      } else {
+        container = document.querySelector('.global-terminal-panel');
+      }
+    }
+    if (container) {
+      const textarea = container.querySelector('.xterm-helper-textarea') as HTMLElement | null;
+      if (textarea) textarea.focus();
+    }
+  });
+}
+
 export function openSession(sessionId: string) {
+  console.log(`[auto-jump] openSession: ${sessionId.slice(-6)}, currentActive=${activeTabId.value?.slice(-6) ?? 'null'}, alreadyOpen=${openTabs.value.includes(sessionId)}`);
   if (!openTabs.value.includes(sessionId)) {
     openTabs.value = [...openTabs.value, sessionId];
   }
@@ -927,20 +945,131 @@ export function showActionToast(key: string, label: string, color = 'var(--pw-pr
 export type InputState = 'active' | 'idle' | 'waiting';
 export const sessionInputStates = signal<Map<string, InputState>>(new Map());
 
+export const pendingAutoJump = signal<string | null>(null);
+export const autoJumpCountdown = signal<number>(0);
+export const autoJumpPaused = signal(false);
+let autoJumpTimer: ReturnType<typeof setInterval> | null = null;
+
+function clearAutoJumpTimer() {
+  if (autoJumpTimer) { clearInterval(autoJumpTimer); autoJumpTimer = null; }
+}
+
+function isUserTyping(): boolean {
+  let el: Element | null = document.activeElement;
+  if (!el) return false;
+  while (el?.shadowRoot?.activeElement) el = el.shadowRoot.activeElement;
+  const tag = el.tagName.toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || tag === 'select' || (el as HTMLElement).isContentEditable) return true;
+  if (el.closest?.('.xterm')) return true;
+  return false;
+}
+
+function executePendingAutoJump() {
+  const targetId = pendingAutoJump.value;
+  console.log(`[auto-jump] executePendingAutoJump called, targetId=${targetId?.slice(-6) ?? 'null'}`);
+  if (!targetId) return;
+
+  if (!autoJumpInterrupt.value && isUserTyping()) {
+    console.log(`[auto-jump] user is typing, interrupt OFF — pausing auto-jump for ${targetId.slice(-6)}`);
+    autoJumpPaused.value = true;
+    return;
+  }
+
+  autoJumpPaused.value = false;
+
+  if (autoJumpDelay.value) {
+    console.log(`[auto-jump] starting 3s countdown for ${targetId.slice(-6)}`);
+    autoJumpCountdown.value = 3;
+    clearAutoJumpTimer();
+    autoJumpTimer = setInterval(() => {
+      if (!autoJumpInterrupt.value && isUserTyping()) {
+        console.log(`[auto-jump] user started typing during countdown — pausing`);
+        clearAutoJumpTimer();
+        autoJumpCountdown.value = 0;
+        autoJumpPaused.value = true;
+        return;
+      }
+      const next = autoJumpCountdown.value - 1;
+      autoJumpCountdown.value = next;
+      if (next <= 0) {
+        clearAutoJumpTimer();
+        const id = pendingAutoJump.value;
+        pendingAutoJump.value = null;
+        autoJumpPaused.value = false;
+        console.log(`[auto-jump] countdown done, jumping to ${id?.slice(-6) ?? 'null'}`);
+        if (id) activateSessionInPlace(id);
+      }
+    }, 1000);
+  } else {
+    console.log(`[auto-jump] immediate jump to ${targetId.slice(-6)}`);
+    pendingAutoJump.value = null;
+    activateSessionInPlace(targetId);
+  }
+}
+
+export function cancelAutoJump() {
+  clearAutoJumpTimer();
+  pendingAutoJump.value = null;
+  autoJumpCountdown.value = 0;
+  autoJumpPaused.value = false;
+  showActionToast('\u2715', 'Auto-jump cancelled', 'var(--pw-text-muted)');
+}
+
+export function hideAutoJumpPopup() {
+  autoJumpPaused.value = false;
+  pendingAutoJump.value = null;
+}
+
 export function setSessionInputState(sessionId: string, state: InputState) {
   const prev = sessionInputStates.value;
-  const wasWaiting = prev.get(sessionId) === 'waiting';
+  const prevState = prev.get(sessionId) || 'active';
+  if (prevState === state) return;
+  const wasWaiting = prevState === 'waiting';
   const next = new Map(prev);
   if (state === 'active') next.delete(sessionId);
   else next.set(sessionId, state);
   sessionInputStates.value = next;
 
+  // If the pending auto-jump target left waiting, clear it
+  if (wasWaiting && state !== 'waiting' && pendingAutoJump.value === sessionId) {
+    clearAutoJumpTimer();
+    pendingAutoJump.value = null;
+    autoJumpCountdown.value = 0;
+    autoJumpPaused.value = false;
+  }
+
+  console.log(`[auto-jump] inputState changed: session=${sessionId.slice(-6)} ${prevState} → ${state} (wasWaiting=${wasWaiting})`, {
+    allStates: Object.fromEntries(next),
+    autoJumpEnabled: autoJumpWaiting.value,
+    activeTab: activeTabId.value?.slice(-6),
+  });
+
   if (wasWaiting && state !== 'waiting' && autoJumpWaiting.value) {
     const waitingSessions = allSessions.value.filter(
       (s: any) => s.id !== sessionId && s.status === 'running' && next.get(s.id) === 'waiting'
     );
-    if (waitingSessions.length > 0) {
-      setTimeout(() => activateSessionInPlace(waitingSessions[0].id), 100);
+    console.log(`[auto-jump] session ${sessionId.slice(-6)} left waiting. Other waiting sessions:`, waitingSessions.map((s: any) => s.id.slice(-6)));
+    if (waitingSessions.length === 0) {
+      console.log(`[auto-jump] no other waiting sessions, skipping auto-jump`);
+      return;
+    }
+    const targetId = waitingSessions[0].id;
+    pendingAutoJump.value = targetId;
+    // interrupt ON → jump almost immediately; OFF → short grace period
+    const delay = autoJumpInterrupt.value ? 100 : 500;
+    console.log(`[auto-jump] scheduling jump to ${targetId.slice(-6)} in ${delay}ms (interrupt=${autoJumpInterrupt.value})`);
+    setTimeout(() => executePendingAutoJump(), delay);
+  } else if (wasWaiting && state !== 'waiting') {
+    console.log(`[auto-jump] session left waiting but autoJumpWaiting is OFF`);
+  } else if (state === 'waiting' && !wasWaiting && autoJumpWaiting.value) {
+    // Session just entered waiting — jump to it if the active tab is not waiting
+    const activeId = activeTabId.value;
+    const activeState = activeId ? (next.get(activeId) || 'active') : 'active';
+    if (activeId !== sessionId && activeState !== 'waiting') {
+      console.log(`[auto-jump] session ${sessionId.slice(-6)} entered waiting, active tab ${activeId?.slice(-6)} is ${activeState} — jumping`);
+      pendingAutoJump.value = sessionId;
+      const delay = autoJumpInterrupt.value ? 100 : 500;
+      setTimeout(() => executePendingAutoJump(), delay);
     }
   }
 }
@@ -962,12 +1091,28 @@ export function cycleWaitingSession() {
 }
 
 export function activateSessionInPlace(sessionId: string) {
+  console.log(`[auto-jump] activateSessionInPlace: ${sessionId.slice(-6)}, splitEnabled=${splitEnabled.value}, inRightPane=${rightPaneTabs.value.includes(sessionId)}`);
   if (splitEnabled.value && rightPaneTabs.value.includes(sessionId)) {
     rightPaneActiveId.value = sessionId;
     persistSplitState();
+    console.log(`[auto-jump] activated in right pane: ${sessionId.slice(-6)}`);
     return;
   }
   openSession(sessionId);
+}
+
+export const sessionLabels = signal<Record<string, string>>(loadJson('pw-session-labels', {}));
+
+export function setSessionLabel(sessionId: string, label: string) {
+  const next = { ...sessionLabels.value };
+  if (label.trim()) next[sessionId] = label.trim();
+  else delete next[sessionId];
+  sessionLabels.value = next;
+  localStorage.setItem('pw-session-labels', JSON.stringify(next));
+}
+
+export function getSessionLabel(sessionId: string): string | undefined {
+  return sessionLabels.value[sessionId];
 }
 
 export const hotkeyMenuOpen = signal<{ sessionId: string; x: number; y: number } | null>(null);

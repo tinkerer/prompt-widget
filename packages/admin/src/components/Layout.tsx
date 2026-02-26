@@ -10,8 +10,9 @@ import { PerfOverlay } from './PerfOverlay.js';
 import { Tooltip } from './Tooltip.js';
 import { ShortcutHelpModal } from './ShortcutHelpModal.js';
 import { SpotlightSearch } from './SpotlightSearch.js';
+import { AddAppModal } from './AddAppModal.js';
 import { registerShortcut, ctrlShiftHeld } from '../lib/shortcuts.js';
-import { toggleTheme, showTabs, arrowTabSwitching, showHotkeyHints, autoJumpWaiting } from '../lib/settings.js';
+import { toggleTheme, showTabs, arrowTabSwitching, showHotkeyHints, autoJumpWaiting, autoJumpInterrupt, autoJumpDelay, autoJumpShowPopup } from '../lib/settings.js';
 import {
   openTabs,
   activeTabId,
@@ -37,16 +38,16 @@ import {
   toggleSessionsDrawer,
   sessionsHeight,
   setSessionsHeight,
+  terminalsHeight,
+  setTerminalsHeight,
   setSidebarWidth,
   spawnTerminal,
   handleTabDigit0to9,
   togglePopOutActive,
   pendingFirstDigit,
   sessionStatusFilters,
-  sessionTypeFilters,
   sessionFiltersOpen,
   toggleStatusFilter,
-  toggleTypeFilter,
   toggleSessionFiltersOpen,
   sessionPassesFilters,
   allNumberedSessions,
@@ -66,14 +67,52 @@ import {
   disableSplit,
   focusedPanelId,
   cycleWaitingSession,
+  goToPreviousTab,
+  pendingAutoJump,
+  autoJumpCountdown,
+  autoJumpPaused,
+  cancelAutoJump,
+  hideAutoJumpPopup,
+  popOutTab,
+  focusSessionTerminal,
+  getSessionLabel,
 } from '../lib/sessions.js';
 
+interface LiveConnection {
+  sessionId: string;
+  connectedAt: string;
+  lastActivity: string;
+  url: string | null;
+  appId: string | null;
+}
+const liveConnections = signal<LiveConnection[]>([]);
 const liveConnectionCounts = signal<Record<string, number>>({});
 const totalLiveConnections = signal(0);
+const liveSites = signal<{ origin: string; hostname: string; count: number }[]>([]);
 const sidebarStatusMenu = signal<{ sessionId: string; x: number; y: number } | null>(null);
+const sidebarItemMenu = signal<{ sessionId: string; x: number; y: number } | null>(null);
+const addAppModalOpen = signal(false);
+
+function highlightMatch(text: string, query: string) {
+  const lower = text.toLowerCase();
+  const q = query.toLowerCase();
+  const idx = lower.indexOf(q);
+  if (idx < 0) return text;
+  return (
+    <>
+      {text.slice(0, idx)}
+      <span class="search-match">{text.slice(idx, idx + q.length)}</span>
+      {text.slice(idx + q.length)}
+    </>
+  );
+}
+const autoJumpMenuOpen = signal(false);
 
 async function sidebarResolveSession(sessionId: string, feedbackId?: string) {
-  await killSession(sessionId);
+  const alreadyExited = exitedSessions.value.has(sessionId);
+  if (!alreadyExited) {
+    await killSession(sessionId);
+  }
   if (feedbackId) {
     try {
       await api.updateFeedback(feedbackId, { status: 'resolved' });
@@ -87,13 +126,27 @@ async function sidebarResolveSession(sessionId: string, feedbackId?: string) {
 async function pollLiveConnections() {
   try {
     const conns = await api.getLiveConnections();
+    liveConnections.value = conns;
     totalLiveConnections.value = conns.length;
     const counts: Record<string, number> = {};
+    const siteMap = new Map<string, number>();
+    const serverOrigin = window.location.origin;
     for (const c of conns) {
       const key = c.appId || '__unlinked__';
       counts[key] = (counts[key] || 0) + 1;
+      if (c.url) {
+        try {
+          const u = new URL(c.url);
+          if (u.origin !== serverOrigin) {
+            siteMap.set(u.origin, (siteMap.get(u.origin) || 0) + 1);
+          }
+        } catch { /* invalid url */ }
+      }
     }
     liveConnectionCounts.value = counts;
+    liveSites.value = [...siteMap.entries()]
+      .map(([origin, count]) => ({ origin, hostname: new URL(origin).hostname, count }))
+      .sort((a, b) => a.hostname.localeCompare(b.hostname));
   } catch {
     // ignore
   }
@@ -153,6 +206,20 @@ export function Layout({ children }: { children: ComponentChildren }) {
     document.addEventListener('click', close);
     return () => document.removeEventListener('click', close);
   }, [sidebarStatusMenu.value]);
+
+  useEffect(() => {
+    if (!sidebarItemMenu.value) return;
+    const close = () => { sidebarItemMenu.value = null; };
+    document.addEventListener('click', close);
+    return () => document.removeEventListener('click', close);
+  }, [sidebarItemMenu.value]);
+
+  useEffect(() => {
+    if (!autoJumpMenuOpen.value) return;
+    const close = () => { autoJumpMenuOpen.value = false; };
+    document.addEventListener('click', close);
+    return () => document.removeEventListener('click', close);
+  }, [autoJumpMenuOpen.value]);
 
   useEffect(() => {
     const cleanups = [
@@ -311,6 +378,17 @@ export function Layout({ children }: { children: ComponentChildren }) {
         action: () => { idMenuOpen.value = !idMenuOpen.value; },
       }),
       registerShortcut({
+        key: 'B',
+        code: 'KeyB',
+        modifiers: { ctrl: true, shift: true },
+        label: 'Back to previous tab',
+        category: 'Panels',
+        action: () => {
+          goToPreviousTab();
+          showActionToast('B', 'Back', 'var(--pw-accent)');
+        },
+      }),
+      registerShortcut({
         sequence: 'g w',
         key: 'w',
         label: 'Go to waiting session',
@@ -425,7 +503,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
           const sid = activeTabId.value;
           if (!sid) return;
           const sess = allSessions.value.find((s: any) => s.id === sid);
-          if (!sess || exitedSessions.value.has(sid) || !sess.feedbackId) return;
+          if (!sess || !sess.feedbackId) return;
           hotkeyMenuOpen.value = null;
           showActionToast('R', 'Resolve', 'var(--pw-success)');
           sidebarResolveSession(sid, sess.feedbackId);
@@ -444,6 +522,14 @@ export function Layout({ children }: { children: ComponentChildren }) {
           showActionToast('K', 'Kill', 'var(--pw-danger)');
           killSession(sid);
         },
+      }),
+      registerShortcut({
+        key: 'X',
+        code: 'KeyX',
+        modifiers: { ctrl: true, shift: true },
+        label: 'Cancel auto-jump',
+        category: 'Panels',
+        action: cancelAutoJump,
       }),
     ];
     return () => cleanups.forEach((fn) => fn());
@@ -477,16 +563,12 @@ export function Layout({ children }: { children: ComponentChildren }) {
   const waitingCount = sessions.filter((s: any) => s.status === 'running' && sessionInputStates.value.get(s.id) === 'waiting').length;
   const nonDeletedSessions = sessions.filter((s: any) => s.status !== 'deleted');
   const statusCounts: Record<string, number> = {};
-  const typeCounts = { agent: 0, terminal: 0 };
   for (const s of nonDeletedSessions) {
     statusCounts[s.status] = (statusCounts[s.status] || 0) + 1;
-    if (s.permissionProfile === 'plain') typeCounts.terminal++;
-    else typeCounts.agent++;
   }
   const filtersOpen = sessionFiltersOpen.value;
   const activeStatusFilters = sessionStatusFilters.value;
-  const activeTypeFilters = sessionTypeFilters.value;
-  const activeFilterCount = activeStatusFilters.size + activeTypeFilters.size;
+  const activeFilterCount = activeStatusFilters.size;
 
   const appSubTabs = ['feedback', 'aggregate', 'sessions', 'live'];
   const settingsTabs = ['/settings/agents', '/settings/applications', '/settings/getting-started', '/settings/preferences'];
@@ -536,6 +618,106 @@ export function Layout({ children }: { children: ComponentChildren }) {
     openSession(next);
   }
 
+  const filtered = recentSessions.filter((s) => {
+    if (!sessionSearchQuery.value) return true;
+    const q = sessionSearchQuery.value.toLowerCase();
+    const text = [getSessionLabel(s.id), s.feedbackTitle, s.agentName, s.id, s.paneTitle, s.paneCommand, s.panePath].filter(Boolean).join(' ').toLowerCase();
+    return text.includes(q);
+  });
+  const terminals = filtered.filter((s: any) => s.permissionProfile === 'plain');
+  const agents = filtered.filter((s: any) => s.permissionProfile !== 'plain');
+  const waitingAgents = agents.filter((s: any) => s.status === 'running' && sessionInputStates.value.get(s.id) === 'waiting');
+  const restAgents = agents.filter((s: any) => !(s.status === 'running' && sessionInputStates.value.get(s.id) === 'waiting'));
+  const globalSessions = allNumberedSessions();
+  const visibleSet = new Set<string>();
+  if (activeTabId.value) visibleSet.add(activeTabId.value);
+  if (rightPaneActiveId.value) visibleSet.add(rightPaneActiveId.value);
+  for (const p of popoutPanels.value) {
+    if (p.visible && p.activeSessionId) visibleSet.add(p.activeSessionId);
+  }
+  const renderItem = (s: any) => {
+    const isTabbed = tabSet.has(s.id);
+    const isInPanel = !!findPanelForSession(s.id);
+    const isVisible = visibleSet.has(s.id);
+    const isNumbered = isTabbed || isInPanel;
+    const inputSt = s.status === 'running' ? (sessionInputStates.value.get(s.id) || null) : null;
+    const isPlain = s.permissionProfile === 'plain';
+    const plainLabel = s.paneCommand
+      ? `${s.paneCommand}:${s.panePath || ''} \u2014 ${s.paneTitle || s.id.slice(-6)}`
+      : (s.paneTitle || s.id.slice(-6));
+    const customLabel = getSessionLabel(s.id);
+    const raw = customLabel || (isPlain ? `\u{1F5A5}\uFE0F ${plainLabel}` : (s.feedbackTitle || s.agentName || `Session ${s.id.slice(-6)}`));
+    const tooltip = isPlain
+      ? `Terminal \u2014 ${s.status}`
+      : s.feedbackTitle
+        ? `${s.feedbackTitle} \u2014 ${s.status}`
+        : `${s.agentName || 'Session'} \u2014 ${s.status}`;
+    const globalIdx = globalSessions.indexOf(s.id);
+    const globalNum = globalIdx >= 0 ? globalIdx + 1 : null;
+    const showPausedPopup = autoJumpPaused.value && pendingAutoJump.value === s.id && autoJumpShowPopup.value;
+    return (
+      <div key={s.id} class="sidebar-session-item-wrapper">
+        <div
+          class={`sidebar-session-item ${isTabbed ? 'tabbed' : ''} ${isInPanel ? 'in-panel' : ''} ${isVisible ? 'active' : ''}`}
+          onClick={() => {
+            openSession(s.id);
+            focusSessionTerminal(s.id);
+          }}
+          title={tooltip}
+        >
+          <span class="sidebar-dot-wrapper">
+            <span
+              class={`session-status-dot ${s.status}${isPlain ? ' plain' : ''}${inputSt ? ` ${inputSt}` : ''}`}
+              title={inputSt === 'waiting' ? 'waiting for input' : inputSt === 'idle' ? 'idle' : s.status}
+              onClick={(e) => {
+                e.stopPropagation();
+                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                sidebarStatusMenu.value = { sessionId: s.id, x: rect.right + 4, y: rect.top };
+              }}
+            />
+            {ctrlShiftHeld.value && inputSt === 'waiting' ? (
+              <span class="sidebar-tab-badge sidebar-tab-badge-overlay tab-badge-waiting">A</span>
+            ) : ctrlShiftHeld.value && isNumbered && globalNum !== null ? (
+              <span class="sidebar-tab-badge-overlay"><SidebarTabBadge tabNum={globalNum} /></span>
+            ) : null}
+          </span>
+          <span class="session-label">{sessionSearchQuery.value ? highlightMatch(raw, sessionSearchQuery.value) : raw}</span>
+          <button
+            class="sidebar-item-menu-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+              sidebarItemMenu.value = { sessionId: s.id, x: rect.right + 4, y: rect.top };
+            }}
+            title="Session actions"
+          >
+            {'\u25BE'}
+          </button>
+          <button
+            class="session-delete-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              deleteSession(s.id);
+            }}
+            title="Archive session"
+          >
+            {'\u00D7'}
+          </button>
+        </div>
+        {showPausedPopup && (
+          <div class="auto-jump-popup" onClick={(e) => e.stopPropagation()}>
+            <span class="auto-jump-popup-text">Waiting for you to stop typing</span>
+            <span class="auto-jump-popup-actions">
+              <kbd onClick={() => { cycleWaitingSession(); cancelAutoJump(); }}>{'\u2303\u21E7'}A</kbd> jump
+              {' '}<kbd onClick={cancelAutoJump}>{'\u2303\u21E7'}X</kbd> cancel
+              {' '}<kbd onClick={hideAutoJumpPopup}>hide</kbd>
+            </span>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const settingsItems = [
     { path: '/settings/agents', label: 'Agents', icon: '\u{1F916}' },
     { path: '/settings/applications', label: 'Applications', icon: '\u{1F4E6}' },
@@ -553,10 +735,27 @@ export function Layout({ children }: { children: ComponentChildren }) {
             </button>
           </Tooltip>
           <span class="sidebar-title">Prompt Widget</span>
+          {!collapsed && (
+            <a
+              class="bookmarklet-link"
+              href={`javascript:void((function(){var e=document.getElementById('pw-bookmarklet-frame');if(e){e.remove();return}var f=document.createElement('iframe');f.id='pw-bookmarklet-frame';f.src='${window.location.origin}/widget/bookmarklet.html?host='+encodeURIComponent(location.href);f.style.cssText='position:fixed;bottom:0;right:0;width:420px;height:100%;border:none;z-index:2147483647;pointer-events:none;';f.allow='clipboard-write';window.addEventListener('message',function(m){if(m.data&&m.data.type==='pw-bookmarklet-remove'){var el=document.getElementById('pw-bookmarklet-frame');if(el)el.remove()}});document.body.appendChild(f)})())`}
+              title="Drag to bookmarks bar to load widget on any site"
+              onClick={(e) => e.preventDefault()}
+            >
+              {'\u{1F516}'}
+            </a>
+          )}
         </div>
         <nav>
-          {!collapsed && apps.length > 0 && (
-            <div class="sidebar-section-header">Apps</div>
+          {!collapsed && (
+            <div class="sidebar-section-header">
+              Apps
+              <button
+                class="sidebar-new-terminal-btn"
+                onClick={(e) => { e.stopPropagation(); addAppModalOpen.value = true; }}
+                title="Add app"
+              >+</button>
+            </div>
           )}
           {apps.map((app) => {
             const isSelected = selAppId === app.id;
@@ -636,6 +835,20 @@ export function Layout({ children }: { children: ComponentChildren }) {
             </div>
           )}
 
+          {!collapsed && liveSites.value.length > 0 && (
+            <>
+              <div class="sidebar-divider" />
+              <div class="sidebar-section-header">Sites</div>
+              {liveSites.value.map((site) => (
+                <div key={site.origin} class="sidebar-site-item" title={site.origin}>
+                  <span class="nav-icon">{'\u{1F310}'}</span>
+                  <span class="nav-label">{site.hostname}</span>
+                  <span class="sidebar-count">{site.count}</span>
+                </div>
+              ))}
+            </>
+          )}
+
           <div class="sidebar-divider" />
 
           {!collapsed && (
@@ -694,6 +907,51 @@ export function Layout({ children }: { children: ComponentChildren }) {
                 Sessions ({visibleSessions.length})
                 {runningSessions > 0 && <span class="sidebar-running-badge">{runningSessions} running</span>}
                 {waitingCount > 0 && <span class="sidebar-waiting-badge">{waitingCount} waiting</span>}
+                <div class="auto-jump-dropdown" onClick={(e) => e.stopPropagation()}>
+                    <span
+                      class={`auto-jump-trigger${autoJumpWaiting.value ? ' active' : ''}`}
+                      onClick={() => { autoJumpMenuOpen.value = !autoJumpMenuOpen.value; }}
+                    >
+                      aj {autoJumpWaiting.value ? '\u25CF' : '\u25CB'} {'\u25BE'}
+                    </span>
+                    {autoJumpMenuOpen.value && (
+                      <div class="auto-jump-menu" onClick={(e) => e.stopPropagation()}>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={autoJumpWaiting.value}
+                            onChange={(e) => { autoJumpWaiting.value = (e.target as HTMLInputElement).checked; }}
+                          />
+                          Enable Auto-Jump
+                        </label>
+                        <div class="id-dropdown-separator" />
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={autoJumpInterrupt.value}
+                            onChange={(e) => { autoJumpInterrupt.value = (e.target as HTMLInputElement).checked; }}
+                          />
+                          Interrupt typing
+                        </label>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={autoJumpDelay.value}
+                            onChange={(e) => { autoJumpDelay.value = (e.target as HTMLInputElement).checked; }}
+                          />
+                          3s delay <kbd>{'\u2303\u21E7'}X</kbd>
+                        </label>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={autoJumpShowPopup.value}
+                            onChange={(e) => { autoJumpShowPopup.value = (e.target as HTMLInputElement).checked; }}
+                          />
+                          Show paused popup
+                        </label>
+                      </div>
+                    )}
+                  </div>
                 <button
                   class="sidebar-new-terminal-btn"
                   onClick={(e) => { e.stopPropagation(); spawnTerminal(selAppId); }}
@@ -716,7 +974,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
                       title="Filter options"
                     >
                       {'\u2630'}
-                      {activeFilterCount < 7 && <span class="filter-active-dot" />}
+                      {activeFilterCount < 5 && <span class="filter-active-dot" />}
                     </button>
                   </div>
                   {filtersOpen && (
@@ -740,128 +998,62 @@ export function Layout({ children }: { children: ComponentChildren }) {
                           ))}
                         </div>
                       </div>
-                      <div class="sidebar-filter-section">
-                        <div class="sidebar-filter-section-label">Type</div>
-                        <div class="sidebar-filter-checkboxes">
-                          {([['agent', 'Agent sessions'], ['terminal', 'Terminals']] as const).map(([type, label]) => (
-                            <label key={type} class="sidebar-filter-checkbox">
-                              <input
-                                type="checkbox"
-                                checked={activeTypeFilters.has(type)}
-                                onChange={() => toggleTypeFilter(type)}
-                              />
-                              <span>{label}</span>
-                              {typeCounts[type] > 0 && (
-                                <span class="sidebar-filter-count">{typeCounts[type]}</span>
-                              )}
-                            </label>
-                          ))}
-                        </div>
-                      </div>
                     </div>
                   )}
                   <div class="sidebar-sessions-list">
-                    {(() => {
-                      const filtered = recentSessions.filter((s) => {
-                        if (!sessionSearchQuery.value) return true;
-                        const q = sessionSearchQuery.value.toLowerCase();
-                        const text = (s.feedbackTitle || s.agentName || s.id).toLowerCase();
-                        return text.includes(q);
-                      });
-                      const waitingList = filtered.filter((s) => s.status === 'running' && sessionInputStates.value.get(s.id) === 'waiting');
-                      const restList = filtered.filter((s) => !(s.status === 'running' && sessionInputStates.value.get(s.id) === 'waiting'));
-                      const globalSessions = allNumberedSessions();
-                      const renderItem = (s: any) => {
-                        const isTabbed = tabSet.has(s.id);
-                        const isInPanel = !!findPanelForSession(s.id);
-                        const isNumbered = isTabbed || isInPanel;
-                        const inputSt = s.status === 'running' ? (sessionInputStates.value.get(s.id) || null) : null;
-                        const isPlain = s.permissionProfile === 'plain';
-                        const raw = isPlain ? `\u{1F5A5}\uFE0F ${s.paneTitle || s.id.slice(-6)}` : (s.feedbackTitle || s.agentName || `Session ${s.id.slice(-6)}`);
-                        const tooltip = isPlain
-                          ? `Terminal \u2014 ${s.status}`
-                          : s.feedbackTitle
-                            ? `${s.feedbackTitle} \u2014 ${s.status}`
-                            : `${s.agentName || 'Session'} \u2014 ${s.status}`;
-                        const globalIdx = globalSessions.indexOf(s.id);
-                        const globalNum = globalIdx >= 0 ? globalIdx + 1 : null;
-                        return (
-                          <div key={s.id}>
-                            <div
-                              class={`sidebar-session-item ${isTabbed ? 'tabbed' : ''} ${isInPanel ? 'in-panel' : ''}`}
-                              onClick={() => openSession(s.id)}
-                              title={tooltip}
-                            >
-                              {ctrlShiftHeld.value && inputSt === 'waiting' ? (
-                                <span class="sidebar-tab-badge tab-badge-waiting">A</span>
-                              ) : ctrlShiftHeld.value && isNumbered && globalNum !== null ? (
-                                <SidebarTabBadge tabNum={globalNum} />
-                              ) : (
-                                <span
-                                  class={`session-status-dot ${s.status}${isPlain ? ' plain' : ''}${inputSt ? ` ${inputSt}` : ''}`}
-                                  title={inputSt === 'waiting' ? 'waiting for input' : inputSt === 'idle' ? 'idle' : s.status}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                                    sidebarStatusMenu.value = { sessionId: s.id, x: rect.right + 4, y: rect.top };
-                                  }}
-                                />
-                              )}
-                              <span class="session-label">{raw}</span>
-                              <button
-                                class="session-delete-btn"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  deleteSession(s.id);
-                                }}
-                                title="Archive session"
-                              >
-                                {'\u00D7'}
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      };
-                      return (
-                        <>
-                          {waitingList.length > 0 && (
-                            <>
-                              <div class="sidebar-section-label waiting-section-label">
-                                Waiting for input ({waitingList.length})
-                                <label
-                                  class="auto-jump-toggle"
-                                  title="Automatically jump to terminal waiting for input"
-                                  onClick={(e) => e.stopPropagation()}
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={autoJumpWaiting.value}
-                                    onChange={(e) => { autoJumpWaiting.value = (e.target as HTMLInputElement).checked; }}
-                                  />
-                                  auto jump
-                                </label>
-                              </div>
-                              {waitingList.map(renderItem)}
-                              {restList.length > 0 && <div class="sidebar-divider" style={{ margin: '6px 0' }} />}
-                            </>
-                          )}
-                          {restList.map((s, i, arr) => {
-                            const isTabbed = tabSet.has(s.id);
-                            const prevTabbed = i > 0 && tabSet.has(arr[i - 1].id);
-                            return (
-                              <div key={`rest-${s.id}`}>
-                                {i > 0 && prevTabbed && !isTabbed && (
-                                  <div class="sidebar-divider" style={{ margin: '4px 0' }} />
-                                )}
-                                {renderItem(s)}
-                              </div>
-                            );
-                          })}
-                        </>
-                      );
-                    })()}
+                    {waitingAgents.length > 0 && (
+                      <>
+                        <div class="sidebar-section-label waiting-section-label">
+                          Waiting for input ({waitingAgents.length})
+                        </div>
+                        {waitingAgents.map(renderItem)}
+                      </>
+                    )}
+                    {restAgents.length > 0 && (
+                      <>
+                        <div class="sidebar-section-label">Agent Sessions ({restAgents.length})</div>
+                        {restAgents.map(renderItem)}
+                      </>
+                    )}
                   </div>
                 </>
+              )}
+            </div>
+            {terminals.length > 0 && (
+              <div
+                class="sidebar-terminals-resize-handle"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  const startY = e.clientY;
+                  const startH = terminalsHeight.value;
+                  const onMove = (ev: MouseEvent) => {
+                    setTerminalsHeight(startH - (ev.clientY - startY));
+                  };
+                  const onUp = () => {
+                    document.removeEventListener('mousemove', onMove);
+                    document.removeEventListener('mouseup', onUp);
+                  };
+                  document.addEventListener('mousemove', onMove);
+                  document.addEventListener('mouseup', onUp);
+                }}
+              />
+            )}
+            <div
+              class="sidebar-terminals"
+              style={terminals.length > 0 ? { height: `${terminalsHeight.value}px` } : undefined}
+            >
+              <div class="sidebar-terminals-header">
+                Terminals ({terminals.length})
+                <button
+                  class="sidebar-new-terminal-btn"
+                  onClick={(e) => { e.stopPropagation(); spawnTerminal(selAppId); }}
+                  title="New terminal (g t)"
+                >+</button>
+              </div>
+              {terminals.length > 0 && (
+                <div class="sidebar-terminals-list">
+                  {terminals.map(renderItem)}
+                </div>
               )}
             </div>
           </>
@@ -893,10 +1085,22 @@ export function Layout({ children }: { children: ComponentChildren }) {
       <PopoutPanel />
       {showShortcutHelp && <ShortcutHelpModal onClose={() => setShowShortcutHelp(false)} />}
       {showSpotlight && <SpotlightSearch onClose={() => setShowSpotlight(false)} />}
+      {addAppModalOpen.value && <AddAppModal onClose={() => { addAppModalOpen.value = false; }} />}
       {actionToast.value && (
         <div class="action-toast">
           <span class="action-toast-key" style={{ background: actionToast.value.color }}>{actionToast.value.key}</span>
           <span class="action-toast-label">{actionToast.value.label}</span>
+        </div>
+      )}
+      {autoJumpCountdown.value > 0 && (
+        <div class="action-toast auto-jump-toast">
+          <span class="action-toast-key" style={{ background: 'var(--pw-warning, #f59e0b)' }}>
+            {autoJumpCountdown.value}
+          </span>
+          <span class="action-toast-label">
+            Jumping in {autoJumpCountdown.value}s
+            {' '}<kbd onClick={cancelAutoJump} style={{ cursor: 'pointer' }}>{'\u2303\u21E7'}X</kbd>
+          </span>
         </div>
       )}
       <PerfOverlay />
@@ -914,7 +1118,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
             {isRunning && !menuExited && (
               <button onClick={() => { sidebarStatusMenu.value = null; killSession(menuSid); }}>Kill {showHotkeyHints.value && <kbd>⌃⇧K</kbd>}</button>
             )}
-            {isRunning && !menuExited && menuSess?.feedbackId && (
+            {isRunning && menuSess?.feedbackId && (
               <button onClick={() => { sidebarStatusMenu.value = null; sidebarResolveSession(menuSid, menuSess.feedbackId); }}>Resolve {showHotkeyHints.value && <kbd>⌃⇧R</kbd>}</button>
             )}
             {menuExited && (
@@ -922,6 +1126,41 @@ export function Layout({ children }: { children: ComponentChildren }) {
             )}
             <button onClick={() => { sidebarStatusMenu.value = null; closeTab(menuSid); }}>Close tab {showHotkeyHints.value && <kbd>⌃⇧W</kbd>}</button>
             <button onClick={() => { sidebarStatusMenu.value = null; deleteSession(menuSid); }}>Archive</button>
+          </div>
+        );
+      })()}
+      {sidebarItemMenu.value && (() => {
+        const menuSid = sidebarItemMenu.value!.sessionId;
+        const menuHeight = 176;
+        const flipUp = sidebarItemMenu.value!.y + menuHeight > window.innerHeight;
+        const menuStyle = flipUp
+          ? { left: `${sidebarItemMenu.value!.x}px`, bottom: `${window.innerHeight - sidebarItemMenu.value!.y - 20}px` }
+          : { left: `${sidebarItemMenu.value!.x}px`, top: `${sidebarItemMenu.value!.y}px` };
+        return (
+          <div
+            class="status-dot-menu"
+            style={menuStyle}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button onClick={() => {
+              sidebarItemMenu.value = null;
+              navigator.clipboard.writeText(`${location.origin}${location.pathname}#/session/${menuSid}`);
+              showActionToast('\u{1F517}', 'Link copied', 'var(--pw-accent, var(--pw-primary))');
+            }}>Copy link</button>
+            <button onClick={() => { sidebarItemMenu.value = null; popOutTab(menuSid); }}>Open in panel</button>
+            <button onClick={() => {
+              sidebarItemMenu.value = null;
+              window.open(`${location.pathname}#/session/${menuSid}`, '_blank', 'width=900,height=600,menubar=no,toolbar=no');
+            }}>Open in window</button>
+            <button onClick={() => {
+              sidebarItemMenu.value = null;
+              window.open(`${location.pathname}#/session/${menuSid}`, '_blank');
+            }}>Open in tab</button>
+            <button onClick={() => {
+              sidebarItemMenu.value = null;
+              api.openSessionInTerminal(menuSid).catch((err: any) => console.error('Open in terminal failed:', err.message));
+            }}>Open in Terminal.app</button>
+            <button onClick={() => { sidebarItemMenu.value = null; enableSplit(menuSid); }}>Split pane</button>
           </div>
         );
       })()}

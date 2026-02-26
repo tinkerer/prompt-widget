@@ -1,6 +1,7 @@
 import { useRef, useCallback, useEffect } from 'preact/hooks';
 import { signal } from '@preact/signals';
 import { SessionViewToggle, type ViewMode } from './SessionViewToggle.js';
+import { JsonlView } from './JsonlView.js';
 import {
   openTabs,
   activeTabId,
@@ -34,6 +35,10 @@ import {
   enableSplit,
   disableSplit,
   setSplitRatio,
+  sessionLabels,
+  setSessionLabel,
+  getSessionLabel,
+  activeSplitSide,
 } from '../lib/sessions.js';
 import { startTabDrag, type TabDragSource } from '../lib/tab-drag.js';
 import { navigate, selectedAppId } from '../lib/state.js';
@@ -43,6 +48,8 @@ import { api } from '../lib/api.js';
 import { copyWithTooltip } from '../lib/clipboard.js';
 
 const statusMenuOpen = signal<{ sessionId: string; x: number; y: number } | null>(null);
+const renamingSessionId = signal<string | null>(null);
+const renameValue = signal('');
 export const idMenuOpen = signal(false);
 const panelResizing = signal(false);
 
@@ -61,17 +68,27 @@ function PaneHeader({
   showCollapse?: boolean;
   onToggleMinimized?: () => void;
 }) {
-  const sess = sessionId ? sessionMap.get(sessionId) : null;
+  const isJsonlTab = sessionId?.startsWith('jsonl:') || false;
+  const realSessionId = isJsonlTab && sessionId ? sessionId.slice(6) : sessionId;
+  const sess = realSessionId ? sessionMap.get(realSessionId) : null;
   const appId = selectedAppId.value;
   const feedbackPath = sess?.feedbackId
     ? appId ? `/app/${appId}/feedback/${sess.feedbackId}` : `/feedback/${sess.feedbackId}`
     : null;
-  const viewMode = sessionId ? getViewMode(sessionId, sess?.permissionProfile) : 'terminal';
-  const isExited = sessionId ? exited.has(sessionId) : false;
+  const viewMode = realSessionId ? getViewMode(realSessionId, sess?.permissionProfile) : 'terminal';
+  const isExited = realSessionId ? exited.has(realSessionId) : false;
 
   return (
     <div class="terminal-active-header">
-      {sessionId && (
+      {sessionId && isJsonlTab && (
+        <>
+          <span class="tmux-id-label" style="cursor:default">JSONL: pw-{realSessionId!.slice(-6)}</span>
+          {feedbackPath && (
+            <a href={`#${feedbackPath}`} onClick={(e) => { e.preventDefault(); navigate(feedbackPath); }} class="feedback-title-link" title={sess?.feedbackTitle || 'View feedback'}>{sess?.feedbackTitle || 'View feedback'}</a>
+          )}
+        </>
+      )}
+      {sessionId && !isJsonlTab && (
         <>
           <div class="id-dropdown-wrapper">
             <span
@@ -88,6 +105,16 @@ function PaneHeader({
                 <button onClick={(e) => { e.stopPropagation(); idMenuOpen.value = false; copyWithTooltip(`TMUX= tmux -L prompt-widget attach-session -t pw-${sessionId}`, e as any); }}>
                   Copy tmux command <kbd>T</kbd>
                 </button>
+                {sess?.jsonlPath && (
+                  <button onClick={(e) => { e.stopPropagation(); idMenuOpen.value = false; copyWithTooltip(sess.jsonlPath, e as any); }}>
+                    Copy JSONL path <kbd>J</kbd>
+                  </button>
+                )}
+                {sess?.jsonlPath && (
+                  <button onClick={() => { idMenuOpen.value = false; openSession(`jsonl:${sessionId}`); }}>
+                    View JSONL <kbd>L</kbd>
+                  </button>
+                )}
                 <div class="id-dropdown-separator" />
                 <button onClick={() => { executePopout(sessionId, 'panel'); }}>Panel <kbd>P</kbd></button>
                 <button onClick={() => { executePopout(sessionId, 'window'); }}>Window <kbd>W</kbd></button>
@@ -117,18 +144,20 @@ function PaneHeader({
         </>
       )}
       <span style="flex:1" />
-      {sessionId && (
+      {sessionId && !isJsonlTab && (
         <>
-          <select
-            class="view-mode-select"
-            value={viewMode}
-            onChange={(e) => setViewMode(sessionId, (e.target as HTMLSelectElement).value as ViewMode)}
-          >
-            <option value="terminal">Term</option>
-            <option value="structured">Struct</option>
-            <option value="split">Split</option>
-          </select>
-          {!isExited && sess?.feedbackId && (
+          {(sess?.permissionProfile === 'auto' || sess?.permissionProfile === 'yolo') && (
+            <select
+              class="view-mode-select"
+              value={viewMode}
+              onChange={(e) => setViewMode(sessionId, (e.target as HTMLSelectElement).value as ViewMode)}
+            >
+              <option value="terminal">Term</option>
+              <option value="structured">Struct</option>
+              <option value="split">Split</option>
+            </select>
+          )}
+          {sess?.feedbackId && (
             <button class="resolve-btn" onClick={() => resolveSession(sessionId, sess.feedbackId)}>Resolve</button>
           )}
           {isExited ? (
@@ -148,7 +177,10 @@ function PaneHeader({
 }
 
 async function resolveSession(sessionId: string, feedbackId?: string) {
-  await killSession(sessionId);
+  const alreadyExited = exitedSessions.value.has(sessionId);
+  if (!alreadyExited) {
+    await killSession(sessionId);
+  }
   if (feedbackId) {
     try {
       await api.updateFeedback(feedbackId, { status: 'resolved' });
@@ -215,13 +247,20 @@ function PaneTabBar({
   return (
     <div ref={tabsRef} class="terminal-tabs" onWheel={(e) => { const delta = e.deltaX || e.deltaY; if (delta) { e.preventDefault(); (e.currentTarget as HTMLElement).scrollLeft += delta; } }}>
       {tabs.map((sid) => {
-        const isExited = exited.has(sid);
-        const inputState = !isExited ? (sessionInputStates.value.get(sid) || null) : null;
+        const isJsonl = sid.startsWith('jsonl:');
+        const realSid = isJsonl ? sid.slice(6) : sid;
+        const isExited = exited.has(realSid);
+        const inputState = !isExited && !isJsonl ? (sessionInputStates.value.get(sid) || null) : null;
         const isActive = sid === activeId;
-        const sess = sessionMap.get(sid);
-        const isPlain = sess?.permissionProfile === 'plain';
-        const raw = isPlain ? `\u{1F5A5}\uFE0F ${sess?.paneTitle || sid.slice(-6)}` : (sess?.feedbackTitle || sess?.agentName || `Session ${sid.slice(-6)}`);
-        const tabLabel = raw.length > 24 ? raw.slice(0, 24) + '\u2026' : raw;
+        const sess = sessionMap.get(realSid);
+        const isPlain = !isJsonl && sess?.permissionProfile === 'plain';
+        const plainLabel = sess?.paneCommand
+          ? `${sess.paneCommand}:${sess.panePath || ''} \u2014 ${sess?.paneTitle || realSid.slice(-6)}`
+          : (sess?.paneTitle || realSid.slice(-6));
+        const customLabel = getSessionLabel(sid);
+        const jsonlLabel = isJsonl ? `JSONL: ${sess?.feedbackTitle || sess?.agentName || realSid.slice(-6)}` : '';
+        const raw = customLabel || (isJsonl ? jsonlLabel : isPlain ? `\u{1F5A5}\uFE0F ${plainLabel}` : (sess?.feedbackTitle || sess?.agentName || `Session ${sid.slice(-6)}`));
+        const tabLabel = raw;
         const globalIdx = globalSessions.indexOf(sid);
         const tabNum = globalIdx >= 0 ? globalIdx + 1 : null;
         return (
@@ -237,7 +276,12 @@ function PaneTabBar({
                 onClickFallback: () => onActivate(sid),
               });
             }}
-            title={sess?.feedbackTitle || sess?.agentName || sid}
+            title={raw}
+            onDblClick={(e) => {
+              e.stopPropagation();
+              renameValue.value = customLabel || '';
+              renamingSessionId.value = sid;
+            }}
           >
             <span
               class={`status-dot ${isExited ? 'exited' : ''}${isPlain ? ' plain' : ''}${inputState ? ` ${inputState}` : ''}`}
@@ -251,7 +295,24 @@ function PaneTabBar({
                 <TabBadge tabNum={tabNum} />
               )}
             </span>
-            <span>{tabLabel}</span>
+            {renamingSessionId.value === sid ? (
+              <input
+                type="text"
+                value={renameValue.value}
+                onInput={(e) => { renameValue.value = (e.target as HTMLInputElement).value; }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') { setSessionLabel(sid, renameValue.value); renamingSessionId.value = null; }
+                  if (e.key === 'Escape') { renamingSessionId.value = null; }
+                }}
+                onBlur={() => { setSessionLabel(sid, renameValue.value); renamingSessionId.value = null; }}
+                onClick={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+                style="font-size:11px;padding:1px 4px;border:1px solid var(--pw-accent);border-radius:3px;background:var(--pw-input-bg);color:var(--pw-primary-text);width:120px;outline:none"
+                ref={(el) => el?.focus()}
+              />
+            ) : (
+              <span class="terminal-tab-label">{tabLabel}</span>
+            )}
             <span class="tab-close" onClick={(e) => { e.stopPropagation(); closeTab(sid); }}>&times;</span>
           </button>
         );
@@ -319,6 +380,12 @@ export function GlobalTerminalPanel() {
         executePopout(activeId, 'tab');
       } else if (key === 'a' && !exited.has(activeId)) {
         executePopout(activeId, 'terminal');
+      } else if (key === 'j') {
+        const s = sessionMap.get(activeId);
+        if (s?.jsonlPath) navigator.clipboard.writeText(s.jsonlPath);
+      } else if (key === 'l') {
+        const s = sessionMap.get(activeId);
+        if (s?.jsonlPath) openSession(`jsonl:${activeId}`);
       } else if (key === 's' && tabs.length >= 2 && !isSplit) {
         enableSplit();
       } else if (key === 'escape') {
@@ -460,7 +527,7 @@ export function GlobalTerminalPanel() {
                 Kill {showHotkeyHints.value && <kbd>⌃⇧K</kbd>}
               </button>
             )}
-            {!menuExited && menuSess?.feedbackId && (
+            {menuSess?.feedbackId && (
               <button onClick={() => { statusMenuOpen.value = null; resolveSession(menuSid, menuSess.feedbackId); }}>
                 Resolve {showHotkeyHints.value && <kbd>⌃⇧R</kbd>}
               </button>
@@ -472,6 +539,18 @@ export function GlobalTerminalPanel() {
             )}
             {menuExited && (
               <button onClick={() => { statusMenuOpen.value = null; resumeSession(menuSid); }}>Resume</button>
+            )}
+            <button onClick={() => {
+              statusMenuOpen.value = null;
+              renameValue.value = getSessionLabel(menuSid) || '';
+              renamingSessionId.value = menuSid;
+            }}>
+              Rename
+            </button>
+            {getSessionLabel(menuSid) && (
+              <button onClick={() => { statusMenuOpen.value = null; setSessionLabel(menuSid, ''); }}>
+                Clear name
+              </button>
             )}
             <button onClick={() => { statusMenuOpen.value = null; closeTab(menuSid); }}>
               Close tab {showHotkeyHints.value && <kbd>⌃⇧W</kbd>}
@@ -494,7 +573,7 @@ export function GlobalTerminalPanel() {
                 Kill <kbd>K</kbd>
               </button>
             )}
-            {!hkExited && hkSess?.feedbackId && (
+            {hkSess?.feedbackId && (
               <button onClick={() => resolveSession(hk.sessionId, hkSess.feedbackId)}>
                 Resolve <kbd>R</kbd>
               </button>
@@ -523,26 +602,35 @@ export function GlobalTerminalPanel() {
       )}
       {!minimized && !isSplit && (
         <div class="terminal-body">
-          {tabs.map((sid) => (
-            <div key={sid} style={{ display: sid === activeId ? 'flex' : 'none', width: '100%', flex: 1, minHeight: 0 }}>
-              <SessionViewToggle
-                sessionId={sid}
-                isActive={sid === activeId}
-                onExit={() => markSessionExited(sid)}
-                onInputStateChange={(s) => setSessionInputState(sid, s)}
-                permissionProfile={sessionMap.get(sid)?.permissionProfile}
-                mode={getViewMode(sid)}
-              />
-            </div>
-          ))}
+          {tabs.map((sid) => {
+            const isJsonl = sid.startsWith('jsonl:');
+            const realSid = isJsonl ? sid.slice(6) : sid;
+            return (
+              <div key={sid} style={{ display: sid === activeId ? 'flex' : 'none', width: '100%', flex: 1, minHeight: 0 }}>
+                {isJsonl ? (
+                  <JsonlView sessionId={realSid} />
+                ) : (
+                  <SessionViewToggle
+                    sessionId={sid}
+                    isActive={sid === activeId}
+                    onExit={() => markSessionExited(sid)}
+                    onInputStateChange={(s) => setSessionInputState(sid, s)}
+                    permissionProfile={sessionMap.get(sid)?.permissionProfile}
+                    mode={getViewMode(sid)}
+                  />
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
       {!minimized && isSplit && (
         <div class="terminal-split-container">
           <div
-            class="terminal-split-pane"
+            class={`terminal-split-pane${activeSplitSide.value === 'left' ? ' split-focused' : ''}`}
             data-split-pane="split-left"
             style={{ flex: splitRatio.value }}
+            onMouseDown={() => { activeSplitSide.value = 'left'; }}
           >
             <div class="split-pane-tab-bar">
               <PaneTabBar
@@ -561,25 +649,34 @@ export function GlobalTerminalPanel() {
             </div>
             <PaneHeader sessionId={activeId} sessionMap={sessionMap} exited={exited} />
             <div class="terminal-body">
-              {leftTabs.map((sid) => (
-                <div key={sid} style={{ display: sid === activeId ? 'flex' : 'none', width: '100%', flex: 1, minHeight: 0 }}>
-                  <SessionViewToggle
-                    sessionId={sid}
-                    isActive={sid === activeId}
-                    onExit={() => markSessionExited(sid)}
-                    onInputStateChange={(s) => setSessionInputState(sid, s)}
-                    permissionProfile={sessionMap.get(sid)?.permissionProfile}
-                    mode={getViewMode(sid)}
-                  />
-                </div>
-              ))}
+              {leftTabs.map((sid) => {
+                const isJsonl = sid.startsWith('jsonl:');
+                const realSid = isJsonl ? sid.slice(6) : sid;
+                return (
+                  <div key={sid} style={{ display: sid === activeId ? 'flex' : 'none', width: '100%', flex: 1, minHeight: 0 }}>
+                    {isJsonl ? (
+                      <JsonlView sessionId={realSid} />
+                    ) : (
+                      <SessionViewToggle
+                        sessionId={sid}
+                        isActive={sid === activeId}
+                        onExit={() => markSessionExited(sid)}
+                        onInputStateChange={(s) => setSessionInputState(sid, s)}
+                        permissionProfile={sessionMap.get(sid)?.permissionProfile}
+                        mode={getViewMode(sid)}
+                      />
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
           <div class="terminal-split-divider" onMouseDown={onSplitDividerMouseDown} />
           <div
-            class="terminal-split-pane"
+            class={`terminal-split-pane${activeSplitSide.value === 'right' ? ' split-focused' : ''}`}
             data-split-pane="split-right"
             style={{ flex: 1 - splitRatio.value }}
+            onMouseDown={() => { activeSplitSide.value = 'right'; }}
           >
             <div class="split-pane-tab-bar">
               <PaneTabBar
@@ -602,18 +699,26 @@ export function GlobalTerminalPanel() {
             </div>
             <PaneHeader sessionId={rightActive} sessionMap={sessionMap} exited={exited} />
             <div class="terminal-body">
-              {rightTabs.map((sid) => (
-                <div key={sid} style={{ display: sid === rightActive ? 'flex' : 'none', width: '100%', flex: 1, minHeight: 0 }}>
-                  <SessionViewToggle
-                    sessionId={sid}
-                    isActive={sid === rightActive}
-                    onExit={() => markSessionExited(sid)}
-                    onInputStateChange={(s) => setSessionInputState(sid, s)}
-                    permissionProfile={sessionMap.get(sid)?.permissionProfile}
-                    mode={getViewMode(sid)}
-                  />
-                </div>
-              ))}
+              {rightTabs.map((sid) => {
+                const isJsonl = sid.startsWith('jsonl:');
+                const realSid = isJsonl ? sid.slice(6) : sid;
+                return (
+                  <div key={sid} style={{ display: sid === rightActive ? 'flex' : 'none', width: '100%', flex: 1, minHeight: 0 }}>
+                    {isJsonl ? (
+                      <JsonlView sessionId={realSid} />
+                    ) : (
+                      <SessionViewToggle
+                        sessionId={sid}
+                        isActive={sid === rightActive}
+                        onExit={() => markSessionExited(sid)}
+                        onInputStateChange={(s) => setSessionInputState(sid, s)}
+                        permissionProfile={sessionMap.get(sid)?.permissionProfile}
+                        mode={getViewMode(sid)}
+                      />
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>

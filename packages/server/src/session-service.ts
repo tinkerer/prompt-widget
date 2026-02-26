@@ -37,23 +37,25 @@ const messageBuffer = new MessageBuffer();
 // flag sessions that are showing an actionable prompt (Yes/No, accept edits, etc.)
 const WAITING_TITLE_PREFIX = '✳';
 // Patterns that indicate a real permission/action prompt (not just idle with hints)
-const ACTION_PROMPT_RE = /Do you want|Enter to select|Yes, and always allow/;
+const ACTION_PROMPT_RE = /Do you want|Would you like to proceed|Esc to cancel|accept edits/;
 
 function pollTmuxWaitingState(): void {
   try {
-    const out = execFileSync('tmux', ['-L', 'prompt-widget', 'list-panes', '-a', '-F', '#{session_name} #{pane_title}'], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+    const out = execFileSync('tmux', ['-L', 'prompt-widget', 'list-panes', '-a', '-F', '#{session_name}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}'], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
     for (const line of out.trim().split('\n')) {
-      const spaceIdx = line.indexOf(' ');
-      if (spaceIdx === -1) continue;
-      const name = line.slice(0, spaceIdx);
-      const title = line.slice(spaceIdx + 1);
+      const parts = line.split('\t');
+      if (parts.length < 4) continue;
+      const [name, command, path, ...titleParts] = parts;
+      const title = titleParts.join('\t');
       if (!name.startsWith('pw-')) continue;
       const sessionId = name.slice(3);
       const proc = activeSessions.get(sessionId);
       if (!proc || proc.status !== 'running') continue;
 
-      // Store pane title for all sessions
+      // Store pane info for all sessions
       proc.paneTitle = title;
+      proc.paneCommand = command;
+      proc.panePath = path;
 
       if (proc.permissionProfile === 'plain') continue;
 
@@ -92,6 +94,8 @@ interface AgentProcess {
   flushTimer: ReturnType<typeof setInterval>;
   inputState: InputState;
   paneTitle: string;
+  paneCommand: string;
+  panePath: string;
   hasStarted: boolean;
 }
 
@@ -279,6 +283,8 @@ function spawnSession(params: {
     flushTimer: setInterval(() => flushOutput(sessionId), FLUSH_INTERVAL),
     inputState: 'active' as InputState,
     paneTitle: '',
+    paneCommand: '',
+    panePath: '',
     hasStarted: false,
   };
 
@@ -444,7 +450,9 @@ function tryRecoverSession(session: typeof schema.agentSessions.$inferSelect): b
       status: 'running',
       flushTimer: setInterval(() => flushOutput(session.id), FLUSH_INTERVAL),
       inputState: 'active' as InputState,
-    paneTitle: '',
+      paneTitle: '',
+      paneCommand: '',
+      panePath: '',
       hasStarted: (session.outputBytes || 0) > 100,
     };
     activeSessions.set(session.id, proc);
@@ -643,10 +651,10 @@ app.get('/health', (c) => {
 });
 
 app.get('/waiting', (c) => {
-  const states: Record<string, { inputState: InputState; paneTitle: string }> = {};
+  const states: Record<string, { inputState: InputState; paneTitle: string; paneCommand: string; panePath: string }> = {};
   for (const [id, proc] of activeSessions) {
     if (proc.inputState !== 'active' || proc.paneTitle) {
-      states[id] = { inputState: proc.inputState, paneTitle: proc.paneTitle };
+      states[id] = { inputState: proc.inputState, paneTitle: proc.paneTitle, paneCommand: proc.paneCommand, panePath: proc.panePath };
     }
   }
   return c.json(states);

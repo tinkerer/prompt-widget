@@ -97,6 +97,8 @@ export type InputState = 'active' | 'idle' | 'waiting';
 export interface SessionLiveState {
   inputState: InputState;
   paneTitle: string;
+  paneCommand: string;
+  panePath: string;
 }
 
 export async function getSessionLiveStates(): Promise<Record<string, SessionLiveState>> {

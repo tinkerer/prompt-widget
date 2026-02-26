@@ -79,10 +79,11 @@ interface SelectionHighlight {
 
 export function startPicker(
   callback: (infos: SelectedElementInfo[]) => void,
-  excludeHost: Element,
-  options?: { multiSelect?: boolean },
+  widgetHost: Element,
+  options?: { multiSelect?: boolean; excludeWidget?: boolean },
 ): () => void {
   const multiSelect = options?.multiSelect ?? false;
+  const excludeWidget = options?.excludeWidget ?? true;
   const selected: SelectionHighlight[] = [];
 
   const highlight = document.createElement('div');
@@ -143,8 +144,8 @@ export function startPicker(
     }
     const count = selected.length;
     barText.textContent = count === 0
-      ? 'Click or press Space to select \u00b7 Esc to cancel'
-      : `${count} selected \u00b7 Click or Space to add/remove`;
+      ? 'Press Space to select \u00b7 Esc to cancel'
+      : `${count} selected \u00b7 Space to add/remove`;
   };
   updateBarText();
 
@@ -166,10 +167,29 @@ export function startPicker(
     finish();
   });
 
+  const hideBtn = document.createElement('button');
+  Object.assign(hideBtn.style, {
+    background: 'transparent',
+    color: '#818cf8',
+    border: '1px solid #4338ca',
+    borderRadius: '4px',
+    padding: '4px 10px',
+    fontSize: '12px',
+    fontWeight: '500',
+    cursor: 'pointer',
+    marginLeft: '4px',
+  });
+  hideBtn.textContent = 'Hide';
+  hideBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    bar.style.display = 'none';
+  });
+
   if (multiSelect) {
-    bar.append(barText, doneBtn);
+    bar.append(barText, doneBtn, hideBtn);
   } else {
-    bar.append(barText);
+    bar.append(barText, hideBtn);
   }
 
   document.body.appendChild(highlight);
@@ -178,12 +198,32 @@ export function startPicker(
 
   let lastTarget: Element | null = null;
 
-  function isPickerOrWidget(el: Element | null): boolean {
+  function isPickerOverlay(el: Element | null): boolean {
     while (el) {
-      if (el === highlight || el === label || el === bar || el === excludeHost) return true;
+      if (el === highlight || el === label || el === bar) return true;
       el = el.parentElement;
     }
     return false;
+  }
+
+  function isWidgetElement(el: Element | null): boolean {
+    while (el) {
+      if (el === widgetHost) return true;
+      el = el.parentElement;
+    }
+    return false;
+  }
+
+  function resolveTarget(x: number, y: number): Element | null {
+    const el = document.elementFromPoint(x, y);
+    if (!el) return null;
+    if (isPickerOverlay(el)) return null;
+    if (excludeWidget && isWidgetElement(el)) return null;
+    if (!excludeWidget && el === widgetHost && widgetHost.shadowRoot) {
+      const inner = widgetHost.shadowRoot.elementFromPoint(x, y);
+      if (inner) return inner;
+    }
+    return el;
   }
 
   function isAlreadySelected(el: Element): number {
@@ -220,8 +260,8 @@ export function startPicker(
   }
 
   function onMouseMove(e: MouseEvent) {
-    const el = document.elementFromPoint(e.clientX, e.clientY);
-    if (!el || isPickerOrWidget(el)) {
+    const el = resolveTarget(e.clientX, e.clientY);
+    if (!el) {
       highlight.style.display = 'none';
       label.style.display = 'none';
       lastTarget = null;
@@ -278,11 +318,12 @@ export function startPicker(
 
   function onClick(e: MouseEvent) {
     if (bar.contains(e.target as Node)) return;
+    if (multiSelect) return;
     e.preventDefault();
     e.stopPropagation();
     e.stopImmediatePropagation();
-    const target = lastTarget || document.elementFromPoint(e.clientX, e.clientY);
-    if (!target || isPickerOrWidget(target)) return;
+    const target = lastTarget || resolveTarget(e.clientX, e.clientY);
+    if (!target) return;
     selectTarget(target);
   }
 

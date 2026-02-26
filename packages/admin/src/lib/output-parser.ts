@@ -96,15 +96,23 @@ export class JsonOutputParser {
 
     // --- CLI stream-json: user message ---
     if (type === 'user') {
-      const content = typeof obj.message?.content === 'string'
-        ? obj.message.content
-        : Array.isArray(obj.message?.content)
-          ? obj.message.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
-          : '';
-      if (content) {
-        return [{ id: genId(), role: 'user_input', timestamp: Date.now(), content }];
+      const results: ParsedMessage[] = [];
+      const content = obj.message?.content;
+      if (typeof content === 'string') {
+        if (content) results.push({ id: genId(), role: 'user_input', timestamp: Date.now(), content });
+      } else if (Array.isArray(content)) {
+        const text = content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n');
+        if (text) results.push({ id: genId(), role: 'user_input', timestamp: Date.now(), content: text });
+        for (const block of content) {
+          if (block.type === 'tool_result') {
+            const rc = typeof block.content === 'string' ? block.content
+              : Array.isArray(block.content) ? block.content.map((c: any) => c.text || JSON.stringify(c)).join('\n')
+              : JSON.stringify(block.content);
+            results.push({ id: genId(), role: 'tool_result', timestamp: Date.now(), content: rc, isError: block.is_error || false });
+          }
+        }
       }
-      return [];
+      return results;
     }
 
     // --- API streaming: message_start ---

@@ -106,18 +106,33 @@ adminRoutes.get('/feedback', async (c) => {
     return c.json({ error: 'Invalid query', details: query.error.flatten() }, 400);
   }
 
-  const { page, limit, type, status, tag, search, appId, sortBy, sortOrder } = query.data;
+  const { page, limit, type, status, dispatchStatus, tag, search, appId, sortBy, sortOrder } = query.data;
   const offset = (page - 1) * limit;
 
   const conditions = [];
   if (type) conditions.push(eq(schema.feedbackItems.type, type));
+
+  // Build status + dispatchStatus as OR branches
+  const statusBranches = [];
   if (status) {
     const statuses = status.split(',').filter(Boolean);
     if (statuses.length === 1) {
-      conditions.push(eq(schema.feedbackItems.status, statuses[0]));
+      statusBranches.push(eq(schema.feedbackItems.status, statuses[0]));
     } else if (statuses.length > 1) {
-      conditions.push(inArray(schema.feedbackItems.status, statuses));
+      statusBranches.push(inArray(schema.feedbackItems.status, statuses));
     }
+  }
+  if (dispatchStatus) {
+    const dStatuses = dispatchStatus.split(',').filter(Boolean);
+    const dCond = dStatuses.length === 1
+      ? eq(schema.feedbackItems.dispatchStatus, dStatuses[0])
+      : inArray(schema.feedbackItems.dispatchStatus, dStatuses);
+    statusBranches.push(and(eq(schema.feedbackItems.status, 'dispatched'), dCond)!);
+  }
+  if (statusBranches.length > 1) {
+    conditions.push(or(...statusBranches)!);
+  } else if (statusBranches.length === 1) {
+    conditions.push(statusBranches[0]);
   } else {
     // Exclude deleted items by default unless explicitly requested
     conditions.push(sql`${schema.feedbackItems.status} != 'deleted'`);

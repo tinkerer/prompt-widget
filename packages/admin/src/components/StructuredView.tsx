@@ -8,13 +8,13 @@ interface Props {
   permissionProfile?: string;
 }
 
-interface MessageGroup {
+export interface MessageGroup {
   id: string;
   messages: ParsedMessage[];
   role: 'assistant_group' | 'user_input' | 'standalone';
 }
 
-function groupMessages(messages: ParsedMessage[]): MessageGroup[] {
+export function groupMessages(messages: ParsedMessage[]): MessageGroup[] {
   const groups: MessageGroup[] = [];
   let currentGroup: ParsedMessage[] | null = null;
 
@@ -61,7 +61,7 @@ function shortenModelName(model: string): string | null {
   return parts[0];
 }
 
-function AssistantGroupHeader({ messages }: { messages: ParsedMessage[] }) {
+export function AssistantGroupHeader({ messages }: { messages: ParsedMessage[] }) {
   let model = '';
   let totalInput = 0;
   let totalOutput = 0;

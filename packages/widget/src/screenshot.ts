@@ -1,3 +1,6 @@
+import { toBlob } from 'html-to-image';
+
+/* ── persistent getDisplayMedia stream ── */
 let persistentStream: MediaStream | null = null;
 let persistentVideo: HTMLVideoElement | null = null;
 
@@ -51,13 +54,72 @@ async function ensureStream(onStatus?: (msg: string) => void): Promise<{ stream:
   return { stream: persistentStream, video };
 }
 
+export type ScreenshotMethod = 'html-to-image' | 'display-media';
+
 export interface CaptureOptions {
   excludeWidget?: boolean;
   excludeCursor?: boolean;
   keepStream?: boolean;
   onStatus?: (msg: string) => void;
+  method?: ScreenshotMethod;
 }
 
+/* ── html-to-image capture ── */
+async function captureHtmlToImage(opts?: CaptureOptions): Promise<Blob | null> {
+  const host = opts?.excludeWidget ? document.querySelector('prompt-widget-host') as HTMLElement | null : null;
+  if (host) host.style.display = 'none';
+
+  const cursor = opts?.excludeCursor ? document.getElementById('__pw-virtual-cursor') : null;
+  const prevCursorDisplay = cursor?.style.display;
+  if (cursor) cursor.style.display = 'none';
+
+  // Compensate for scroll offsets — html-to-image resets scrollTop/scrollLeft to 0
+  const restores: Array<() => void> = [];
+  const scrollY = window.scrollY;
+  if (scrollY > 0) {
+    const prev = document.documentElement.style.transform;
+    document.documentElement.style.transform = prev
+      ? `${prev} translateY(-${scrollY}px)`
+      : `translateY(-${scrollY}px)`;
+    restores.push(() => { document.documentElement.style.transform = prev; });
+  }
+  document.body.querySelectorAll('*').forEach((el) => {
+    if (el.scrollTop > 0 || el.scrollLeft > 0) {
+      const htmlEl = el as HTMLElement;
+      const prev = htmlEl.style.transform;
+      const offset = `translate(${-el.scrollLeft}px, ${-el.scrollTop}px)`;
+      htmlEl.style.transform = prev ? `${prev} ${offset}` : offset;
+      restores.push(() => { htmlEl.style.transform = prev; });
+    }
+  });
+
+  try {
+    const blob = await toBlob(document.documentElement, {
+      cacheBust: true,
+      pixelRatio: 1,
+      width: window.innerWidth,
+      height: window.innerHeight,
+      filter: (node: HTMLElement) => {
+        if (!node.tagName) return true;
+        const tag = node.tagName.toLowerCase();
+        return tag !== 'prompt-widget-host';
+      },
+    });
+
+    restores.forEach(fn => fn());
+    if (host) host.style.display = '';
+    if (cursor) cursor.style.display = prevCursorDisplay ?? '';
+    return blob;
+  } catch (err) {
+    restores.forEach(fn => fn());
+    if (host) host.style.display = '';
+    if (cursor) cursor.style.display = prevCursorDisplay ?? '';
+    console.error('[pw] screenshot: html-to-image failed:', err);
+    return null;
+  }
+}
+
+/* ── getDisplayMedia one-shot capture ── */
 async function captureOneShot(opts?: CaptureOptions): Promise<Blob | null> {
   const host = opts?.excludeWidget ? document.querySelector('prompt-widget-host') as HTMLElement | null : null;
   if (host) host.style.display = 'none';
@@ -98,11 +160,8 @@ async function captureOneShot(opts?: CaptureOptions): Promise<Blob | null> {
   }
 }
 
-export async function captureScreenshot(opts?: CaptureOptions): Promise<Blob | null> {
-  if (!opts?.keepStream) {
-    return captureOneShot(opts);
-  }
-
+/* ── getDisplayMedia persistent-stream capture ── */
+async function capturePersistent(opts?: CaptureOptions): Promise<Blob | null> {
   const host = opts?.excludeWidget ? document.querySelector('prompt-widget-host') as HTMLElement | null : null;
   if (host) host.style.display = 'none';
 
@@ -130,10 +189,28 @@ export async function captureScreenshot(opts?: CaptureOptions): Promise<Blob | n
   }
 }
 
+/* ── public API ── */
+export async function captureScreenshot(opts?: CaptureOptions): Promise<Blob | null> {
+  const method = opts?.method ?? 'html-to-image';
+
+  if (method === 'html-to-image') {
+    return captureHtmlToImage(opts);
+  }
+
+  if (opts?.keepStream) {
+    return capturePersistent(opts);
+  }
+  return captureOneShot(opts);
+}
+
 export function stopScreencastStream() {
   if (persistentStream) {
     persistentStream.getTracks().forEach(t => t.stop());
     persistentStream = null;
     persistentVideo = null;
   }
+}
+
+export function hasActiveDisplayMediaStream(): boolean {
+  return isStreamAlive();
 }

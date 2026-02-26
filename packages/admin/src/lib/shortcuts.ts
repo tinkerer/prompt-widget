@@ -76,7 +76,7 @@ function handleKeyDown(e: KeyboardEvent) {
       const isArrow = e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown';
       const isDigit = /^Digit[0-9]$/.test(code);
       const isMinusEqual = code === 'Minus' || code === 'Equal';
-      const isSessionAction = code === 'KeyW' || code === 'KeyR' || code === 'KeyK' || code === 'KeyP' || code === 'KeyA';
+      const isSessionAction = code === 'KeyW' || code === 'KeyR' || code === 'KeyK' || code === 'KeyP' || code === 'KeyB' || code === 'KeyA' || code === 'KeyX';
       const isBackquote = code === 'Backquote';
       const isTab = e.key === 'Tab';
       const isPipe = code === 'Backslash' && shiftHeld;
@@ -146,6 +146,7 @@ function clearSequence() {
 
 // Track Ctrl+Shift held state for tab number overlay
 let stickyMode = false;
+let stickyArmed = false; // true once all modifiers released after activation
 let stickyPrevFocus: Element | null = null;
 const shiftTaps: number[] = [];
 
@@ -166,12 +167,15 @@ function handleStickyShortcut(e: KeyboardEvent) {
     return;
   }
 
-  if (stickyMode) {
+  // Exit: only if armed (user fully released modifiers after activation)
+  if (stickyMode && stickyArmed) {
     e.preventDefault();
     e.stopImmediatePropagation();
     exitStickyMode();
     return;
   }
+
+  if (stickyMode) return; // not armed yet, ignore
 
   const now = Date.now();
   shiftTaps.push(now);
@@ -182,6 +186,7 @@ function handleStickyShortcut(e: KeyboardEvent) {
     e.preventDefault();
     e.stopImmediatePropagation();
     stickyMode = true;
+    stickyArmed = false;
     ctrlShiftHeld.value = true;
     stickyPrevFocus = document.activeElement;
     (document.activeElement as HTMLElement)?.blur?.();
@@ -190,21 +195,38 @@ function handleStickyShortcut(e: KeyboardEvent) {
 
 function handleStickyKeys(e: KeyboardEvent) {
   if (!stickyMode) return;
+  // Ignore modifier keys themselves
+  if (e.key === 'Shift' || e.key === 'Control' || e.key === 'Meta') {
+    e.stopImmediatePropagation();
+    return;
+  }
   if (e.key === 'Escape' || e.key === 'Enter') {
     e.preventDefault();
     e.stopImmediatePropagation();
     exitStickyMode();
     return;
   }
-  // In sticky mode, run shortcuts as if Ctrl+Shift were held, then swallow
-  // so nothing reaches the PTY
+  // Run shortcuts as if Ctrl+Shift were held, then swallow
   handleKeyDown(e);
   e.preventDefault();
   e.stopImmediatePropagation();
 }
 
+function handleStickyKeyUp(e: KeyboardEvent) {
+  if (!stickyMode) {
+    updateCtrlShift(e);
+    return;
+  }
+  e.stopImmediatePropagation();
+  // Arm exit once all modifiers are released after activation
+  if (!stickyArmed && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+    stickyArmed = true;
+  }
+}
+
 function exitStickyMode() {
   stickyMode = false;
+  stickyArmed = false;
   ctrlShiftHeld.value = false;
   if (stickyPrevFocus instanceof HTMLElement) {
     stickyPrevFocus.focus();
@@ -214,6 +236,6 @@ function exitStickyMode() {
 
 // Install global handler
 // Capture phase so we intercept before xterm.js processes the event
-document.addEventListener('keydown', (e) => { handleStickyShortcut(e); handleStickyKeys(e); updateCtrlShift(e); handleKeyDown(e); }, true);
-document.addEventListener('keyup', (e) => { if (stickyMode) { e.stopImmediatePropagation(); return; } updateCtrlShift(e); }, true);
+document.addEventListener('keydown', (e) => { handleStickyShortcut(e); if (stickyMode) { handleStickyKeys(e); return; } updateCtrlShift(e); handleKeyDown(e); }, true);
+document.addEventListener('keyup', handleStickyKeyUp, true);
 window.addEventListener('blur', clearCtrlShift);

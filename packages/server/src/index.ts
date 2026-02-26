@@ -67,6 +67,8 @@ wss.on('connection', (ws, req) => {
   }
 
   let appId: string | undefined;
+  let screenshotIncludeWidget = true;
+  let autoDispatch = true;
   if (apiKey) {
     const application = db
       .select()
@@ -75,10 +77,12 @@ wss.on('connection', (ws, req) => {
       .get();
     if (application) {
       appId = application.id;
+      screenshotIncludeWidget = !!application.screenshotIncludeWidget;
+      autoDispatch = !!application.autoDispatch;
     }
   }
 
-  ws.send(JSON.stringify({ type: 'config', screenshotIncludeWidget: true, autoDispatch: true }));
+  ws.send(JSON.stringify({ type: 'config', screenshotIncludeWidget, autoDispatch }));
 
   const session = registerSession(sessionId, ws, {
     userAgent: req.headers['user-agent'],
