@@ -593,9 +593,6 @@ export class PromptWidgetElement {
     panel.style.position = 'fixed';
     panel.innerHTML = `
       <div class="pw-resize-handle"></div>
-      <div class="pw-header">
-        <button class="pw-close">&times;</button>
-      </div>
       <div class="pw-screenshots pw-hidden" id="pw-screenshots"></div>
       <div id="pw-selected-elements" class="pw-selected-elements pw-hidden"></div>
       <div class="pw-input-area">
@@ -655,7 +652,6 @@ export class PromptWidgetElement {
     this.shadow.appendChild(panel);
 
     const input = panel.querySelector('#pw-chat-input') as HTMLTextAreaElement;
-    const closeBtn = panel.querySelector('.pw-close') as HTMLButtonElement;
     const captureBtn = panel.querySelector('#pw-capture-btn') as HTMLButtonElement;
     const sendBtn = panel.querySelector('#pw-send-btn') as HTMLButtonElement;
 
@@ -670,7 +666,6 @@ export class PromptWidgetElement {
     const contextBtn = panel.querySelector('#pw-context-btn') as HTMLButtonElement | null;
     const contextDropdownBtn = panel.querySelector('#pw-context-dropdown') as HTMLButtonElement | null;
 
-    closeBtn.addEventListener('click', () => this.close());
     captureBtn.addEventListener('click', () => this.captureScreen());
     pickerBtn.addEventListener('click', () => this.startElementPicker());
     pickerDropdownBtn?.addEventListener('click', (e) => { e.stopPropagation(); this.togglePickerMenu(); });

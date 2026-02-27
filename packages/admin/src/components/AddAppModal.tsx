@@ -1,6 +1,7 @@
 import { useState } from 'preact/hooks';
 import { api } from '../lib/api.js';
 import { loadApplications, navigate } from '../lib/state.js';
+import { DirPicker } from './DirPicker.js';
 
 type Mode = null | 'create' | 'existing' | 'clone';
 
@@ -152,7 +153,7 @@ export function AddAppModal({ onClose }: { onClose: () => void }) {
             </div>
             <div class="form-group">
               <label>Parent Directory</label>
-              <input type="text" value={parentDir} onInput={(e) => setParentDir((e.target as HTMLInputElement).value)} placeholder="/Users/you/projects" />
+              <DirPicker value={parentDir} onInput={setParentDir} placeholder="/Users/you/projects" />
             </div>
             <div class="form-group">
               <label>Project Name</label>
@@ -174,7 +175,7 @@ export function AddAppModal({ onClose }: { onClose: () => void }) {
             </div>
             <div class="form-group">
               <label>Project Directory</label>
-              <input type="text" value={existingDir} onInput={(e) => setExistingDir((e.target as HTMLInputElement).value)} placeholder="/Users/you/projects/my-app" />
+              <DirPicker value={existingDir} onInput={setExistingDir} placeholder="/Users/you/projects/my-app" />
             </div>
           </>
         )}
@@ -191,7 +192,7 @@ export function AddAppModal({ onClose }: { onClose: () => void }) {
             </div>
             <div class="form-group">
               <label>Parent Directory</label>
-              <input type="text" value={cloneParentDir} onInput={(e) => setCloneParentDir((e.target as HTMLInputElement).value)} placeholder="/Users/you/projects" />
+              <DirPicker value={cloneParentDir} onInput={setCloneParentDir} placeholder="/Users/you/projects" />
             </div>
             <div class="form-group">
               <label>Directory Name <span style={{ color: 'var(--pw-text-muted)' }}>(optional)</span></label>

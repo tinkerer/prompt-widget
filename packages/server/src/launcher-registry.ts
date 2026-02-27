@@ -1,5 +1,5 @@
 import type { WebSocket } from 'ws';
-import type { LauncherCapabilities } from '@prompt-widget/shared';
+import type { LauncherCapabilities, HarnessMetadata } from '@prompt-widget/shared';
 
 export interface LauncherInfo {
   id: string;
@@ -10,6 +10,8 @@ export interface LauncherInfo {
   lastHeartbeat: string;
   activeSessions: Set<string>;
   capabilities: LauncherCapabilities;
+  harness?: HarnessMetadata;
+  isLocal?: boolean;
 }
 
 const launchers = new Map<string, LauncherInfo>();
@@ -18,11 +20,11 @@ let pruneTimer: ReturnType<typeof setInterval> | null = null;
 
 export function registerLauncher(info: LauncherInfo): void {
   const existing = launchers.get(info.id);
-  if (existing && existing.ws !== info.ws) {
+  if (existing && existing.ws && existing.ws !== info.ws) {
     try { existing.ws.close(4010, 'Replaced by new connection'); } catch {}
   }
   launchers.set(info.id, info);
-  console.log(`[launcher-registry] Registered: ${info.id} (${info.name}@${info.hostname})`);
+  console.log(`[launcher-registry] Registered: ${info.id} (${info.name}@${info.hostname})${info.harness ? ' [harness]' : ''}`);
 }
 
 export function unregisterLauncher(id: string): void {
@@ -42,6 +44,7 @@ export function findAvailableLauncher(): LauncherInfo | undefined {
   let best: LauncherInfo | undefined;
   let bestLoad = Infinity;
   for (const launcher of launchers.values()) {
+    if (launcher.isLocal) continue;
     if (launcher.ws.readyState !== 1) continue; // not OPEN
     const load = launcher.activeSessions.size;
     if (load < launcher.capabilities.maxSessions && load < bestLoad) {
@@ -72,6 +75,7 @@ export function removeSessionFromLauncher(launcherId: string, sessionId: string)
 export function pruneStaleLaunchers(): void {
   const cutoff = Date.now() - 90_000;
   for (const [id, launcher] of launchers) {
+    if (launcher.isLocal) continue;
     const lastBeat = new Date(launcher.lastHeartbeat).getTime();
     if (lastBeat < cutoff) {
       console.log(`[launcher-registry] Pruning stale launcher: ${id}`);
@@ -102,6 +106,12 @@ export function serializeLauncher(l: LauncherInfo) {
     lastHeartbeat: l.lastHeartbeat,
     activeSessions: Array.from(l.activeSessions),
     capabilities: l.capabilities,
-    online: l.ws.readyState === 1,
+    online: l.isLocal ? true : l.ws?.readyState === 1,
+    isHarness: !!l.harness,
+    harness: l.harness || null,
   };
+}
+
+export function listHarnesses(): LauncherInfo[] {
+  return Array.from(launchers.values()).filter(l => !!l.harness);
 }

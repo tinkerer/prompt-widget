@@ -66,6 +66,10 @@ export function JsonlView({ sessionId }: Props) {
 
   const groups = groupMessages(messages);
 
+  // Detect pending tool approval: last message is tool_use with no following tool_result
+  const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null;
+  const pendingTool = lastMsg?.role === 'tool_use' ? lastMsg : null;
+
   return (
     <div class="structured-view" ref={containerRef} onScroll={handleScroll}>
       {messages.length === 0 && (
@@ -76,11 +80,19 @@ export function JsonlView({ sessionId }: Props) {
           {group.role === 'assistant_group' && (
             <AssistantGroupHeader messages={group.messages} />
           )}
-          {group.messages.map(msg => (
-            <MessageRenderer key={msg.id} message={msg} />
+          {group.messages.map((msg, idx) => (
+            <MessageRenderer key={msg.id} message={msg} messages={group.messages} index={idx} />
           ))}
         </div>
       ))}
+      {pendingTool && (
+        <div class="sm-pending-approval">
+          <span class="sm-pending-icon">⏳</span>
+          <span class="sm-pending-text">
+            Waiting for approval: <strong>{pendingTool.toolName || 'tool call'}</strong>
+          </span>
+        </div>
+      )}
     </div>
   );
 }

@@ -19,10 +19,13 @@ import {
   allNumberedSessions,
   pendingFirstDigit,
   focusedPanelId,
+  activePanelId,
   snapGuides,
   dockedOrientation,
   setSessionInputState,
   getSessionLabel,
+  sidebarWidth,
+  AUTOJUMP_PANEL_ID,
 } from '../lib/sessions.js';
 import { startTabDrag } from '../lib/tab-drag.js';
 import { ctrlShiftHeld } from '../lib/shortcuts.js';
@@ -120,19 +123,23 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
   const isMinimized = !docked && !!panel.minimized;
   const orientation = dockedOrientation.value;
   const isFocused = focusedPanelId.value === panel.id;
+  const isActive = activePanelId.value === panel.id;
 
+  const isLeftDocked = docked && panel.dockedSide === 'left';
   const panelStyle = docked
-    ? orientation === 'horizontal'
-      ? (() => {
-          const dockedPanels = popoutPanels.value.filter((p) => p.docked && p.visible);
-          const idx = dockedPanels.findIndex((p) => p.id === panel.id);
-          const count = dockedPanels.length;
-          const topStart = 40;
-          const availH = window.innerHeight - topStart;
-          const perPanel = count > 0 ? availH / count : availH;
-          return { position: 'fixed' as const, right: 0, top: topStart + idx * perPanel, width: panel.dockedWidth, height: perPanel };
-        })()
-      : { position: 'fixed' as const, right: 0, top: panelTop, width: panel.dockedWidth, height: panel.dockedHeight }
+    ? isLeftDocked
+      ? { position: 'fixed' as const, left: sidebarWidth.value, top: panelTop, width: panel.dockedWidth, height: panel.dockedHeight }
+      : orientation === 'horizontal'
+        ? (() => {
+            const dockedPanels = popoutPanels.value.filter((p) => p.docked && p.visible && p.dockedSide !== 'left');
+            const idx = dockedPanels.findIndex((p) => p.id === panel.id);
+            const count = dockedPanels.length;
+            const topStart = 40;
+            const availH = window.innerHeight - topStart;
+            const perPanel = count > 0 ? availH / count : availH;
+            return { position: 'fixed' as const, right: 0, top: topStart + idx * perPanel, width: panel.dockedWidth, height: perPanel };
+          })()
+        : { position: 'fixed' as const, right: 0, top: panelTop, width: panel.dockedWidth, height: panel.dockedHeight }
     : { position: 'fixed' as const, left: panel.floatingRect.x, top: panel.floatingRect.y, width: panel.floatingRect.w, height: isMinimized ? 34 : panel.floatingRect.h };
 
   const onHeaderDragStart = useCallback((e: MouseEvent) => {
@@ -150,9 +157,11 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
       const currentPanel = popoutPanels.value.find((p) => p.id === panel.id);
       if (!currentPanel) return;
       if (currentPanel.docked) {
-        if (dx < -UNDOCK_THRESHOLD) {
+        const isLeft = currentPanel.dockedSide === 'left';
+        const undockThreshold = isLeft ? UNDOCK_THRESHOLD : -UNDOCK_THRESHOLD;
+        if (isLeft ? dx > undockThreshold : dx < undockThreshold) {
           const w = currentPanel.dockedWidth;
-          const h = currentPanel.dockedHeight;
+          const h = typeof currentPanel.dockedHeight === 'number' ? currentPanel.dockedHeight : 500;
           updatePanel(panel.id, {
             docked: false,
             floatingRect: { x: ev.clientX - w / 2, y: ev.clientY - 16, w, h },
@@ -171,6 +180,15 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
         if (ev.clientX > window.innerWidth - SNAP_THRESHOLD) {
           updatePanel(panel.id, {
             docked: true,
+            dockedSide: 'right',
+            dockedHeight: currentPanel.floatingRect.h,
+            dockedWidth: currentPanel.floatingRect.w,
+            dockedTopOffset: 0,
+          });
+        } else if (ev.clientX < sidebarWidth.value + SNAP_THRESHOLD) {
+          updatePanel(panel.id, {
+            docked: true,
+            dockedSide: 'left',
             dockedHeight: currentPanel.floatingRect.h,
             dockedWidth: currentPanel.floatingRect.w,
             dockedTopOffset: 0,
@@ -223,7 +241,9 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
         }
         if (dir.includes('s') || dir === 'bottom') h = Math.max(MIN_H, h + dy);
         let w = startDockedW;
-        if (dir.includes('w') || dir === 'left') {
+        if (dir.includes('e') && cp.dockedSide === 'left') {
+          w = Math.max(MIN_W, startDockedW + dx);
+        } else if (dir.includes('w') || dir === 'left') {
           w = Math.max(MIN_W, startDockedW - dx);
         }
         updatePanel(panel.id, { dockedHeight: h, dockedWidth: w, dockedTopOffset: topOff });
@@ -277,9 +297,10 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
         </div>
       )}
       <div
-        class={`${docked ? 'popout-docked' : 'popout-floating'}${isMinimized ? ' minimized' : ''}${isFocused ? ' panel-focused' : ''}`}
+        class={`${docked ? `popout-docked${isLeftDocked ? ' docked-left' : ''}` : 'popout-floating'}${isMinimized ? ' minimized' : ''}${isFocused ? ' panel-focused' : ''}${isActive ? ' panel-active' : ''}`}
         style={panelStyle}
         data-panel-id={panel.id}
+        onMouseDown={() => { activePanelId.value = panel.id; }}
       >
       <div class="popout-header" onMouseDown={onHeaderDragStart} onDblClick={() => {
         if (!docked) {
@@ -362,16 +383,38 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
               {isMinimized ? '\u25A1' : '\u2212'}
             </button>
           )}
-          <button
-            onClick={() => {
-              updatePanel(panel.id, { docked: !docked, dockedTopOffset: 0, minimized: false });
-              persistPopoutState();
-              window.dispatchEvent(new Event('resize'));
-            }}
-            title={docked ? 'Undock to floating' : 'Dock to right edge'}
-          >
-            {docked ? '\u25A1 Float' : '\u25E8 Dock'}
-          </button>
+          <span class="dock-arrows">
+            <button
+              class={`dock-arrow dock-arrow-left${isLeftDocked ? ' dock-arrow-active' : ''}`}
+              onClick={() => {
+                if (isLeftDocked) {
+                  updatePanel(panel.id, { docked: false, minimized: false, grabY: 0 });
+                } else {
+                  updatePanel(panel.id, { docked: true, dockedSide: 'left', dockedTopOffset: 0, minimized: false, grabY: 0, dockedHeight: docked ? panel.dockedHeight : panel.floatingRect.h, dockedWidth: docked ? panel.dockedWidth : panel.floatingRect.w });
+                }
+                persistPopoutState();
+                window.dispatchEvent(new Event('resize'));
+              }}
+              title={isLeftDocked ? 'Undock to floating' : 'Dock to left edge'}
+            >
+              {'\u25C0'}
+            </button>
+            <button
+              class={`dock-arrow dock-arrow-right${docked && !isLeftDocked ? ' dock-arrow-active' : ''}`}
+              onClick={() => {
+                if (docked && !isLeftDocked) {
+                  updatePanel(panel.id, { docked: false, minimized: false, grabY: 0 });
+                } else {
+                  updatePanel(panel.id, { docked: true, dockedSide: 'right', dockedTopOffset: 0, minimized: false, grabY: 0, dockedHeight: docked ? panel.dockedHeight : panel.floatingRect.h, dockedWidth: docked ? panel.dockedWidth : panel.floatingRect.w });
+                }
+                persistPopoutState();
+                window.dispatchEvent(new Event('resize'));
+              }}
+              title={docked && !isLeftDocked ? 'Undock to floating' : 'Dock to right edge'}
+            >
+              {'\u25B6'}
+            </button>
+          </span>
           {activeId && session?.feedbackId && (
             <button class="btn-resolve" onClick={() => resolveSession(activeId, session.feedbackId)} title="Resolve">Resolve</button>
           )}
@@ -403,7 +446,10 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
         <>
           <div class="popout-resize-n" onMouseDown={(e) => onResizeStart('n', e)} />
           <div class="popout-resize-s" onMouseDown={(e) => onResizeStart('s', e)} />
-          <div class="popout-resize-w" onMouseDown={(e) => onResizeStart('w', e)} />
+          {isLeftDocked
+            ? <div class="popout-resize-e" onMouseDown={(e) => onResizeStart('e', e)} />
+            : <div class="popout-resize-w" onMouseDown={(e) => onResizeStart('w', e)} />
+          }
         </>
       ) : (
         <>
@@ -423,20 +469,46 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
 }
 
 function DockedPanelGrabHandle({ panel }: { panel: PopoutPanelState }) {
-  const grabStart = useRef({ mx: 0, my: 0, time: 0 });
+  const grabStart = useRef({ mx: 0, my: 0, grabY: 0, time: 0 });
   const grabMoved = useRef(false);
   const orientation = dockedOrientation.value;
 
+  const isLeft = panel.dockedSide === 'left';
+  const handleH = 48;
+
   const onGrabMouseDown = useCallback((e: MouseEvent) => {
     e.preventDefault();
-    grabStart.current = { mx: e.clientX, my: e.clientY, time: Date.now() };
+    const currentGrabY = panel.grabY ?? 0;
+    grabStart.current = { mx: e.clientX, my: e.clientY, grabY: currentGrabY, time: Date.now() };
     grabMoved.current = false;
     const startW = panel.dockedWidth;
     const startMx = e.clientX;
     const onMove = (ev: MouseEvent) => {
-      if (Math.abs(ev.clientX - grabStart.current.mx) > 3 || Math.abs(ev.clientY - grabStart.current.my) > 3) {
+      const dx = Math.abs(ev.clientX - grabStart.current.mx);
+      const dy = Math.abs(ev.clientY - grabStart.current.my);
+      if (dx > 3 || dy > 3) {
         grabMoved.current = true;
-        updatePanel(panel.id, { dockedWidth: Math.max(MIN_W, startW - (ev.clientX - startMx)) });
+      }
+      // Horizontal drag = resize width
+      if (dx > 3) {
+        const delta = ev.clientX - startMx;
+        updatePanel(panel.id, { dockedWidth: Math.max(MIN_W, isLeft ? startW + delta : startW - delta) });
+      }
+      // Vertical drag = move grab handle
+      if (dy > 3) {
+        const dyMove = ev.clientY - grabStart.current.my;
+        let newGrabY = grabStart.current.grabY + dyMove;
+        const cp = popoutPanels.value.find((p) => p.id === panel.id);
+        if (cp?.visible) {
+          const panelH = cp.dockedHeight;
+          newGrabY = Math.max(0, Math.min(newGrabY, panelH - handleH));
+        } else {
+          const minY = 40;
+          const maxY = window.innerHeight - handleH;
+          const baseTop = getDockedPanelTop(panel.id);
+          newGrabY = Math.max(minY - baseTop, Math.min(newGrabY, maxY - baseTop));
+        }
+        updatePanel(panel.id, { grabY: newGrabY });
       }
     };
     const onUp = () => {
@@ -449,16 +521,39 @@ function DockedPanelGrabHandle({ panel }: { panel: PopoutPanelState }) {
     };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
-  }, [panel.id, panel.visible, panel.dockedWidth]);
+  }, [panel.id, panel.visible, panel.dockedWidth, panel.grabY]);
 
   const showBadge = ctrlShiftHeld.value;
   const globalSessions = allNumberedSessions();
   const activeId = panel.activeSessionId || panel.sessionIds[0];
   const globalIdx = globalSessions.indexOf(activeId);
-  const handleH = 48;
+  const grabY = panel.grabY ?? 0;
+
+  if (isLeft) {
+    const leftPos = sidebarWidth.value + (panel.visible ? panel.dockedWidth : 0);
+    const panelTop = getDockedPanelTop(panel.id);
+    return (
+      <div
+        class="popout-grab-tab popout-grab-tab-left"
+        style={{
+          left: leftPos,
+          right: 'auto',
+          top: panelTop + grabY,
+          height: handleH,
+        }}
+        onMouseDown={onGrabMouseDown}
+        title="Drag to resize/reposition, click to toggle"
+      >
+        {showBadge && globalIdx >= 0
+          ? <PanelTabBadge tabNum={globalIdx + 1} />
+          : <span class="grab-indicator">{'\u2503'}</span>
+        }
+      </div>
+    );
+  }
 
   if (orientation === 'horizontal') {
-    const dockedPanels = popoutPanels.value.filter((p) => p.docked);
+    const dockedPanels = popoutPanels.value.filter((p) => p.docked && p.dockedSide !== 'left');
     const idx = dockedPanels.findIndex((p) => p.id === panel.id);
     const count = dockedPanels.filter((p) => p.visible).length || 1;
     const topStart = 40;
@@ -473,11 +568,11 @@ function DockedPanelGrabHandle({ panel }: { panel: PopoutPanelState }) {
         class="popout-grab-tab popout-grab-tab-horiz"
         style={{
           right: rightPos,
-          top: panelTopH,
+          top: panelTopH + grabY,
           height: handleH,
         }}
         onMouseDown={onGrabMouseDown}
-        title="Drag to resize, click to toggle"
+        title="Drag to resize/reposition, click to toggle"
       >
         {showBadge && globalIdx >= 0
           ? <PanelTabBadge tabNum={globalIdx + 1} />
@@ -495,11 +590,11 @@ function DockedPanelGrabHandle({ panel }: { panel: PopoutPanelState }) {
       class="popout-grab-tab"
       style={{
         right: rightPos,
-        top: panelTop,
+        top: panelTop + grabY,
         height: handleH,
       }}
       onMouseDown={onGrabMouseDown}
-      title="Drag to resize, click to toggle"
+      title="Drag to resize/reposition, click to toggle"
     >
       {showBadge && globalIdx >= 0
         ? <PanelTabBadge tabNum={globalIdx + 1} />
@@ -519,9 +614,10 @@ export function PopoutPanel() {
     <>
       {panels.map((p) => {
         if (p.docked) {
+          const isAutoJump = p.id === AUTOJUMP_PANEL_ID;
           return (
             <span key={`g-${p.id}`}>
-              <DockedPanelGrabHandle panel={p} />
+              {!isAutoJump && <DockedPanelGrabHandle panel={p} />}
               {p.visible && <PanelView key={p.id} panel={p} />}
             </span>
           );

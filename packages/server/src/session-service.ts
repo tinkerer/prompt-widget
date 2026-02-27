@@ -32,14 +32,64 @@ const messageBuffer = new MessageBuffer();
 
 // ---------- PTY process management ----------
 
-// Poll tmux pane titles + content to detect Claude Code permission prompts.
-// Claude Code sets pane_title to "✳ <task>" when idle, but we only want to
-// flag sessions that are showing an actionable prompt (Yes/No, accept edits, etc.)
-const WAITING_TITLE_PREFIX = '✳';
-// Patterns that indicate a real permission/action prompt (not just idle with hints)
-const ACTION_PROMPT_RE = /Do you want|Would you like to proceed|Esc to cancel|accept edits/;
+// Claude Code signals state via OSC 0 (Set Window Title):
+//   Spinner chars (⠐⠂⠈⠠ etc.) = actively working → 'active'
+//   ✳ prefix = done working → 'idle' or 'waiting'
+// We parse these from the onData stream for real-time detection.
+// To distinguish idle vs waiting, we check the recent output buffer
+// for permission prompt indicators ("Esc to cancel") at the moment of transition.
 
-function pollTmuxWaitingState(): void {
+const BRAILLE_SPINNERS = new Set('⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⠐⠂⠈⠠⡀⢀⠁⠄⠑⠒');
+
+// Parse OSC 0 title sequences from raw PTY data.
+// Returns the last title found in the chunk, or null.
+function extractOscTitle(data: string): string | null {
+  let lastTitle: string | null = null;
+  let idx = 0;
+  while (idx < data.length) {
+    // Look for ESC ] 0 ;
+    const oscStart = data.indexOf('\x1b]0;', idx);
+    if (oscStart === -1) break;
+    const contentStart = oscStart + 4;
+    // Find BEL terminator
+    const belEnd = data.indexOf('\x07', contentStart);
+    // Find ST terminator (ESC \)
+    const stEnd = data.indexOf('\x1b\\', contentStart);
+    let end = -1;
+    if (belEnd !== -1 && stEnd !== -1) end = Math.min(belEnd, stEnd);
+    else if (belEnd !== -1) end = belEnd;
+    else if (stEnd !== -1) end = stEnd;
+    if (end === -1) break;
+    lastTitle = data.slice(contentStart, end);
+    idx = end + 1;
+  }
+  return lastTitle;
+}
+
+// Classify a title as active, idle, or waiting.
+// When the title indicates idle (✳), check visible text for permission prompts
+// or interactive selection prompts (arrow key navigation, Enter to select).
+// We match on specific prompt text rather than "Esc to cancel" because the
+// auto-accept-edits status bar also contains "Esc to cancel".
+function classifyFromTitle(title: string, visibleText: string): InputState {
+  const firstChar = title.charAt(0);
+  if (BRAILLE_SPINNERS.has(firstChar)) return 'active';
+  if (firstChar !== '✳') return 'active'; // unknown title = assume active
+
+  if (/Do you want to .+\?/.test(visibleText)) return 'waiting';
+  if (visibleText.includes('Would you like to proceed')) return 'waiting';
+  // Interactive selection prompts (fzf, inquirer, Claude Code menus)
+  if (/enter to select/i.test(visibleText)) return 'waiting';
+  if (/arrow keys/i.test(visibleText)) return 'waiting';
+  if (/use the arrows/i.test(visibleText)) return 'waiting';
+  if (/↑.*↓|↓.*↑/.test(visibleText)) return 'waiting';
+  return 'idle';
+}
+
+// Lightweight poll: update pane metadata (title/command/path) for display,
+// and provide fallback state detection for recovered sessions that haven't
+// sent new data through onData yet.
+function pollTmuxPaneInfo(): void {
   try {
     const out = execFileSync('tmux', ['-L', 'prompt-widget', 'list-panes', '-a', '-F', '#{session_name}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}'], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
     for (const line of out.trim().split('\n')) {
@@ -52,25 +102,21 @@ function pollTmuxWaitingState(): void {
       const proc = activeSessions.get(sessionId);
       if (!proc || proc.status !== 'running') continue;
 
-      // Store pane info for all sessions
       proc.paneTitle = title;
       proc.paneCommand = command;
       proc.panePath = path;
 
+      // For plain terminals or sessions that already get onData detection, skip
       if (proc.permissionProfile === 'plain') continue;
 
-      let newState: InputState = 'active';
-      if (title.startsWith(WAITING_TITLE_PREFIX)) {
-        // Title says idle — check pane content for an actionable prompt
-        try {
-          const pane = execFileSync('tmux', ['-L', 'prompt-widget', 'capture-pane', '-t', name, '-p'], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
-          const tail = pane.slice(-500);
-          newState = ACTION_PROMPT_RE.test(tail) ? 'waiting' : 'idle';
-        } catch {
-          newState = 'idle';
-        }
-      }
-
+      // Capture only the visible pane area (not full scrollback) so old,
+      // already-accepted permission prompts don't cause false "waiting" state.
+      let visibleText = '';
+      try {
+        visibleText = execFileSync('tmux', ['-L', 'prompt-widget', 'capture-pane', '-t', `pw-${sessionId}`, '-p'],
+          { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+      } catch {}
+      const newState = classifyFromTitle(title, visibleText);
       if (newState !== proc.inputState) {
         proc.inputState = newState;
         sendSequenced(proc, { kind: 'input_state', state: newState });
@@ -313,6 +359,17 @@ function spawnSession(params: {
     .where(eq(schema.agentSessions.id, sessionId))
     .run();
 
+  wireOnData(proc, ptyProcess);
+  wireOnExit(proc, ptyProcess);
+
+  // Schedule startup health check for Claude sessions
+  if (permissionProfile !== 'plain') {
+    scheduleStartupCheck(sessionId);
+  }
+}
+
+// Shared onData handler: output buffering + OSC title-based state detection
+function wireOnData(proc: AgentProcess, ptyProcess: pty.IPty): void {
   ptyProcess.onData((data: string) => {
     proc.outputBuffer += data;
     proc.totalBytes += Buffer.byteLength(data);
@@ -325,11 +382,29 @@ function spawnSession(params: {
       proc.hasStarted = true;
     }
 
+    // Real-time input state detection via OSC title sequences
+    if (proc.permissionProfile !== 'plain') {
+      const title = extractOscTitle(data);
+      if (title !== null) {
+        // Strip ANSI codes from the tail to get readable text for matching
+        const visibleTail = proc.outputBuffer.slice(-4000)
+          .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
+          .replace(/\x1b\][^\x07]*\x07/g, '')
+          .replace(/\x1b\([A-Z]/g, '');
+        const newState = classifyFromTitle(title, visibleTail);
+        if (newState !== proc.inputState) {
+          proc.inputState = newState;
+          sendSequenced(proc, { kind: 'input_state', state: newState });
+        }
+      }
+    }
+
     sendSequenced(proc, { kind: 'output', data });
   });
+}
 
+function wireOnExit(proc: AgentProcess, ptyProcess: pty.IPty): void {
   ptyProcess.onExit(({ exitCode }) => {
-    // If already killed, killSessionProcess handled cleanup
     if (proc.status === 'killed') return;
 
     proc.status = exitCode === 0 ? 'completed' : 'failed';
@@ -347,17 +422,12 @@ function spawnSession(params: {
         lastOutputSeq: proc.outputSeq,
         completedAt,
       })
-      .where(eq(schema.agentSessions.id, sessionId))
+      .where(eq(schema.agentSessions.id, proc.sessionId))
       .run();
 
-    syncFeedbackDispatchStatus(sessionId, proc.status);
-    activeSessions.delete(sessionId);
+    syncFeedbackDispatchStatus(proc.sessionId, proc.status);
+    activeSessions.delete(proc.sessionId);
   });
-
-  // Schedule startup health check for Claude sessions
-  if (permissionProfile !== 'plain') {
-    scheduleStartupCheck(sessionId);
-  }
 }
 
 const STARTUP_CHECK_DELAY = 45_000; // 45 seconds
@@ -463,38 +533,8 @@ function tryRecoverSession(session: typeof schema.agentSessions.$inferSelect): b
       .where(eq(schema.agentSessions.id, session.id))
       .run();
 
-    ptyProcess.onData((data: string) => {
-      proc.outputBuffer += data;
-      proc.totalBytes += Buffer.byteLength(data);
-      if (proc.outputBuffer.length > MAX_OUTPUT_LOG) {
-        proc.outputBuffer = proc.outputBuffer.slice(-MAX_OUTPUT_LOG);
-      }
-      if (!proc.hasStarted && proc.totalBytes > 100) proc.hasStarted = true;
-
-      sendSequenced(proc, { kind: 'output', data });
-    });
-
-    ptyProcess.onExit(({ exitCode }) => {
-      if (proc.status === 'killed') return;
-
-      proc.status = exitCode === 0 ? 'completed' : 'failed';
-      clearInterval(proc.flushTimer);
-      sendSequenced(proc, { kind: 'exit', exitCode, status: proc.status });
-      const completedAt = new Date().toISOString();
-      db.update(schema.agentSessions)
-        .set({
-          status: proc.status,
-          exitCode,
-          outputLog: proc.outputBuffer.slice(-MAX_OUTPUT_LOG),
-          outputBytes: proc.totalBytes,
-          lastOutputSeq: proc.outputSeq,
-          completedAt,
-        })
-        .where(eq(schema.agentSessions.id, session.id))
-        .run();
-      syncFeedbackDispatchStatus(session.id, proc.status);
-      activeSessions.delete(session.id);
-    });
+    wireOnData(proc, ptyProcess);
+    wireOnExit(proc, ptyProcess);
 
     console.log(`[session-service] Late-recovered session ${session.id} from tmux`);
     return true;
@@ -827,9 +867,9 @@ wsServer.on('connection', (ws, req) => {
 
 recoverTmuxSessions();
 
-// Poll tmux pane titles every 3s to detect Claude Code waiting state
-pollTmuxWaitingState(); // immediate first check
-setInterval(pollTmuxWaitingState, 3000);
+// Poll tmux pane info every 3s for metadata + fallback state detection
+pollTmuxPaneInfo(); // immediate first check
+setInterval(pollTmuxPaneInfo, 3000);
 
 const server = serve({ fetch: app.fetch, port: PORT }, () => {
   console.log(`[session-service] Running on http://localhost:${PORT}`);

@@ -6,7 +6,10 @@ import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { applicationSchema, applicationUpdateSchema } from '@prompt-widget/shared';
+import type { ControlAction } from '@prompt-widget/shared';
 import { db, schema } from '../db/index.js';
+import { dispatchTerminalSession } from '../dispatch.js';
+import { inputSessionRemote } from '../session-service-client.js';
 
 export const applicationRoutes = new Hono();
 
@@ -20,6 +23,7 @@ applicationRoutes.get('/', async (c) => {
     apps.map((app) => ({
       ...app,
       hooks: JSON.parse(app.hooks),
+      controlActions: JSON.parse(app.controlActions || '[]'),
     }))
   );
 });
@@ -143,7 +147,7 @@ applicationRoutes.get('/:id', async (c) => {
   if (!app) {
     return c.json({ error: 'Not found' }, 404);
   }
-  return c.json({ ...app, hooks: JSON.parse(app.hooks) });
+  return c.json({ ...app, hooks: JSON.parse(app.hooks), controlActions: JSON.parse(app.controlActions || '[]') });
 });
 
 applicationRoutes.post('/', async (c) => {
@@ -165,6 +169,7 @@ applicationRoutes.post('/', async (c) => {
     serverUrl: parsed.data.serverUrl || null,
     hooks: JSON.stringify(parsed.data.hooks),
     description: parsed.data.description,
+    controlActions: JSON.stringify(parsed.data.controlActions || []),
     createdAt: now,
     updatedAt: now,
   });
@@ -202,6 +207,7 @@ applicationRoutes.patch('/:id', async (c) => {
   if ('agentPath' in d) updates.agentPath = d.agentPath || null;
   if (d.screenshotIncludeWidget !== undefined) updates.screenshotIncludeWidget = d.screenshotIncludeWidget;
   if (d.autoDispatch !== undefined) updates.autoDispatch = d.autoDispatch;
+  if (d.controlActions !== undefined) updates.controlActions = JSON.stringify(d.controlActions);
 
   await db.update(schema.applications).set(updates).where(eq(schema.applications.id, id));
 
@@ -238,4 +244,36 @@ applicationRoutes.post('/:id/regenerate-key', async (c) => {
   }).where(eq(schema.applications.id, id));
 
   return c.json({ id, apiKey });
+});
+
+applicationRoutes.post('/:id/run-action', async (c) => {
+  const id = c.req.param('id');
+  const { actionId } = await c.req.json();
+  if (!actionId) return c.json({ error: 'actionId is required' }, 400);
+
+  const app = await db.query.applications.findFirst({
+    where: eq(schema.applications.id, id),
+  });
+  if (!app) return c.json({ error: 'App not found' }, 404);
+
+  const actions: ControlAction[] = JSON.parse(app.controlActions || '[]');
+  const action = actions.find((a) => a.id === actionId);
+  if (!action) return c.json({ error: 'Action not found' }, 404);
+
+  try {
+    const { sessionId } = await dispatchTerminalSession({ cwd: app.projectDir, appId: id });
+
+    setTimeout(async () => {
+      try {
+        await inputSessionRemote(sessionId, action.command + '\r');
+      } catch (err) {
+        console.error('[applications] Failed to send control action command:', err);
+      }
+    }, 800);
+
+    return c.json({ sessionId, actionId });
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+    return c.json({ error: errorMsg }, 500);
+  }
 });

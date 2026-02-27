@@ -1,6 +1,8 @@
-import { useState, useEffect } from 'preact/hooks';
+import { useState, useEffect, useMemo } from 'preact/hooks';
 import { marked } from 'marked';
+import hljs from 'highlight.js/lib/common';
 import type { ParsedMessage } from '../lib/output-parser.js';
+import { openFileViewer } from '../lib/file-viewer.js';
 
 marked.setOptions({ gfm: true, breaks: false });
 
@@ -10,16 +12,102 @@ function renderMarkdown(text: string): any {
   return <div class="sm-md-rendered" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
-interface Props {
-  message: ParsedMessage;
+// --- Language detection ---
+
+const EXT_TO_LANG: Record<string, string> = {
+  ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript',
+  mjs: 'javascript', cjs: 'javascript',
+  py: 'python', rb: 'ruby', rs: 'rust', go: 'go', java: 'java',
+  c: 'c', h: 'c', cpp: 'cpp', hpp: 'cpp', cc: 'cpp',
+  css: 'css', scss: 'scss', less: 'less',
+  html: 'xml', htm: 'xml', xml: 'xml', svg: 'xml',
+  json: 'json', yaml: 'yaml', yml: 'yaml', toml: 'ini',
+  sh: 'bash', bash: 'bash', zsh: 'bash',
+  sql: 'sql', graphql: 'graphql',
+  swift: 'swift', kt: 'kotlin', cs: 'csharp',
+  lua: 'lua', pl: 'perl', php: 'php', r: 'r',
+  makefile: 'makefile', dockerfile: 'dockerfile',
+  diff: 'diff', patch: 'diff', md: 'markdown', mdx: 'markdown',
+};
+
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico']);
+const MARKDOWN_EXTS = new Set(['md', 'mdx', 'markdown']);
+
+function getFileExt(path: string): string {
+  const basename = path.split('/').pop() || '';
+  if (basename.toLowerCase() === 'makefile') return 'makefile';
+  if (basename.toLowerCase() === 'dockerfile') return 'dockerfile';
+  return basename.split('.').pop()?.toLowerCase() || '';
 }
 
-export function MessageRenderer({ message }: Props) {
+function getLangFromPath(path: string): string | undefined {
+  return EXT_TO_LANG[getFileExt(path)];
+}
+
+// --- Syntax highlighting ---
+
+function highlightCode(content: string, lang?: string): string {
+  try {
+    if (lang && hljs.getLanguage(lang)) {
+      return hljs.highlight(content, { language: lang }).value;
+    }
+    return hljs.highlightAuto(content).value;
+  } catch {
+    return content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+}
+
+function HighlightedCode({ content, lang, maxLines }: { content: string; lang?: string; maxLines?: number }) {
+  const [expanded, setExpanded] = useState(false);
+  const lines = content.split('\n');
+  const truncatable = maxLines && lines.length > maxLines && !expanded;
+  const displayContent = truncatable ? lines.slice(0, maxLines).join('\n') : content;
+  const highlighted = useMemo(() => highlightCode(displayContent, lang), [displayContent, lang]);
+  const displayLines = highlighted.split('\n');
+
+  return (
+    <div class="sm-highlighted-code">
+      <pre class="sm-hl-pre"><code class="hljs">{displayLines.map((line, i) => (
+        <div key={i} class="sm-hl-line">
+          <span class="sm-hl-line-num">{i + 1}</span>
+          <span class="sm-hl-line-text" dangerouslySetInnerHTML={{ __html: line || ' ' }} />
+        </div>
+      ))}</code></pre>
+      {truncatable && (
+        <div class="sm-truncated" onClick={() => setExpanded(true)}>
+          ... {lines.length - maxLines!} more lines (click to expand)
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- Props ---
+
+interface Props {
+  message: ParsedMessage;
+  messages?: ParsedMessage[];
+  index?: number;
+}
+
+function findPrecedingToolUse(messages: ParsedMessage[], index: number): ParsedMessage | undefined {
+  for (let i = index - 1; i >= 0; i--) {
+    if (messages[i].role === 'tool_use') return messages[i];
+    if (messages[i].role !== 'tool_result') break;
+  }
+  return undefined;
+}
+
+export function MessageRenderer({ message, messages, index }: Props) {
+  const prevToolUse = (message.role === 'tool_result' && messages && index !== undefined)
+    ? findPrecedingToolUse(messages, index)
+    : undefined;
+
   switch (message.role) {
     case 'tool_use':
       return <ToolUseMessage message={message} />;
     case 'tool_result':
-      return <ToolResultMessage message={message} />;
+      return <ToolResultMessage message={message} prevToolUse={prevToolUse} />;
     case 'assistant':
       return <AssistantMessage message={message} />;
     case 'user_input':
@@ -31,6 +119,20 @@ export function MessageRenderer({ message }: Props) {
     default:
       return null;
   }
+}
+
+// --- Clickable file path ---
+
+function ClickableFilePath({ path }: { path: string }) {
+  return (
+    <span
+      class="sm-file-path sm-file-path-clickable"
+      title={`${path}\nClick to open current file`}
+      onClick={(e) => { e.stopPropagation(); openFileViewer(path); }}
+    >
+      {shortenPath(path)}
+    </span>
+  );
 }
 
 // Tool-specific category colors
@@ -76,7 +178,7 @@ function toolIcon(name: string): string {
   }
 }
 
-function ToolUseMessage({ message }: Props) {
+function ToolUseMessage({ message }: { message: ParsedMessage }) {
   const { toolName, toolInput } = message;
   if (!toolName) return null;
 
@@ -147,7 +249,7 @@ function EditToolUse({ toolInput, cat }: { toolInput?: Record<string, unknown>; 
         <span class="sm-tool-icon">✎</span>
         <span class="sm-tool-name">Edit</span>
         {replaceAll && <span class="sm-tool-badge">replace all</span>}
-        <span class="sm-file-path">{shortenPath(filePath)}</span>
+        <ClickableFilePath path={filePath} />
       </div>
       {diffLines.length > 0 && (
         <div class="sm-diff-view">
@@ -166,33 +268,18 @@ function EditToolUse({ toolInput, cat }: { toolInput?: Record<string, unknown>; 
 function WriteToolUse({ toolInput, cat }: { toolInput?: Record<string, unknown>; cat: string }) {
   const filePath = String(toolInput?.file_path || '');
   const content = String(toolInput?.content || '');
-  const [expanded, setExpanded] = useState(false);
-
   const lines = content.split('\n');
-  const displayLines = expanded ? lines : lines.slice(0, 20);
-  const truncated = lines.length > 20 && !expanded;
+  const lang = getLangFromPath(filePath);
 
   return (
     <div class={`sm-message sm-tool-use ${cat}`}>
       <div class="sm-tool-header">
         <span class="sm-tool-icon">✏</span>
         <span class="sm-tool-name">Write</span>
-        <span class="sm-file-path">{shortenPath(filePath)}</span>
+        <ClickableFilePath path={filePath} />
         <span class="sm-tool-badge">{lines.length} lines</span>
       </div>
-      <div class="sm-line-numbered">
-        {displayLines.map((ln, i) => (
-          <div key={i} class="sm-numbered-line">
-            <span class="sm-line-num">{i + 1}</span>
-            <span class="sm-line-text">{ln}</span>
-          </div>
-        ))}
-        {truncated && (
-          <div class="sm-truncated" onClick={() => setExpanded(true)}>
-            ... {lines.length - 20} more lines (click to expand)
-          </div>
-        )}
-      </div>
+      <HighlightedCode content={content} lang={lang} maxLines={20} />
     </div>
   );
 }
@@ -212,7 +299,7 @@ function ReadToolUse({ toolInput, cat }: { toolInput?: Record<string, unknown>; 
       <div class="sm-tool-header">
         <span class="sm-tool-icon">📄</span>
         <span class="sm-tool-name">Read</span>
-        <span class="sm-file-path">{shortenPath(filePath)}</span>
+        <ClickableFilePath path={filePath} />
         {rangeInfo && <span class="sm-tool-badge">{rangeInfo}</span>}
       </div>
     </div>
@@ -386,27 +473,54 @@ function GenericToolUse({ toolName, toolInput, cat }: { toolName: string; toolIn
   );
 }
 
+// --- Tool Result with syntax highlighting ---
+
 function extractImageUrls(content: string): string[] {
   const urls: string[] = [];
-  // base64 data URIs
   const b64re = /data:image\/[a-z+]+;base64,[A-Za-z0-9+/=]+/g;
   let m;
   while ((m = b64re.exec(content)) !== null) urls.push(m[0]);
-  // http image URLs
   const urlre = /https?:\/\/[^\s"'<>]+\.(?:png|jpg|jpeg|gif|webp|svg|bmp)/gi;
   while ((m = urlre.exec(content)) !== null) urls.push(m[0]);
   return urls;
 }
 
-function ToolResultMessage({ message }: Props) {
+function stripLineNumbers(content: string): string {
+  // Read tool output has format "   123→content" — strip the line number prefix
+  const lines = content.split('\n');
+  const hasLineNums = lines.length > 1 && lines.slice(0, 5).every(l => !l.trim() || /^\s*\d+→/.test(l));
+  if (!hasLineNums) return content;
+  return lines.map(l => l.replace(/^\s*\d+→/, '')).join('\n');
+}
+
+function ToolResultMessage({ message, prevToolUse }: { message: ParsedMessage; prevToolUse?: ParsedMessage }) {
   const isError = message.isError;
   const content = message.content;
   const lines = content.split('\n');
   const isLong = lines.length > 15 || content.length > 500;
   const [expanded, setExpanded] = useState(!isLong);
+  const [viewMode, setViewMode] = useState<'raw' | 'highlighted' | 'markdown'>('highlighted');
 
   const imageUrls = extractImageUrls(content);
   const displayContent = expanded ? content : lines.slice(0, 10).join('\n') + (lines.length > 10 ? '\n...' : '');
+
+  // Detect language from preceding tool use
+  const filePath = prevToolUse?.toolInput?.file_path as string | undefined;
+  const toolName = prevToolUse?.toolName;
+  const ext = filePath ? getFileExt(filePath) : '';
+  const lang = filePath ? getLangFromPath(filePath) : undefined;
+  const isImageFile = IMAGE_EXTS.has(ext);
+  const isMarkdownFile = MARKDOWN_EXTS.has(ext);
+  const isFileContent = toolName === 'Read' || toolName === 'Write';
+
+  // For file content results, use syntax highlighting or markdown rendering
+  const showHighlighted = !isError && isFileContent && !isImageFile && viewMode !== 'raw';
+  const showMarkdown = showHighlighted && isMarkdownFile && viewMode === 'markdown';
+
+  const cleanContent = useMemo(() => {
+    if (!showHighlighted) return displayContent;
+    return stripLineNumbers(expanded ? content : displayContent);
+  }, [showHighlighted, displayContent, content, expanded]);
 
   return (
     <div class={`sm-message sm-tool-result ${isError ? 'sm-error' : ''}`}>
@@ -414,16 +528,40 @@ function ToolResultMessage({ message }: Props) {
         <span class="sm-result-indicator">{expanded ? '▾' : '▸'}</span>
         <span class="sm-result-label">{isError ? 'Error' : 'Output'}</span>
         <span class="sm-result-meta">{lines.length} line{lines.length !== 1 ? 's' : ''}</span>
+        {isFileContent && !isError && (
+          <div class="sm-result-view-toggle" onClick={(e) => e.stopPropagation()}>
+            <button
+              class={`sm-view-btn ${viewMode === 'highlighted' ? 'active' : ''}`}
+              onClick={() => setViewMode('highlighted')}
+              title="Syntax highlighted"
+            >Code</button>
+            {isMarkdownFile && (
+              <button
+                class={`sm-view-btn ${viewMode === 'markdown' ? 'active' : ''}`}
+                onClick={() => setViewMode('markdown')}
+                title="Rendered markdown"
+              >MD</button>
+            )}
+            <button
+              class={`sm-view-btn ${viewMode === 'raw' ? 'active' : ''}`}
+              onClick={() => setViewMode('raw')}
+              title="Raw text"
+            >Raw</button>
+          </div>
+        )}
       </div>
       {imageUrls.length > 0 && (
         <div class="sm-result-images">
           {imageUrls.map((url, i) => <ImageViewer key={i} src={url} />)}
         </div>
       )}
-      {(expanded || !isLong) && (
+      {showMarkdown && expanded ? (
+        <div class="sm-result-markdown">{renderMarkdown(cleanContent)}</div>
+      ) : showHighlighted && (expanded || !isLong) ? (
+        <HighlightedCode content={cleanContent} lang={lang} />
+      ) : (expanded || !isLong) ? (
         <pre class="sm-result-content">{displayContent}</pre>
-      )}
-      {!expanded && isLong && (
+      ) : (
         <pre class="sm-result-content sm-result-truncated">{displayContent}</pre>
       )}
     </div>
@@ -465,7 +603,7 @@ function ImageViewer({ src }: { src: string }) {
   );
 }
 
-function AssistantMessage({ message }: Props) {
+function AssistantMessage({ message }: { message: ParsedMessage }) {
   return (
     <div class="sm-message sm-assistant">
       <div class="sm-assistant-content">{renderMarkdown(message.content)}</div>
@@ -473,7 +611,7 @@ function AssistantMessage({ message }: Props) {
   );
 }
 
-function ThinkingMessage({ message }: Props) {
+function ThinkingMessage({ message }: { message: ParsedMessage }) {
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -490,7 +628,7 @@ function ThinkingMessage({ message }: Props) {
   );
 }
 
-function UserInputMessage({ message }: Props) {
+function UserInputMessage({ message }: { message: ParsedMessage }) {
   return (
     <div class="sm-message sm-user-input">
       <div class="sm-user-bubble">{message.content}</div>
@@ -498,7 +636,7 @@ function UserInputMessage({ message }: Props) {
   );
 }
 
-function SystemMessage({ message }: Props) {
+function SystemMessage({ message }: { message: ParsedMessage }) {
   return (
     <div class="sm-message sm-system">
       <span class="sm-system-text">{message.content}</span>
@@ -525,11 +663,9 @@ function computeDiff(oldStr: string, newStr: string): DiffLine[] {
   const oldLines = oldStr.split('\n');
   const newLines = newStr.split('\n');
 
-  // LCS-based diff
   const m = oldLines.length;
   const n = newLines.length;
 
-  // Build LCS table
   const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
@@ -541,7 +677,6 @@ function computeDiff(oldStr: string, newStr: string): DiffLine[] {
     }
   }
 
-  // Backtrack to build diff
   const result: DiffLine[] = [];
   let i = m, j = n;
   const stack: DiffLine[] = [];
@@ -561,7 +696,6 @@ function computeDiff(oldStr: string, newStr: string): DiffLine[] {
 
   stack.reverse();
 
-  // Compact: only show context lines near changes (3 lines of context)
   const hasChanges = stack.some(l => l.type !== 'context');
   if (!hasChanges) return [];
 
@@ -582,4 +716,3 @@ function computeDiff(oldStr: string, newStr: string): DiffLine[] {
 
   return result;
 }
-

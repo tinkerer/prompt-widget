@@ -1,6 +1,6 @@
-import { signal } from '@preact/signals';
+import { signal, effect } from '@preact/signals';
 import { api } from './api.js';
-import { autoNavigateToFeedback, autoJumpWaiting, autoJumpInterrupt, autoJumpDelay } from './settings.js';
+import { autoNavigateToFeedback, autoJumpWaiting, autoJumpInterrupt, autoJumpDelay, autoJumpLogs, autoCloseWaitingPanel } from './settings.js';
 import { navigate, selectedAppId } from './state.js';
 import { timed } from './perf.js';
 import type { ViewMode } from '../components/SessionViewToggle.js';
@@ -25,7 +25,9 @@ export const splitEnabled = signal<boolean>(loadJson('pw-split-enabled', false))
 export const rightPaneTabs = signal<string[]>(loadJson('pw-right-pane-tabs', []));
 export const rightPaneActiveId = signal<string | null>(loadJson('pw-right-pane-active', null));
 export const splitRatio = signal<number>(loadJson('pw-split-ratio', 0.5));
-export const activeSplitSide = signal<'left' | 'right'>('left');
+export const activePanelId = signal<string | null>('split-left');
+
+export const AUTOJUMP_PANEL_ID = 'p-autojump';
 
 export interface PopoutPanelState {
   id: string;
@@ -38,6 +40,8 @@ export interface PopoutPanelState {
   dockedWidth: number;
   dockedTopOffset?: number;
   minimized?: boolean;
+  dockedSide?: 'left' | 'right';
+  grabY?: number;
 }
 
 function migrateOldPopoutState(): PopoutPanelState[] {
@@ -392,7 +396,9 @@ export function getDockedPanels(): PopoutPanelState[] {
 const COLLAPSED_HANDLE_H = 48;
 
 export function getDockedPanelTop(panelId: string): number {
-  const docked = popoutPanels.value.filter((p) => p.docked);
+  const target = popoutPanels.value.find((p) => p.id === panelId);
+  const side = target?.dockedSide || 'right';
+  const docked = popoutPanels.value.filter((p) => p.docked && (p.dockedSide || 'right') === side);
   let top = 40;
   for (const p of docked) {
     if (p.id === panelId) return top + (p.visible ? (p.dockedTopOffset || 0) : 0);
@@ -691,6 +697,7 @@ export async function loadAllSessions(includeDeleted = false) {
       }
     }
     if (changed) sessionInputStates.value = next;
+    syncAutoJumpPanel();
   } catch {
     // ignore
   } finally {
@@ -735,7 +742,7 @@ export function focusSessionTerminal(sessionId: string) {
 }
 
 export function openSession(sessionId: string) {
-  console.log(`[auto-jump] openSession: ${sessionId.slice(-6)}, currentActive=${activeTabId.value?.slice(-6) ?? 'null'}, alreadyOpen=${openTabs.value.includes(sessionId)}`);
+  autoJumpLogs.value && console.log(`[auto-jump] openSession: ${sessionId.slice(-6)}, currentActive=${activeTabId.value?.slice(-6) ?? 'null'}, alreadyOpen=${openTabs.value.includes(sessionId)}`);
   if (!openTabs.value.includes(sessionId)) {
     openTabs.value = [...openTabs.value, sessionId];
   }
@@ -747,6 +754,9 @@ export function openSession(sessionId: string) {
   panelMinimized.value = false;
   persistTabs();
 
+  // Sync companion pane when switching sessions
+  syncCompanionsToRightPane(sessionId, current);
+
   if (autoNavigateToFeedback.value) {
     const session = allSessions.value.find((s) => s.id === sessionId);
     if (session?.feedbackId) {
@@ -757,6 +767,51 @@ export function openSession(sessionId: string) {
       navigate(path);
     }
   }
+}
+
+export function focusOrDockSession(sessionId: string) {
+  // 1. Already in a panel → activate + focus it there
+  const panel = findPanelForSession(sessionId);
+  if (panel) {
+    if (panel.activeSessionId === sessionId && panel.visible) {
+      focusSessionTerminal(sessionId);
+      return;
+    }
+    updatePanel(panel.id, { activeSessionId: sessionId, visible: true });
+    persistPopoutState();
+    nudgeResize();
+    focusSessionTerminal(sessionId);
+    return;
+  }
+  // 2. Dock into the sidebar panel
+  const ajPanel = popoutPanels.value.find((p) => p.id === AUTOJUMP_PANEL_ID);
+  if (ajPanel) {
+    const ids = ajPanel.sessionIds.includes(sessionId)
+      ? ajPanel.sessionIds
+      : [...ajPanel.sessionIds, sessionId];
+    updatePanel(AUTOJUMP_PANEL_ID, {
+      sessionIds: ids,
+      activeSessionId: sessionId,
+      visible: true,
+      dockedSide: 'left',
+    });
+  } else {
+    const newPanel: PopoutPanelState = {
+      id: AUTOJUMP_PANEL_ID,
+      sessionIds: [sessionId],
+      activeSessionId: sessionId,
+      docked: true,
+      visible: true,
+      floatingRect: { x: 200, y: 100, w: 500, h: 500 },
+      dockedHeight: 500,
+      dockedWidth: 500,
+      dockedSide: 'left',
+    };
+    popoutPanels.value = [newPanel, ...popoutPanels.value];
+  }
+  persistPopoutState();
+  nudgeResize();
+  focusSessionTerminal(sessionId);
 }
 
 export function closeTab(sessionId: string) {
@@ -966,11 +1021,11 @@ function isUserTyping(): boolean {
 
 function executePendingAutoJump() {
   const targetId = pendingAutoJump.value;
-  console.log(`[auto-jump] executePendingAutoJump called, targetId=${targetId?.slice(-6) ?? 'null'}`);
+  autoJumpLogs.value && console.log(`[auto-jump] executePendingAutoJump called, targetId=${targetId?.slice(-6) ?? 'null'}`);
   if (!targetId) return;
 
   if (!autoJumpInterrupt.value && isUserTyping()) {
-    console.log(`[auto-jump] user is typing, interrupt OFF — pausing auto-jump for ${targetId.slice(-6)}`);
+    autoJumpLogs.value && console.log(`[auto-jump] user is typing, interrupt OFF — pausing auto-jump for ${targetId.slice(-6)}`);
     autoJumpPaused.value = true;
     return;
   }
@@ -978,12 +1033,12 @@ function executePendingAutoJump() {
   autoJumpPaused.value = false;
 
   if (autoJumpDelay.value) {
-    console.log(`[auto-jump] starting 3s countdown for ${targetId.slice(-6)}`);
+    autoJumpLogs.value && console.log(`[auto-jump] starting 3s countdown for ${targetId.slice(-6)}`);
     autoJumpCountdown.value = 3;
     clearAutoJumpTimer();
     autoJumpTimer = setInterval(() => {
       if (!autoJumpInterrupt.value && isUserTyping()) {
-        console.log(`[auto-jump] user started typing during countdown — pausing`);
+        autoJumpLogs.value && console.log(`[auto-jump] user started typing during countdown — pausing`);
         clearAutoJumpTimer();
         autoJumpCountdown.value = 0;
         autoJumpPaused.value = true;
@@ -996,12 +1051,12 @@ function executePendingAutoJump() {
         const id = pendingAutoJump.value;
         pendingAutoJump.value = null;
         autoJumpPaused.value = false;
-        console.log(`[auto-jump] countdown done, jumping to ${id?.slice(-6) ?? 'null'}`);
+        autoJumpLogs.value && console.log(`[auto-jump] countdown done, jumping to ${id?.slice(-6) ?? 'null'}`);
         if (id) activateSessionInPlace(id);
       }
     }, 1000);
   } else {
-    console.log(`[auto-jump] immediate jump to ${targetId.slice(-6)}`);
+    autoJumpLogs.value && console.log(`[auto-jump] immediate jump to ${targetId.slice(-6)}`);
     pendingAutoJump.value = null;
     activateSessionInPlace(targetId);
   }
@@ -1038,7 +1093,7 @@ export function setSessionInputState(sessionId: string, state: InputState) {
     autoJumpPaused.value = false;
   }
 
-  console.log(`[auto-jump] inputState changed: session=${sessionId.slice(-6)} ${prevState} → ${state} (wasWaiting=${wasWaiting})`, {
+  autoJumpLogs.value && console.log(`[auto-jump] inputState changed: session=${sessionId.slice(-6)} ${prevState} → ${state} (wasWaiting=${wasWaiting})`, {
     allStates: Object.fromEntries(next),
     autoJumpEnabled: autoJumpWaiting.value,
     activeTab: activeTabId.value?.slice(-6),
@@ -1048,30 +1103,31 @@ export function setSessionInputState(sessionId: string, state: InputState) {
     const waitingSessions = allSessions.value.filter(
       (s: any) => s.id !== sessionId && s.status === 'running' && next.get(s.id) === 'waiting'
     );
-    console.log(`[auto-jump] session ${sessionId.slice(-6)} left waiting. Other waiting sessions:`, waitingSessions.map((s: any) => s.id.slice(-6)));
+    autoJumpLogs.value && console.log(`[auto-jump] session ${sessionId.slice(-6)} left waiting. Other waiting sessions:`, waitingSessions.map((s: any) => s.id.slice(-6)));
     if (waitingSessions.length === 0) {
-      console.log(`[auto-jump] no other waiting sessions, skipping auto-jump`);
+      autoJumpLogs.value && console.log(`[auto-jump] no other waiting sessions, skipping auto-jump`);
       return;
     }
     const targetId = waitingSessions[0].id;
     pendingAutoJump.value = targetId;
     // interrupt ON → jump almost immediately; OFF → short grace period
     const delay = autoJumpInterrupt.value ? 100 : 500;
-    console.log(`[auto-jump] scheduling jump to ${targetId.slice(-6)} in ${delay}ms (interrupt=${autoJumpInterrupt.value})`);
+    autoJumpLogs.value && console.log(`[auto-jump] scheduling jump to ${targetId.slice(-6)} in ${delay}ms (interrupt=${autoJumpInterrupt.value})`);
     setTimeout(() => executePendingAutoJump(), delay);
   } else if (wasWaiting && state !== 'waiting') {
-    console.log(`[auto-jump] session left waiting but autoJumpWaiting is OFF`);
+    autoJumpLogs.value && console.log(`[auto-jump] session left waiting but autoJumpWaiting is OFF`);
   } else if (state === 'waiting' && !wasWaiting && autoJumpWaiting.value) {
     // Session just entered waiting — jump to it if the active tab is not waiting
     const activeId = activeTabId.value;
     const activeState = activeId ? (next.get(activeId) || 'active') : 'active';
     if (activeId !== sessionId && activeState !== 'waiting') {
-      console.log(`[auto-jump] session ${sessionId.slice(-6)} entered waiting, active tab ${activeId?.slice(-6)} is ${activeState} — jumping`);
+      autoJumpLogs.value && console.log(`[auto-jump] session ${sessionId.slice(-6)} entered waiting, active tab ${activeId?.slice(-6)} is ${activeState} — jumping`);
       pendingAutoJump.value = sessionId;
       const delay = autoJumpInterrupt.value ? 100 : 500;
       setTimeout(() => executePendingAutoJump(), delay);
     }
   }
+  syncAutoJumpPanel();
 }
 
 export function cycleWaitingSession() {
@@ -1091,15 +1147,83 @@ export function cycleWaitingSession() {
 }
 
 export function activateSessionInPlace(sessionId: string) {
-  console.log(`[auto-jump] activateSessionInPlace: ${sessionId.slice(-6)}, splitEnabled=${splitEnabled.value}, inRightPane=${rightPaneTabs.value.includes(sessionId)}`);
+  autoJumpLogs.value && console.log(`[auto-jump] activateSessionInPlace: ${sessionId.slice(-6)}, splitEnabled=${splitEnabled.value}, inRightPane=${rightPaneTabs.value.includes(sessionId)}`);
   if (splitEnabled.value && rightPaneTabs.value.includes(sessionId)) {
     rightPaneActiveId.value = sessionId;
     persistSplitState();
-    console.log(`[auto-jump] activated in right pane: ${sessionId.slice(-6)}`);
+    autoJumpLogs.value && console.log(`[auto-jump] activated in right pane: ${sessionId.slice(-6)}`);
     return;
   }
   openSession(sessionId);
 }
+
+export function syncAutoJumpPanel() {
+  if (!autoJumpWaiting.value) return;
+
+  const existing = popoutPanels.value.find((p) => p.id === AUTOJUMP_PANEL_ID);
+
+  const waiting = allSessions.value.filter(
+    (s: any) => s.status === 'running' && sessionInputStates.value.get(s.id) === 'waiting'
+  );
+  const waitingIds = waiting.map((s: any) => s.id);
+
+  if (waitingIds.length === 0) {
+    if (existing && existing.visible && autoCloseWaitingPanel.value) {
+      updatePanel(AUTOJUMP_PANEL_ID, { visible: false });
+      persistPopoutState();
+    }
+    return;
+  }
+
+  if (!existing) {
+    const panel: PopoutPanelState = {
+      id: AUTOJUMP_PANEL_ID,
+      sessionIds: waitingIds,
+      activeSessionId: waitingIds[0],
+      docked: true,
+      visible: true,
+      floatingRect: { x: 200, y: 100, w: 500, h: 500 },
+      dockedHeight: 500,
+      dockedWidth: 500,
+      dockedSide: 'left',
+    };
+    popoutPanels.value = [panel, ...popoutPanels.value];
+    persistPopoutState();
+    return;
+  }
+
+  // Merge waiting sessions into the panel without removing manually-added ones
+  const currentIds = existing.sessionIds;
+  const merged = [...currentIds];
+  for (const id of waitingIds) {
+    if (!merged.includes(id)) merged.push(id);
+  }
+  const idsChanged = merged.length !== currentIds.length || merged.some((id, i) => id !== currentIds[i]);
+  const activeStillPresent = merged.includes(existing.activeSessionId);
+
+  if (idsChanged) {
+    updatePanel(AUTOJUMP_PANEL_ID, {
+      sessionIds: merged,
+      activeSessionId: activeStillPresent ? existing.activeSessionId : merged[0],
+    });
+    persistPopoutState();
+  }
+}
+
+export function toggleAutoJumpPanel() {
+  const existing = popoutPanels.value.find((p) => p.id === AUTOJUMP_PANEL_ID);
+  if (existing) {
+    updatePanel(AUTOJUMP_PANEL_ID, { visible: !existing.visible });
+    persistPopoutState();
+  }
+}
+
+// Console helper: type `pwAutoJump()` or `pwAutoJump(true)` / `pwAutoJump(false)` to toggle auto-jump logs
+(window as any).pwAutoJump = (enable?: boolean) => {
+  autoJumpLogs.value = enable ?? !autoJumpLogs.value;
+  console.log(`[auto-jump] console logging ${autoJumpLogs.value ? 'ON' : 'OFF'}`);
+  return autoJumpLogs.value;
+};
 
 export const sessionLabels = signal<Record<string, string>>(loadJson('pw-session-labels', {}));
 
@@ -1183,4 +1307,139 @@ export function handleTabDigit(digit: number) {
 
 export function handleTabDigit0to9(digit: number) {
   handleTabDigit(digit);
+}
+
+// --- Companion Pane System ---
+
+export type CompanionType = 'jsonl' | 'feedback' | 'iframe';
+
+export const sessionCompanions = signal<Record<string, CompanionType[]>>(
+  loadJson('pw-session-companions', {})
+);
+
+// Ephemeral per-session right pane memory (not persisted across reloads)
+const rightPaneMemory = new Map<string, { tabs: string[]; activeId: string | null }>();
+
+export function companionTabId(sessionId: string, type: CompanionType): string {
+  return `${type}:${sessionId}`;
+}
+
+function extractSessionFromTab(tabId: string): string | null {
+  const idx = tabId.indexOf(':');
+  if (idx < 0) return null;
+  return tabId.slice(idx + 1);
+}
+
+function extractCompanionType(tabId: string): CompanionType | null {
+  const idx = tabId.indexOf(':');
+  if (idx < 0) return null;
+  const prefix = tabId.slice(0, idx);
+  if (prefix === 'jsonl' || prefix === 'feedback' || prefix === 'iframe') return prefix;
+  return null;
+}
+
+export function getCompanions(sessionId: string): CompanionType[] {
+  return sessionCompanions.value[sessionId] || [];
+}
+
+function persistCompanions() {
+  localStorage.setItem('pw-session-companions', JSON.stringify(sessionCompanions.value));
+}
+
+export function toggleCompanion(sessionId: string, type: CompanionType) {
+  const current = getCompanions(sessionId);
+  const tabId = companionTabId(sessionId, type);
+
+  if (current.includes(type)) {
+    // Toggle OFF
+    const next = current.filter((t) => t !== type);
+    if (next.length === 0) {
+      const { [sessionId]: _, ...rest } = sessionCompanions.value;
+      sessionCompanions.value = rest;
+    } else {
+      sessionCompanions.value = { ...sessionCompanions.value, [sessionId]: next };
+    }
+    persistCompanions();
+
+    // Close the tab from right pane
+    if (rightPaneTabs.value.includes(tabId)) {
+      const remaining = rightPaneTabs.value.filter((id) => id !== tabId);
+      rightPaneTabs.value = remaining;
+      if (rightPaneActiveId.value === tabId) {
+        rightPaneActiveId.value = remaining.length > 0 ? remaining[remaining.length - 1] : null;
+      }
+      if (remaining.length === 0 && splitEnabled.value) {
+        disableSplit();
+        return;
+      }
+      persistSplitState();
+    }
+    // Also remove from openTabs
+    if (openTabs.value.includes(tabId)) {
+      openTabs.value = openTabs.value.filter((id) => id !== tabId);
+      persistTabs();
+    }
+  } else {
+    // Toggle ON
+    sessionCompanions.value = { ...sessionCompanions.value, [sessionId]: [...current, type] };
+    persistCompanions();
+    openSessionInRightPane(tabId);
+  }
+}
+
+export function syncCompanionsToRightPane(newSessionId: string, oldSessionId?: string | null) {
+  // Companion tabs are things like jsonl:xyz, feedback:xyz — skip if switching to one
+  if (extractCompanionType(newSessionId)) return;
+
+  // Snapshot current right pane state for the old session
+  if (oldSessionId && !extractCompanionType(oldSessionId)) {
+    rightPaneMemory.set(oldSessionId, {
+      tabs: [...rightPaneTabs.value],
+      activeId: rightPaneActiveId.value,
+    });
+  }
+
+  const companions = getCompanions(newSessionId);
+
+  // Check if we have a memory snapshot for the new session
+  const memory = rightPaneMemory.get(newSessionId);
+
+  if (memory) {
+    // Restore from memory
+    rightPaneTabs.value = memory.tabs;
+    rightPaneActiveId.value = memory.activeId;
+    if (memory.tabs.length > 0) {
+      if (!splitEnabled.value) {
+        splitEnabled.value = true;
+      }
+    }
+    // Ensure companion tabs are in openTabs
+    for (const tab of memory.tabs) {
+      if (!openTabs.value.includes(tab)) {
+        openTabs.value = [...openTabs.value, tab];
+      }
+    }
+    persistSplitState();
+    persistTabs();
+    return;
+  }
+
+  if (companions.length > 0) {
+    // Build right pane from companion config
+    const companionTabs = companions.map((type) => companionTabId(newSessionId, type));
+    // Add to openTabs if needed
+    for (const tab of companionTabs) {
+      if (!openTabs.value.includes(tab)) {
+        openTabs.value = [...openTabs.value, tab];
+      }
+    }
+    rightPaneTabs.value = companionTabs;
+    rightPaneActiveId.value = companionTabs[0];
+    if (!splitEnabled.value) {
+      splitEnabled.value = true;
+    }
+    persistSplitState();
+    persistTabs();
+  }
+  // If no companions and no memory, leave right pane as-is
 }

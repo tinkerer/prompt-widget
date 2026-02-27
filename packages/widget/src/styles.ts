@@ -68,79 +68,62 @@ export const WIDGET_CSS = `
   to { opacity: 1; transform: translateY(0); }
 }
 
-.pw-header {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  padding: 4px 4px 0;
-  flex-shrink: 0;
-}
-
-.pw-close {
-  background: none;
-  border: none;
-  color: #94a3b8;
-  cursor: pointer;
-  font-size: 16px;
-  line-height: 1;
-  padding: 2px 6px;
-  border-radius: 4px;
-}
-
-.pw-close:hover {
-  color: #e2e8f0;
-  background: rgba(255,255,255,0.1);
-}
 
 .pw-resize-handle {
   position: absolute;
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   z-index: 1;
-}
-
-.pw-resize-handle::after {
-  content: '';
-  position: absolute;
-  width: 10px;
-  height: 10px;
-  border-right: 2px solid #475569;
-  border-bottom: 2px solid #475569;
+  border-radius: 0;
+  transition: border-color 0.15s;
 }
 
 .pw-panel.bottom-right .pw-resize-handle {
-  top: 0; left: 0;
+  top: -1px; left: -1px;
   cursor: nw-resize;
+  border-top: 3px solid transparent;
+  border-left: 3px solid transparent;
+  border-top-left-radius: 14px;
 }
-.pw-panel.bottom-right .pw-resize-handle::after {
-  bottom: 2px; right: 2px;
-  transform: rotate(180deg);
+.pw-panel.bottom-right .pw-resize-handle:hover {
+  border-top-color: #6366f1;
+  border-left-color: #6366f1;
 }
 
 .pw-panel.bottom-left .pw-resize-handle {
-  top: 0; right: 0;
+  top: -1px; right: -1px;
   cursor: ne-resize;
+  border-top: 3px solid transparent;
+  border-right: 3px solid transparent;
+  border-top-right-radius: 14px;
 }
-.pw-panel.bottom-left .pw-resize-handle::after {
-  bottom: 2px; left: 2px;
-  transform: rotate(270deg);
+.pw-panel.bottom-left .pw-resize-handle:hover {
+  border-top-color: #6366f1;
+  border-right-color: #6366f1;
 }
 
 .pw-panel.top-right .pw-resize-handle {
-  bottom: 0; left: 0;
+  bottom: -1px; left: -1px;
   cursor: sw-resize;
+  border-bottom: 3px solid transparent;
+  border-left: 3px solid transparent;
+  border-bottom-left-radius: 14px;
 }
-.pw-panel.top-right .pw-resize-handle::after {
-  top: 2px; right: 2px;
-  transform: rotate(90deg);
+.pw-panel.top-right .pw-resize-handle:hover {
+  border-bottom-color: #6366f1;
+  border-left-color: #6366f1;
 }
 
 .pw-panel.top-left .pw-resize-handle {
-  bottom: 0; right: 0;
+  bottom: -1px; right: -1px;
   cursor: se-resize;
+  border-bottom: 3px solid transparent;
+  border-right: 3px solid transparent;
+  border-bottom-right-radius: 14px;
 }
-.pw-panel.top-left .pw-resize-handle::after {
-  top: 2px; left: 2px;
+.pw-panel.top-left .pw-resize-handle:hover {
+  border-bottom-color: #6366f1;
+  border-right-color: #6366f1;
 }
 
 .pw-screenshots {

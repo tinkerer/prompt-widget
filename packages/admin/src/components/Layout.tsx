@@ -7,12 +7,14 @@ import { timed } from '../lib/perf.js';
 import { GlobalTerminalPanel, idMenuOpen } from './GlobalTerminalPanel.js';
 import { PopoutPanel } from './PopoutPanel.js';
 import { PerfOverlay } from './PerfOverlay.js';
+import { FileViewerOverlay } from './FileViewerPanel.js';
 import { Tooltip } from './Tooltip.js';
 import { ShortcutHelpModal } from './ShortcutHelpModal.js';
 import { SpotlightSearch } from './SpotlightSearch.js';
 import { AddAppModal } from './AddAppModal.js';
+import { ControlBar } from './ControlBar.js';
 import { registerShortcut, ctrlShiftHeld } from '../lib/shortcuts.js';
-import { toggleTheme, showTabs, arrowTabSwitching, showHotkeyHints, autoJumpWaiting, autoJumpInterrupt, autoJumpDelay, autoJumpShowPopup } from '../lib/settings.js';
+import { toggleTheme, showTabs, arrowTabSwitching, showHotkeyHints, autoJumpWaiting, autoJumpInterrupt, autoJumpDelay, autoJumpShowPopup, autoJumpLogs, autoCloseWaitingPanel } from '../lib/settings.js';
 import {
   openTabs,
   activeTabId,
@@ -26,6 +28,7 @@ import {
   exitedSessions,
   startSessionPolling,
   openSession,
+  focusOrDockSession,
   deleteSession,
   killSession,
   resumeSession,
@@ -76,6 +79,7 @@ import {
   popOutTab,
   focusSessionTerminal,
   getSessionLabel,
+  toggleAutoJumpPanel,
 } from '../lib/sessions.js';
 
 interface LiveConnection {
@@ -375,7 +379,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
         modifiers: { ctrl: true, shift: true },
         label: 'Session menu',
         category: 'Panels',
-        action: () => { idMenuOpen.value = !idMenuOpen.value; },
+        action: () => { idMenuOpen.value = idMenuOpen.value ? null : (activeTabId.value || null); },
       }),
       registerShortcut({
         key: 'B',
@@ -531,6 +535,14 @@ export function Layout({ children }: { children: ComponentChildren }) {
         category: 'Panels',
         action: cancelAutoJump,
       }),
+      registerShortcut({
+        key: 'J',
+        code: 'KeyJ',
+        modifiers: { ctrl: true, shift: true },
+        label: 'Toggle jump panel',
+        category: 'Panels',
+        action: toggleAutoJumpPanel,
+      }),
     ];
     return () => cleanups.forEach((fn) => fn());
   }, []);
@@ -570,8 +582,32 @@ export function Layout({ children }: { children: ComponentChildren }) {
   const activeStatusFilters = sessionStatusFilters.value;
   const activeFilterCount = activeStatusFilters.size;
 
+  function startDrag(
+    e: MouseEvent,
+    cursor: 'ew-resize' | 'ns-resize',
+    onMove: (ev: MouseEvent) => void,
+    handle?: HTMLElement,
+  ) {
+    e.preventDefault();
+    const overlay = document.createElement('div');
+    overlay.className = `resize-overlay ${cursor === 'ew-resize' ? 'ew' : 'ns'}`;
+    document.body.appendChild(overlay);
+    document.body.style.userSelect = 'none';
+    if (handle) handle.classList.add('dragging');
+    const move = (ev: MouseEvent) => onMove(ev);
+    const up = () => {
+      overlay.remove();
+      document.body.style.userSelect = '';
+      if (handle) handle.classList.remove('dragging');
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  }
+
   const appSubTabs = ['feedback', 'aggregate', 'sessions', 'live'];
-  const settingsTabs = ['/settings/agents', '/settings/applications', '/settings/getting-started', '/settings/preferences'];
+  const settingsTabs = ['/settings/agents', '/settings/applications', '/settings/harnesses', '/settings/getting-started', '/settings/preferences'];
 
   function cycleNav(dir: number) {
     const r = currentRoute.value;
@@ -660,8 +696,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
         <div
           class={`sidebar-session-item ${isTabbed ? 'tabbed' : ''} ${isInPanel ? 'in-panel' : ''} ${isVisible ? 'active' : ''}`}
           onClick={() => {
-            openSession(s.id);
-            focusSessionTerminal(s.id);
+            focusOrDockSession(s.id);
           }}
           title={tooltip}
         >
@@ -721,6 +756,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
   const settingsItems = [
     { path: '/settings/agents', label: 'Agents', icon: '\u{1F916}' },
     { path: '/settings/applications', label: 'Applications', icon: '\u{1F4E6}' },
+    { path: '/settings/harnesses', label: 'Harnesses', icon: '\u{1F433}' },
     { path: '/settings/getting-started', label: 'Getting Started', icon: '\u{1F4D6}' },
     { path: '/settings/preferences', label: 'Preferences', icon: '\u2699' },
   ];
@@ -884,18 +920,9 @@ export function Layout({ children }: { children: ComponentChildren }) {
             <div
               class="sidebar-resize-handle"
               onMouseDown={(e) => {
-                e.preventDefault();
                 const startY = e.clientY;
                 const startH = sessionsHeight.value;
-                const onMove = (ev: MouseEvent) => {
-                  setSessionsHeight(startH - (ev.clientY - startY));
-                };
-                const onUp = () => {
-                  document.removeEventListener('mousemove', onMove);
-                  document.removeEventListener('mouseup', onUp);
-                };
-                document.addEventListener('mousemove', onMove);
-                document.addEventListener('mouseup', onUp);
+                startDrag(e, 'ns-resize', (ev) => setSessionsHeight(startH - (ev.clientY - startY)), e.currentTarget as HTMLElement);
               }}
             />
             <div
@@ -948,6 +975,23 @@ export function Layout({ children }: { children: ComponentChildren }) {
                             onChange={(e) => { autoJumpShowPopup.value = (e.target as HTMLInputElement).checked; }}
                           />
                           Show paused popup
+                        </label>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={autoCloseWaitingPanel.value}
+                            onChange={(e) => { autoCloseWaitingPanel.value = (e.target as HTMLInputElement).checked; }}
+                          />
+                          Auto-close panel
+                        </label>
+                        <div class="id-dropdown-separator" />
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={autoJumpLogs.value}
+                            onChange={(e) => { autoJumpLogs.value = (e.target as HTMLInputElement).checked; }}
+                          />
+                          Log to console
                         </label>
                       </div>
                     )}
@@ -1023,18 +1067,9 @@ export function Layout({ children }: { children: ComponentChildren }) {
               <div
                 class="sidebar-terminals-resize-handle"
                 onMouseDown={(e) => {
-                  e.preventDefault();
                   const startY = e.clientY;
                   const startH = terminalsHeight.value;
-                  const onMove = (ev: MouseEvent) => {
-                    setTerminalsHeight(startH - (ev.clientY - startY));
-                  };
-                  const onUp = () => {
-                    document.removeEventListener('mousemove', onMove);
-                    document.removeEventListener('mouseup', onUp);
-                  };
-                  document.addEventListener('mousemove', onMove);
-                  document.addEventListener('mouseup', onUp);
+                  startDrag(e, 'ns-resize', (ev) => setTerminalsHeight(startH - (ev.clientY - startY)), e.currentTarget as HTMLElement);
                 }}
               />
             )}
@@ -1063,26 +1098,21 @@ export function Layout({ children }: { children: ComponentChildren }) {
         <div
           class="sidebar-edge-handle"
           onMouseDown={(e) => {
-            e.preventDefault();
             const startX = e.clientX;
             const startW = width;
-            const onMove = (ev: MouseEvent) => setSidebarWidth(startW + (ev.clientX - startX));
-            const onUp = () => {
-              document.removeEventListener('mousemove', onMove);
-              document.removeEventListener('mouseup', onUp);
-            };
-            document.addEventListener('mousemove', onMove);
-            document.addEventListener('mouseup', onUp);
+            startDrag(e, 'ew-resize', (ev) => setSidebarWidth(startW + (ev.clientX - startX)), e.currentTarget as HTMLElement);
           }}
         />
       )}
       <div class="main" style={{
         paddingBottom: bottomPad ? `${bottomPad + 16}px` : undefined,
       }}>
+        <ControlBar />
         {children}
       </div>
       <GlobalTerminalPanel />
       <PopoutPanel />
+      <FileViewerOverlay />
       {showShortcutHelp && <ShortcutHelpModal onClose={() => setShowShortcutHelp(false)} />}
       {showSpotlight && <SpotlightSearch onClose={() => setShowSpotlight(false)} />}
       {addAppModalOpen.value && <AddAppModal onClose={() => { addAppModalOpen.value = false; }} />}

@@ -179,8 +179,8 @@ export function StructuredView({ sessionId, isActive, permissionProfile }: Props
           {group.role === 'assistant_group' && (
             <AssistantGroupHeader messages={group.messages} />
           )}
-          {group.messages.map(msg => (
-            <MessageRenderer key={msg.id} message={msg} />
+          {group.messages.map((msg, idx) => (
+            <MessageRenderer key={msg.id} message={msg} messages={group.messages} index={idx} />
           ))}
         </div>
       ))}

@@ -204,6 +204,8 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
         gotFirstOutput = true;
         if (waitingDots) { clearInterval(waitingDots); waitingDots = null; }
         term.clear();
+        // tmux just started rendering — bounce resize so it picks up correct dimensions
+        setTimeout(() => safeFitAndResize(true), 80);
       }
       term.write(data);
     }
@@ -222,6 +224,8 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
         reconnectAttempts = 0;
         sendReplayRequest();
         resendPendingInputs();
+        // Sync terminal size with server on (re)connect — bounce to force SIGWINCH
+        setTimeout(() => safeFitAndResize(true), 50);
       };
 
       ws.onmessage = (event) => {
@@ -399,6 +403,20 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
     const observer = new ResizeObserver(() => safeFitAndResize());
     observer.observe(containerRef.current);
 
+    // Bounce resize when terminal gets focus (click into it, tab into it, etc.)
+    function onTermFocus() { safeFitAndResize(true); }
+    term.textarea?.addEventListener('focus', onTermFocus);
+
+    // Bounce resize when browser tab/window regains visibility
+    function onVisibilityChange() {
+      if (!document.hidden) setTimeout(() => safeFitAndResize(true), 50);
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    // Bounce resize when browser window regains focus
+    function onWindowFocus() { setTimeout(() => safeFitAndResize(true), 50); }
+    window.addEventListener('focus', onWindowFocus);
+
     return () => {
       cleanedUp.current = true;
       safeFitAndResizeRef.current = () => {};
@@ -410,6 +428,9 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
         xtermScreen.removeEventListener('mousemove', onMouseMove as EventListener);
         xtermScreen.removeEventListener('mousedown', onMouseDown as EventListener);
       }
+      term.textarea?.removeEventListener('focus', onTermFocus);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('focus', onWindowFocus);
       observer.disconnect();
       wsRef.current?.close();
       term.dispose();
@@ -427,24 +448,16 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
     // bounce=true to briefly send rows-1 then correct rows, forcing tmux to
     // re-render.  Also call term.refresh() to repaint the xterm.js canvas
     // (content written while the tab was display:none may leave it stale).
-    const timers: ReturnType<typeof setTimeout>[] = [];
     const rafId = requestAnimationFrame(() => {
       safeFitAndResizeRef.current(true);
       term.refresh(0, term.rows - 1);
-      for (const delay of [100, 300]) {
-        timers.push(setTimeout(() => {
-          safeFitAndResizeRef.current();
-          term.refresh(0, term.rows - 1);
-        }, delay));
-      }
     });
-    timers.push(setTimeout(() => term.focus(), 80));
-    // Periodic resize nudge to fix tmux sizing weirdness
-    const nudge = setInterval(() => safeFitAndResizeRef.current(), 15_000);
+    const focusTimer = setTimeout(() => term.focus(), 80);
+    // No periodic resize — ResizeObserver, focus, and visibility handlers cover
+    // all real scenarios. The old 5s setInterval caused visible flicker.
     return () => {
       cancelAnimationFrame(rafId);
-      timers.forEach(clearTimeout);
-      clearInterval(nudge);
+      clearTimeout(focusTimer);
     };
   }, [isActive]);
 

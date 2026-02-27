@@ -97,6 +97,13 @@ export const batchOperationSchema = z.object({
   value: z.string().optional(),
 });
 
+export const controlActionSchema = z.object({
+  id: z.string().min(1).max(50),
+  label: z.string().min(1).max(100),
+  command: z.string().min(1).max(1000),
+  icon: z.string().max(10).optional(),
+});
+
 export const applicationSchema = z.object({
   name: z.string().min(1).max(100),
   projectDir: z.string().min(1).max(500),
@@ -109,6 +116,7 @@ export const applicationSchema = z.object({
   agentPath: z.string().max(500).nullable().optional(),
   screenshotIncludeWidget: z.boolean().optional(),
   autoDispatch: z.boolean().optional(),
+  controlActions: z.array(controlActionSchema).max(20).default([]),
 });
 
 export const applicationUpdateSchema = applicationSchema.partial();

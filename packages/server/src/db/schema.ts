@@ -14,6 +14,7 @@ export const applications = sqliteTable('applications', {
   agentPath: text('agent_path'),
   screenshotIncludeWidget: integer('screenshot_include_widget', { mode: 'boolean' }).notNull().default(true),
   autoDispatch: integer('auto_dispatch', { mode: 'boolean' }).notNull().default(true),
+  controlActions: text('control_actions').notNull().default('[]'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });

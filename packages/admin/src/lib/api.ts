@@ -122,6 +122,12 @@ export const api = {
   deleteApplication: (id: string) =>
     request(`/admin/applications/${id}`, { method: 'DELETE' }),
 
+  runControlAction: (appId: string, actionId: string) =>
+    request<{ sessionId: string; actionId: string }>(`/admin/applications/${appId}/run-action`, {
+      method: 'POST',
+      body: JSON.stringify({ actionId }),
+    }),
+
   scaffoldApp: (data: { name: string; parentDir: string; projectName: string }) =>
     request<{ id: string; apiKey: string; projectDir: string }>('/admin/applications/scaffold', {
       method: 'POST',
@@ -296,6 +302,9 @@ export const api = {
   getLaunchers: () =>
     request<{ launchers: any[] }>('/admin/launchers'),
 
+  getHarnesses: () =>
+    request<{ harnesses: any[] }>('/admin/launchers/harnesses'),
+
   getLauncher: (id: string) =>
     request<any>(`/admin/launchers/${id}`),
 
@@ -304,6 +313,24 @@ export const api = {
 
   getDefaultPromptTemplate: () =>
     request<{ template: string }>('/admin/default-prompt-template'),
+
+  readFile: (path: string) =>
+    request<{ path: string; content: string; size: number }>(`/admin/read-file?path=${encodeURIComponent(path)}`),
+
+  readFileImage: async (path: string): Promise<string> => {
+    const token = getToken();
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const res = await fetch(`${BASE}/admin/read-file?path=${encodeURIComponent(path)}`, { headers });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
+  },
+
+  browseDirs: (path?: string) => {
+    const qs = path ? `?path=${encodeURIComponent(path)}` : '';
+    return request<{ path: string; parent: string | null; dirs: string[] }>(`/admin/browse-dirs${qs}`);
+  },
 
   replaceImage: (imageId: string, blob: Blob) => {
     const fd = new FormData();

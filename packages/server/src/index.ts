@@ -42,6 +42,9 @@ setTimeout(() => {
   });
 }, 10_000);
 
+import { hostname } from 'node:os';
+import type { HarnessMetadata } from '@prompt-widget/shared';
+
 const server = serve({ fetch: app.fetch, port: PORT }, (info) => {
   const url = `http://localhost:${info.port}`;
   console.log(`Server running on ${url}`);
@@ -51,6 +54,31 @@ const server = serve({ fetch: app.fetch, port: PORT }, (info) => {
   console.log(`Read ${url}/GETTING_STARTED.md — it has everything you need to register an app, create an agent endpoint, and embed the widget.`);
   console.log('');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+  // Self-register as a harness when running inside Docker harness
+  if (process.env.HARNESS_MODE === 'true') {
+    const harness: HarnessMetadata = {
+      targetAppUrl: process.env.TARGET_APP_URL || 'http://pw-app:80',
+      browserMcpUrl: process.env.BROWSER_MCP_URL || 'http://pw-browser:8931/mcp',
+      appImage: process.env.APP_IMAGE || undefined,
+      appPort: process.env.APP_PORT ? parseInt(process.env.APP_PORT, 10) : undefined,
+      serverPort: info.port,
+    };
+    const now = new Date().toISOString();
+    registerLauncher({
+      id: process.env.HARNESS_ID || `harness-${hostname()}`,
+      name: process.env.HARNESS_NAME || 'Docker Harness',
+      hostname: hostname(),
+      ws: null as any,
+      connectedAt: now,
+      lastHeartbeat: now,
+      activeSessions: new Set(),
+      capabilities: { maxSessions: 0, hasTmux: false, hasClaudeCli: false },
+      harness,
+      isLocal: true,
+    });
+    console.log('[harness] Self-registered as harness');
+  }
 });
 
 // Widget session WebSocket
@@ -161,6 +189,7 @@ launcherWss.on('connection', (ws, req) => {
             lastHeartbeat: new Date().toISOString(),
             activeSessions: new Set(),
             capabilities: msg.capabilities,
+            harness: msg.harness,
           });
           const reply: LauncherRegistered = { type: 'launcher_registered', ok: true };
           ws.send(JSON.stringify(reply));

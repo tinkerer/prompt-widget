@@ -5,6 +5,7 @@ import { getAllShortcuts } from '../lib/shortcuts.js';
 import { Guide, GUIDES, resetGuide } from '../components/Guide.js';
 import { api } from '../lib/api.js';
 import { openSession, panelPresets, savePreset, restorePreset, deletePreset } from '../lib/sessions.js';
+import { applications, loadApplications } from '../lib/state.js';
 
 function formatKey(s: ReturnType<typeof getAllShortcuts>[0]): string {
   const parts: string[] = [];
@@ -260,6 +261,134 @@ function PanelPresetManager() {
             <button class="btn btn-sm" onClick={() => restorePreset(p.name)}>Restore</button>
             <button class="btn btn-sm btn-danger" onClick={() => deletePreset(p.name)}>Delete</button>
           </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+interface ControlActionDraft {
+  id: string;
+  label: string;
+  command: string;
+  icon: string;
+}
+
+function AppControlActionsEditor() {
+  const apps = applications.value;
+  const [editingAppId, setEditingAppId] = useState<string | null>(null);
+  const [actions, setActions] = useState<ControlActionDraft[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState<string | null>(null);
+
+  function startEditing(app: any) {
+    if (editingAppId === app.id) {
+      setEditingAppId(null);
+      return;
+    }
+    setEditingAppId(app.id);
+    setActions((app.controlActions || []).map((a: any) => ({
+      id: a.id,
+      label: a.label,
+      command: a.command,
+      icon: a.icon || '',
+    })));
+  }
+
+  function addAction() {
+    const id = 'action-' + Math.random().toString(36).slice(2, 8);
+    setActions([...actions, { id, label: '', command: '', icon: '' }]);
+  }
+
+  function removeAction(idx: number) {
+    setActions(actions.filter((_, i) => i !== idx));
+  }
+
+  function updateAction(idx: number, field: keyof ControlActionDraft, value: string) {
+    setActions(actions.map((a, i) => i === idx ? { ...a, [field]: value } : a));
+  }
+
+  async function saveActions(appId: string) {
+    setSaving(true);
+    try {
+      const cleaned = actions
+        .filter((a) => a.label && a.command)
+        .map((a) => ({ id: a.id, label: a.label, command: a.command, ...(a.icon ? { icon: a.icon } : {}) }));
+      await api.updateApplication(appId, { controlActions: cleaned });
+      await loadApplications();
+      setSaved(appId);
+      setTimeout(() => setSaved(null), 2000);
+    } catch (err: any) {
+      console.error('Save control actions failed:', err.message);
+    }
+    setSaving(false);
+  }
+
+  if (apps.length === 0) return null;
+
+  return (
+    <div class="settings-section">
+      <h3>Application Controls</h3>
+      <div style="font-size:13px;color:var(--pw-text-muted);margin-bottom:12px">
+        Define control actions per application. Actions appear as buttons in the control bar.
+      </div>
+      {apps.map((app: any) => (
+        <div key={app.id} style="margin-bottom:8px">
+          <button
+            class="settings-app-toggle"
+            onClick={() => startEditing(app)}
+            style="display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:8px 12px;border:1px solid var(--pw-border);border-radius:6px;background:var(--pw-bg);color:var(--pw-text);cursor:pointer;font-size:13px"
+          >
+            <span style="flex:1;font-weight:500">{app.name}</span>
+            <span style="font-size:11px;color:var(--pw-text-muted)">
+              {(app.controlActions || []).length} action{(app.controlActions || []).length !== 1 ? 's' : ''}
+            </span>
+            <span style="font-size:10px">{editingAppId === app.id ? '▲' : '▼'}</span>
+          </button>
+
+          {editingAppId === app.id && (
+            <div style="padding:12px;border:1px solid var(--pw-border);border-top:none;border-radius:0 0 6px 6px;background:var(--pw-bg-surface)">
+              {actions.map((action, idx) => (
+                <div key={action.id} style="display:flex;gap:6px;margin-bottom:8px;align-items:center">
+                  <input
+                    style="width:40px;padding:4px 6px;font-size:12px;border:1px solid var(--pw-border);border-radius:3px;background:var(--pw-bg);color:var(--pw-text);text-align:center"
+                    placeholder="🔨"
+                    value={action.icon}
+                    onInput={(e) => updateAction(idx, 'icon', (e.target as HTMLInputElement).value)}
+                    maxLength={4}
+                  />
+                  <input
+                    style="flex:1;padding:4px 8px;font-size:12px;border:1px solid var(--pw-border);border-radius:3px;background:var(--pw-bg);color:var(--pw-text)"
+                    placeholder="Label"
+                    value={action.label}
+                    onInput={(e) => updateAction(idx, 'label', (e.target as HTMLInputElement).value)}
+                  />
+                  <input
+                    style="flex:2;padding:4px 8px;font-size:12px;border:1px solid var(--pw-border);border-radius:3px;background:var(--pw-bg);color:var(--pw-text);font-family:monospace"
+                    placeholder="Command (e.g. npm run build)"
+                    value={action.command}
+                    onInput={(e) => updateAction(idx, 'command', (e.target as HTMLInputElement).value)}
+                  />
+                  <button
+                    onClick={() => removeAction(idx)}
+                    style="padding:4px 8px;font-size:11px;border:1px solid var(--pw-border);border-radius:3px;background:var(--pw-bg);color:var(--pw-danger,#ef4444);cursor:pointer"
+                    title="Remove action"
+                  >✕</button>
+                </div>
+              ))}
+              <div style="display:flex;gap:8px;margin-top:8px">
+                <button
+                  onClick={addAction}
+                  style="padding:4px 12px;font-size:12px;border:1px solid var(--pw-border);border-radius:4px;background:var(--pw-bg);color:var(--pw-text);cursor:pointer"
+                >+ Add Action</button>
+                <button
+                  onClick={() => saveActions(app.id)}
+                  disabled={saving}
+                  style="padding:4px 12px;font-size:12px;border:1px solid var(--pw-primary);border-radius:4px;background:var(--pw-primary);color:white;cursor:pointer"
+                >{saving ? 'Saving...' : saved === app.id ? 'Saved!' : 'Save'}</button>
+              </div>
+            </div>
+          )}
         </div>
       ))}
     </div>
@@ -574,6 +703,8 @@ export function SettingsPage() {
             </label>
           </div>
         </div>
+
+        <AppControlActionsEditor />
 
         <div class="settings-section">
           <h3>About</h3>

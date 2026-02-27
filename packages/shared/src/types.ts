@@ -90,6 +90,13 @@ export interface FeedbackScreenshot {
   createdAt: string;
 }
 
+export interface ControlAction {
+  id: string;
+  label: string;
+  command: string;
+  icon?: string;
+}
+
 export interface Application {
   id: string;
   name: string;
@@ -98,6 +105,7 @@ export interface Application {
   serverUrl: string | null;
   hooks: string[];
   description: string;
+  controlActions: ControlAction[];
   createdAt: string;
   updatedAt: string;
 }

@@ -1,4 +1,33 @@
-import { toBlob } from 'html-to-image';
+import { toSvg } from 'html-to-image';
+
+/* ── mouse position tracking for synthetic cursor ── */
+let lastMouseX = -1;
+let lastMouseY = -1;
+let mouseTracking = false;
+
+function ensureMouseTracking() {
+  if (mouseTracking) return;
+  mouseTracking = true;
+  document.addEventListener('mousemove', (e) => {
+    lastMouseX = e.clientX;
+    lastMouseY = e.clientY;
+  }, { passive: true });
+}
+
+// Start tracking immediately on import
+ensureMouseTracking();
+
+const CURSOR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24"><path fill="white" stroke="black" stroke-width="1.5" d="M5.5 3.21V20.8c0 .45.54.67.85.35l4.86-4.86a.5.5 0 0 1 .35-.15h6.87a.5.5 0 0 0 .35-.85L6.35 2.86a.5.5 0 0 0-.85.35Z"/></svg>`;
+
+function createSyntheticCursor(): HTMLElement | null {
+  if (lastMouseX < 0 || lastMouseY < 0) return null;
+  const el = document.createElement('div');
+  el.id = '__pw-synthetic-cursor';
+  el.style.cssText = `position:fixed;left:${lastMouseX}px;top:${lastMouseY}px;width:20px;height:20px;z-index:2147483647;pointer-events:none;`;
+  el.innerHTML = CURSOR_SVG;
+  document.body.appendChild(el);
+  return el;
+}
 
 /* ── persistent getDisplayMedia stream ── */
 let persistentStream: MediaStream | null = null;
@@ -73,6 +102,9 @@ async function captureHtmlToImage(opts?: CaptureOptions): Promise<Blob | null> {
   const prevCursorDisplay = cursor?.style.display;
   if (cursor) cursor.style.display = 'none';
 
+  // Add synthetic OS cursor when user wants cursor included
+  const syntheticCursor = !opts?.excludeCursor ? createSyntheticCursor() : null;
+
   // Compensate for scroll offsets — html-to-image resets scrollTop/scrollLeft to 0
   const restores: Array<() => void> = [];
   const scrollY = window.scrollY;
@@ -93,27 +125,124 @@ async function captureHtmlToImage(opts?: CaptureOptions): Promise<Blob | null> {
     }
   });
 
+  const cleanup = () => {
+    restores.forEach(fn => fn());
+    if (host) host.style.display = '';
+    if (cursor) cursor.style.display = prevCursorDisplay ?? '';
+    syntheticCursor?.remove();
+  };
+
   try {
-    const blob = await toBlob(document.documentElement, {
+    const TRANSPARENT_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+
+    // html-to-image copies ALL computed CSS properties (hundreds per element) as
+    // inline styles, producing SVG data URIs that exceed 100 MB on complex pages.
+    // We monkey-patch getComputedStyle during capture to return only the visual
+    // properties that matter for screenshot fidelity.
+    const VISUAL_PROPS = [
+      'background-color', 'background-image', 'background-position',
+      'background-size', 'background-repeat',
+      'border-radius',
+      'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
+      'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style',
+      'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color',
+      'box-shadow',
+      'color', 'font-family', 'font-size', 'font-weight', 'font-style',
+      'line-height', 'letter-spacing', 'text-align', 'text-decoration',
+      'text-transform', 'text-overflow', 'white-space', 'word-break', 'overflow-wrap',
+      'display', 'position', 'top', 'right', 'bottom', 'left',
+      'width', 'height', 'min-width', 'min-height', 'max-width', 'max-height',
+      'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
+      'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+      'flex-direction', 'flex-wrap', 'flex-grow', 'flex-shrink', 'flex-basis',
+      'align-items', 'justify-content', 'align-self', 'gap', 'order',
+      'grid-template-columns', 'grid-template-rows', 'grid-column', 'grid-row',
+      'overflow-x', 'overflow-y',
+      'opacity', 'visibility', 'z-index',
+      'transform', 'transform-origin',
+      'box-sizing', 'vertical-align',
+    ];
+
+    const origGCS = window.getComputedStyle;
+    (window as any).getComputedStyle = function (elt: Element, pseudo?: string | null) {
+      const real = origGCS.call(window, elt, pseudo);
+      return new Proxy(real, {
+        get(target: CSSStyleDeclaration, prop: string | symbol) {
+          if (prop === 'cssText') {
+            const parts: string[] = [];
+            for (const p of VISUAL_PROPS) {
+              const v = target.getPropertyValue(p);
+              if (v && v !== 'none' && v !== 'normal' && v !== 'auto' && v !== '0px'
+                && v !== 'rgba(0, 0, 0, 0)' && v !== 'transparent' && v !== 'static'
+                && v !== 'visible' && v !== 'baseline' && v !== 'content-box') {
+                parts.push(`${p}:${v}`);
+              }
+            }
+            return parts.join(';');
+          }
+          const val = (target as any)[prop];
+          return typeof val === 'function' ? val.bind(target) : val;
+        },
+      });
+    };
+
+    const opts = {
       cacheBust: true,
       pixelRatio: 1,
-      width: window.innerWidth,
-      height: window.innerHeight,
+      skipFonts: true,
+      imagePlaceholder: TRANSPARENT_PIXEL,
+      width: w,
+      height: h,
       filter: (node: HTMLElement) => {
         if (!node.tagName) return true;
         const tag = node.tagName.toLowerCase();
-        return tag !== 'prompt-widget-host';
+        if (tag === 'prompt-widget-host') return false;
+        if (tag === 'canvas') return false;
+        if (tag === 'video') return false;
+        if (tag === 'iframe') return false;
+        if (tag === 'script' || tag === 'link') return false;
+        if (node.classList?.contains('xterm')) return false;
+        // Exclude elements fully outside viewport
+        if (typeof node.getBoundingClientRect === 'function') {
+          const r = node.getBoundingClientRect();
+          if (r.width > 0 && r.height > 0 &&
+              (r.bottom < -50 || r.top > h + 50 || r.right < -50 || r.left > w + 50)) {
+            return false;
+          }
+        }
+        return true;
       },
+    };
+
+    let svgDataUri: string;
+    try {
+      svgDataUri = await toSvg(document.documentElement, opts);
+    } finally {
+      window.getComputedStyle = origGCS;
+    }
+    cleanup();
+
+    // Sanitize SVG — strip characters invalid in XML 1.0
+    const sanitized = svgDataUri.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+
+    // Load as image, draw to canvas, convert to blob
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error(`SVG image load failed (SVG ${(sanitized.length / 1024 / 1024).toFixed(1)}MB)`));
+      image.src = sanitized;
     });
 
-    restores.forEach(fn => fn());
-    if (host) host.style.display = '';
-    if (cursor) cursor.style.display = prevCursorDisplay ?? '';
-    return blob;
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    canvas.getContext('2d')!.drawImage(img, 0, 0, w, h);
+
+    return new Promise<Blob | null>(r => canvas.toBlob(b => r(b), 'image/png'));
   } catch (err) {
-    restores.forEach(fn => fn());
-    if (host) host.style.display = '';
-    if (cursor) cursor.style.display = prevCursorDisplay ?? '';
+    cleanup();
     console.error('[pw] screenshot: html-to-image failed:', err);
     return null;
   }

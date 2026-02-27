@@ -1,6 +1,17 @@
 import type { SequencedOutput, SequencedInput, SessionInputData } from './protocol.js';
 import type { PermissionProfile } from './types.js';
 
+// --- Harness metadata ---
+
+export interface HarnessMetadata {
+  targetAppUrl: string;
+  browserMcpUrl: string;
+  composeProject?: string;
+  appImage?: string;
+  appPort?: number;
+  serverPort?: number;
+}
+
 // --- Launcher → Server messages ---
 
 export interface LauncherRegister {
@@ -10,6 +21,7 @@ export interface LauncherRegister {
   hostname: string;
   authToken: string;
   capabilities: LauncherCapabilities;
+  harness?: HarnessMetadata;
 }
 
 export interface LauncherCapabilities {

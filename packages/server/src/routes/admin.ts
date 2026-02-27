@@ -1,5 +1,6 @@
-import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { readFileSync, writeFileSync, unlinkSync, readdirSync, statSync } from 'node:fs';
+import { resolve, dirname, join } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { Hono } from 'hono';
 import { ulid } from 'ulidx';
@@ -810,6 +811,55 @@ adminRoutes.get('/perf-metrics', (c) => {
     ...r,
     durations: JSON.parse(r.durations),
   })));
+});
+
+// Browse directories (for directory picker UI)
+adminRoutes.get('/browse-dirs', (c) => {
+  const raw = c.req.query('path') || homedir();
+  const target = raw === '~' ? homedir() : raw.startsWith('~/') ? join(homedir(), raw.slice(2)) : raw;
+  const resolved = resolve(target);
+  try {
+    const entries = readdirSync(resolved, { withFileTypes: true });
+    const dirs = entries
+      .filter((e) => {
+        if (!e.isDirectory()) return false;
+        if (e.name.startsWith('.')) return false;
+        return true;
+      })
+      .map((e) => e.name)
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+    const parent = dirname(resolved);
+    return c.json({ path: resolved, parent: parent !== resolved ? parent : null, dirs });
+  } catch (err: any) {
+    if (err.code === 'ENOENT') return c.json({ error: 'Directory not found', path: resolved }, 404);
+    if (err.code === 'EACCES') return c.json({ error: 'Permission denied', path: resolved }, 403);
+    return c.json({ error: err.message, path: resolved }, 500);
+  }
+});
+
+// Read a file from disk (for file viewer panel)
+adminRoutes.get('/read-file', (c) => {
+  const filePath = c.req.query('path');
+  if (!filePath) return c.json({ error: 'path query parameter required' }, 400);
+  const resolved = resolve(filePath);
+  try {
+    const stat = statSync(resolved);
+    const ext = resolved.split('.').pop()?.toLowerCase() || '';
+    const imageExts = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico']);
+    if (imageExts.has(ext)) {
+      const data = readFileSync(resolved);
+      const mimeMap: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp', ico: 'image/x-icon' };
+      return new Response(data, { headers: { 'Content-Type': mimeMap[ext] || 'application/octet-stream', 'Cache-Control': 'no-cache' } });
+    }
+    if (stat.size > 2 * 1024 * 1024) return c.json({ error: 'File too large (>2MB)' }, 413);
+    const content = readFileSync(resolved, 'utf-8');
+    return c.json({ path: resolved, content, size: stat.size });
+  } catch (err: any) {
+    if (err.code === 'ENOENT') return c.json({ error: 'File not found', path: resolved }, 404);
+    if (err.code === 'EACCES') return c.json({ error: 'Permission denied', path: resolved }, 403);
+    if (err.code === 'EISDIR') return c.json({ error: 'Path is a directory', path: resolved }, 400);
+    return c.json({ error: err.message }, 500);
+  }
 });
 
 // Plain terminal session (no agent, no feedback)
