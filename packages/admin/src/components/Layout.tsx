@@ -607,7 +607,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
   }
 
   const appSubTabs = ['feedback', 'aggregate', 'sessions', 'live'];
-  const settingsTabs = ['/settings/agents', '/settings/applications', '/settings/harnesses', '/settings/getting-started', '/settings/preferences'];
+  const settingsTabs = ['/settings/agents', '/settings/applications', '/settings/machines', '/settings/harnesses', '/settings/getting-started', '/settings/preferences'];
 
   function cycleNav(dir: number) {
     const r = currentRoute.value;
@@ -696,7 +696,12 @@ export function Layout({ children }: { children: ComponentChildren }) {
         <div
           class={`sidebar-session-item ${isTabbed ? 'tabbed' : ''} ${isInPanel ? 'in-panel' : ''} ${isVisible ? 'active' : ''}`}
           onClick={() => {
-            focusOrDockSession(s.id);
+            if (inputSt === 'waiting') {
+              focusOrDockSession(s.id);
+            } else {
+              openSession(s.id);
+              focusSessionTerminal(s.id);
+            }
           }}
           title={tooltip}
         >
@@ -756,6 +761,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
   const settingsItems = [
     { path: '/settings/agents', label: 'Agents', icon: '\u{1F916}' },
     { path: '/settings/applications', label: 'Applications', icon: '\u{1F4E6}' },
+    { path: '/settings/machines', label: 'Machines', icon: '\u{1F5A5}' },
     { path: '/settings/harnesses', label: 'Harnesses', icon: '\u{1F433}' },
     { path: '/settings/getting-started', label: 'Getting Started', icon: '\u{1F4D6}' },
     { path: '/settings/preferences', label: 'Preferences', icon: '\u2699' },

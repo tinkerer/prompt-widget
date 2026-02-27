@@ -230,10 +230,11 @@ export function moveToLeftPane(sessionId: string) {
 }
 
 export function openSessionInRightPane(sessionId: string) {
-  if (!splitEnabled.value) enableSplit(sessionId);
+  // Add to openTabs first so enableSplit sees >= 2 tabs
   if (!openTabs.value.includes(sessionId)) {
     openTabs.value = [...openTabs.value, sessionId];
   }
+  if (!splitEnabled.value) enableSplit(sessionId);
   if (!rightPaneTabs.value.includes(sessionId)) {
     rightPaneTabs.value = [...rightPaneTabs.value, sessionId];
   }
@@ -770,7 +771,13 @@ export function openSession(sessionId: string) {
 }
 
 export function focusOrDockSession(sessionId: string) {
-  // 1. Already in a panel → activate + focus it there
+  // 1. Already in a tab → focus it
+  if (openTabs.value.includes(sessionId)) {
+    openSession(sessionId);
+    focusSessionTerminal(sessionId);
+    return;
+  }
+  // 2. Already in a panel → activate + focus it there
   const panel = findPanelForSession(sessionId);
   if (panel) {
     if (panel.activeSessionId === sessionId && panel.visible) {
@@ -852,6 +859,21 @@ export function closeTab(sessionId: string) {
     activeTabId.value = neighbor;
   }
   persistTabs();
+}
+
+export async function resolveSession(sessionId: string, feedbackId?: string) {
+  const alreadyExited = exitedSessions.value.has(sessionId);
+  if (!alreadyExited) {
+    await killSession(sessionId);
+  }
+  if (feedbackId) {
+    try {
+      await api.updateFeedback(feedbackId, { status: 'resolved' });
+    } catch (err: any) {
+      console.error('Resolve feedback failed:', err.message);
+    }
+  }
+  closeTab(sessionId);
 }
 
 export async function deleteSession(sessionId: string) {
@@ -1158,8 +1180,6 @@ export function activateSessionInPlace(sessionId: string) {
 }
 
 export function syncAutoJumpPanel() {
-  if (!autoJumpWaiting.value) return;
-
   const existing = popoutPanels.value.find((p) => p.id === AUTOJUMP_PANEL_ID);
 
   const waiting = allSessions.value.filter(
@@ -1167,15 +1187,25 @@ export function syncAutoJumpPanel() {
   );
   const waitingIds = waiting.map((s: any) => s.id);
 
-  if (waitingIds.length === 0) {
-    if (existing && existing.visible && autoCloseWaitingPanel.value) {
-      updatePanel(AUTOJUMP_PANEL_ID, { visible: false });
+  // Auto-close: remove the panel entirely when nothing is waiting
+  if (existing && autoCloseWaitingPanel.value) {
+    const anyWaiting = existing.sessionIds.some((id) => waitingIds.includes(id));
+    if (!anyWaiting) {
+      removePanel(AUTOJUMP_PANEL_ID);
       persistPopoutState();
+      return;
     }
-    return;
   }
 
+  // Only auto-add waiting sessions when auto-jump is enabled
+  if (!autoJumpWaiting.value) return;
+
+  if (waitingIds.length === 0) return;
+
   if (!existing) {
+    // Don't create the panel if all waiting sessions are already visible in tabs
+    const allInTabs = waitingIds.every((id) => id === activeTabId.value);
+    if (allInTabs) return;
     const panel: PopoutPanelState = {
       id: AUTOJUMP_PANEL_ID,
       sessionIds: waitingIds,
@@ -1201,10 +1231,16 @@ export function syncAutoJumpPanel() {
   const idsChanged = merged.length !== currentIds.length || merged.some((id, i) => id !== currentIds[i]);
   const activeStillPresent = merged.includes(existing.activeSessionId);
 
-  if (idsChanged) {
+  // Only auto-show if there are waiting sessions not already visible in a tab
+  const visibleInTab = activeTabId.value && waitingIds.includes(activeTabId.value);
+  const allVisibleElsewhere = visibleInTab && waitingIds.length === 1;
+  const shouldShow = !existing.visible && !allVisibleElsewhere;
+
+  if (idsChanged || shouldShow) {
     updatePanel(AUTOJUMP_PANEL_ID, {
       sessionIds: merged,
       activeSessionId: activeStillPresent ? existing.activeSessionId : merged[0],
+      ...(shouldShow ? { visible: true } : {}),
     });
     persistPopoutState();
   }
@@ -1412,6 +1448,8 @@ export function syncCompanionsToRightPane(newSessionId: string, oldSessionId?: s
       if (!splitEnabled.value) {
         splitEnabled.value = true;
       }
+    } else if (splitEnabled.value) {
+      splitEnabled.value = false;
     }
     // Ensure companion tabs are in openTabs
     for (const tab of memory.tabs) {
@@ -1441,5 +1479,19 @@ export function syncCompanionsToRightPane(newSessionId: string, oldSessionId?: s
     persistSplitState();
     persistTabs();
   }
-  // If no companions and no memory, leave right pane as-is
+  // No companions and no memory for the new session — close the split
+  // if it was only showing companion tabs (from the old session).
+  if (splitEnabled.value) {
+    const allCompanion = rightPaneTabs.value.every((t) => extractCompanionType(t) !== null);
+    if (allCompanion) {
+      // Remove old companion tabs from openTabs
+      const companionSet = new Set(rightPaneTabs.value);
+      openTabs.value = openTabs.value.filter((t) => !companionSet.has(t));
+      rightPaneTabs.value = [];
+      rightPaneActiveId.value = null;
+      splitEnabled.value = false;
+      persistSplitState();
+      persistTabs();
+    }
+  }
 }

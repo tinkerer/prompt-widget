@@ -1,4 +1,5 @@
-import { useRef, useCallback } from 'preact/hooks';
+import { useRef, useCallback, useEffect } from 'preact/hooks';
+import { signal } from '@preact/signals';
 import { copyWithTooltip } from '../lib/clipboard.js';
 import { SessionViewToggle, type ViewMode } from './SessionViewToggle.js';
 import {
@@ -23,14 +24,20 @@ import {
   snapGuides,
   dockedOrientation,
   setSessionInputState,
+  sessionInputStates,
   getSessionLabel,
   sidebarWidth,
   AUTOJUMP_PANEL_ID,
+  popOutTab,
+  resolveSession,
 } from '../lib/sessions.js';
 import { startTabDrag } from '../lib/tab-drag.js';
 import { ctrlShiftHeld } from '../lib/shortcuts.js';
 import { navigate, selectedAppId } from '../lib/state.js';
 import { api } from '../lib/api.js';
+
+const popoutIdMenuOpen = signal<string | null>(null);
+const popoutStatusMenuOpen = signal<{ sessionId: string; panelId: string; x: number; y: number } | null>(null);
 
 async function resolveSession(sessionId: string, feedbackId?: string) {
   const alreadyExited = exitedSessions.value.has(sessionId);
@@ -52,6 +59,7 @@ const UNDOCK_THRESHOLD = 40;
 const MIN_W = 300;
 const MIN_H = 200;
 const EDGE_SNAP = 8;
+const GRAB_HANDLE_H = 48;
 
 function snapPosition(x: number, y: number, w: number, h: number, selfId: string): { x: number; y: number; guides: { x?: number; y?: number }[] } {
   const guides: { x?: number; y?: number }[] = [];
@@ -119,6 +127,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
   const resizing = useRef<string | null>(null);
   const startPos = useRef({ mx: 0, my: 0, x: 0, y: 0, w: 0, h: 0, dockedHeight: 0, dockedTopOffset: 0, dockedBaseTop: 0 });
 
+  const hasTabs = ids.length > 1;
   const panelTop = docked ? getDockedPanelTop(panel.id) : undefined;
   const isMinimized = !docked && !!panel.minimized;
   const orientation = dockedOrientation.value;
@@ -140,10 +149,10 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
             return { position: 'fixed' as const, right: 0, top: topStart + idx * perPanel, width: panel.dockedWidth, height: perPanel };
           })()
         : { position: 'fixed' as const, right: 0, top: panelTop, width: panel.dockedWidth, height: panel.dockedHeight }
-    : { position: 'fixed' as const, left: panel.floatingRect.x, top: panel.floatingRect.y, width: panel.floatingRect.w, height: isMinimized ? 34 : panel.floatingRect.h };
+    : { position: 'fixed' as const, left: panel.floatingRect.x, top: panel.floatingRect.y, width: panel.floatingRect.w, height: isMinimized ? (hasTabs ? 62 : 34) : panel.floatingRect.h };
 
   const onHeaderDragStart = useCallback((e: MouseEvent) => {
-    if ((e.target as HTMLElement).closest('button, select, .popout-tab-bar')) return;
+    if ((e.target as HTMLElement).closest('button, select, a, .popout-tab-bar, .id-dropdown-wrapper, .session-status-dot')) return;
     e.preventDefault();
     dragging.current = true;
     dragMoved.current = false;
@@ -246,7 +255,9 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
         } else if (dir.includes('w') || dir === 'left') {
           w = Math.max(MIN_W, startDockedW - dx);
         }
-        updatePanel(panel.id, { dockedHeight: h, dockedWidth: w, dockedTopOffset: topOff });
+        const currentGrabY = cp.grabY ?? 0;
+        const clampedGrabY = Math.max(0, Math.min(currentGrabY, h - GRAB_HANDLE_H));
+        updatePanel(panel.id, { dockedHeight: h, dockedWidth: w, dockedTopOffset: topOff, grabY: clampedGrabY });
       } else {
         const s = startPos.current;
         let { x, y, w, h } = { x: s.x, y: s.y, w: s.w, h: s.h };
@@ -268,8 +279,8 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
   }, [panel.id]);
 
   const showBadges = ctrlShiftHeld.value;
-  const hasTabs = ids.length > 1;
   const globalSessions = allNumberedSessions();
+  const inputSt = activeId ? (sessionInputStates.value.get(activeId) || null) : null;
 
   function tabLabel(sid: string) {
     const custom = getSessionLabel(sid);
@@ -285,6 +296,12 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
   }
 
   const activeGlobalNum = activeId ? globalNum(activeId) : null;
+  const isPlain = session?.permissionProfile === 'plain';
+  const appId = selectedAppId.value;
+  const feedbackPath = session?.feedbackId
+    ? appId ? `/app/${appId}/feedback/${session.feedbackId}` : `/feedback/${session.feedbackId}`
+    : null;
+  const showIdMenu = popoutIdMenuOpen.value === activeId;
 
   return (
     <>
@@ -302,65 +319,83 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
         data-panel-id={panel.id}
         onMouseDown={() => { activePanelId.value = panel.id; }}
       >
+      {hasTabs && (
+        <div class="popout-tab-bar" onWheel={(e: WheelEvent) => { const delta = (e as any).deltaX || (e as any).deltaY; if (delta) { e.preventDefault(); (e.currentTarget as HTMLElement).scrollLeft += delta; } }}>
+          {ids.map((sid) => {
+            const gn = globalNum(sid);
+            return (
+              <button
+                key={sid}
+                class={`popout-tab ${sid === activeId ? 'active' : ''}`}
+                onMouseDown={(e) => {
+                  if (e.button !== 0) return;
+                  startTabDrag(e, {
+                    sessionId: sid,
+                    source: { panelId: panel.id },
+                    label: tabLabel(sid),
+                    onClickFallback: () => {
+                      updatePanel(panel.id, { activeSessionId: sid });
+                      persistPopoutState();
+                    },
+                  });
+                }}
+                title={sessionMap.get(sid)?.feedbackTitle || sid}
+              >
+                {showBadges && !docked && gn !== null && <PanelTabBadge tabNum={gn} />}
+                <span>{tabLabel(sid)}</span>
+                <span class="popout-tab-close" onClick={(e) => { e.stopPropagation(); closeTab(sid); }}>&times;</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
       <div class="popout-header" onMouseDown={onHeaderDragStart} onDblClick={() => {
         if (!docked) {
           updatePanel(panel.id, { minimized: !panel.minimized });
           persistPopoutState();
         }
       }}>
-        {hasTabs && (
-          <div class="popout-tab-bar" onWheel={(e: WheelEvent) => { const delta = (e as any).deltaX || (e as any).deltaY; if (delta) { e.preventDefault(); (e.currentTarget as HTMLElement).scrollLeft += delta; } }}>
-            {ids.map((sid) => {
-              const gn = globalNum(sid);
-              return (
-                <button
-                  key={sid}
-                  class={`popout-tab ${sid === activeId ? 'active' : ''}`}
-                  onMouseDown={(e) => {
-                    if (e.button !== 0) return;
-                    startTabDrag(e, {
-                      sessionId: sid,
-                      source: { panelId: panel.id },
-                      label: tabLabel(sid),
-                      onClickFallback: () => {
-                        updatePanel(panel.id, { activeSessionId: sid });
-                        persistPopoutState();
-                      },
-                    });
-                  }}
-                  title={sessionMap.get(sid)?.feedbackTitle || sid}
-                >
-                  {showBadges && !docked && gn !== null && <PanelTabBadge tabNum={gn} />}
-                  <span>{tabLabel(sid)}</span>
-                  <span class="popout-tab-close" onClick={(e) => { e.stopPropagation(); closeTab(sid); }}>&times;</span>
-                </button>
-              );
-            })}
-          </div>
-        )}
-        {!hasTabs && activeId && (
-          <>
+        {activeId && (
+          <div class="id-dropdown-wrapper">
             <span
               class="tmux-id-label"
-              title="Copy tmux attach command to clipboard"
-              onClick={(e) => { e.stopPropagation(); copyWithTooltip(`TMUX= tmux -L prompt-widget attach-session -t pw-${activeId}`, e as any); }}
-              style="margin-right:8px"
-            >pw-{activeId.slice(-6)}</span>
-            {session?.feedbackId && (() => {
-              const appId = selectedAppId.value;
-              const feedbackPath = appId ? `/app/${appId}/feedback/${session.feedbackId}` : `/feedback/${session.feedbackId}`;
-              return (
-                <a
-                  href={`#${feedbackPath}`}
-                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (!dragMoved.current) navigate(feedbackPath); }}
-                  style="color:var(--pw-primary-text);font-size:12px;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-                  title={session?.feedbackTitle || 'View feedback'}
-                >
-                  {session?.feedbackTitle || 'View feedback'}
-                </a>
-              );
-            })()}
-          </>
+              onClick={(e) => { e.stopPropagation(); popoutIdMenuOpen.value = showIdMenu ? null : activeId; }}
+            >
+              pw-{activeId.slice(-6)} <span class="id-dropdown-caret">{'\u25BE'}</span>
+            </span>
+            {showIdMenu && (
+              <div class="id-dropdown-menu" onClick={() => { popoutIdMenuOpen.value = null; }}>
+                <button onClick={(e) => { e.stopPropagation(); popoutIdMenuOpen.value = null; copyWithTooltip(activeId, e as any); }}>
+                  Copy {activeId}
+                </button>
+                <button onClick={(e) => { e.stopPropagation(); popoutIdMenuOpen.value = null; copyWithTooltip(`TMUX= tmux -L prompt-widget attach-session -t pw-${activeId}`, e as any); }}>
+                  Copy tmux command
+                </button>
+                {session?.jsonlPath && (
+                  <button onClick={(e) => { e.stopPropagation(); popoutIdMenuOpen.value = null; copyWithTooltip(session.jsonlPath, e as any); }}>
+                    Copy JSONL path
+                  </button>
+                )}
+                <div class="id-dropdown-separator" />
+                <button onClick={() => { popoutIdMenuOpen.value = null; popBackIn(activeId); }}>Pop back to tab bar</button>
+                <button onClick={() => { popoutIdMenuOpen.value = null; window.open(`#/session/${activeId}`, '_blank', 'width=900,height=600,menubar=no,toolbar=no'); }}>Open in window</button>
+                <button onClick={() => { popoutIdMenuOpen.value = null; window.open(`#/session/${activeId}`, '_blank'); }}>Open in browser tab</button>
+                {!isExited && (
+                  <button onClick={() => { popoutIdMenuOpen.value = null; api.openSessionInTerminal(activeId).catch(() => {}); }}>Open in Terminal.app</button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+        {feedbackPath && (
+          <a
+            href={`#${feedbackPath}`}
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (!dragMoved.current) navigate(feedbackPath); }}
+            class="feedback-title-link"
+            title={session?.feedbackTitle || 'View feedback'}
+          >
+            {session?.feedbackTitle || 'View feedback'}
+          </a>
         )}
         <span style="flex:1" />
         <div class="popout-header-actions">
@@ -375,6 +410,25 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
               <option value="split">Split</option>
             </select>
           )}
+          {!hasTabs && activeId && (
+            <span
+              class={`session-status-dot popout-status-dot ${session?.status || 'pending'}${isPlain ? ' plain' : ''}${inputSt ? ` ${inputSt}` : ''}${isExited ? ' completed' : ''}`}
+              title={isExited ? 'exited' : inputSt === 'waiting' ? 'waiting for input' : inputSt === 'idle' ? 'idle' : session?.status || 'pending'}
+              onClick={(e) => {
+                e.stopPropagation();
+                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                popoutStatusMenuOpen.value = { sessionId: activeId, panelId: panel.id, x: rect.left, y: rect.bottom + 4 };
+              }}
+            />
+          )}
+          {hasTabs && activeId && session?.feedbackId && (
+            <button class="btn-resolve" onClick={() => resolveSession(activeId, session.feedbackId)} title="Resolve">Resolve</button>
+          )}
+          {hasTabs && activeId && (isExited ? (
+            <button onClick={() => resumeSession(activeId)} title="Resume">Resume</button>
+          ) : (
+            <button class="btn-kill" onClick={() => killSession(activeId)} title="Kill">Kill</button>
+          ))}
           {!docked && (
             <button
               onClick={() => { updatePanel(panel.id, { minimized: !panel.minimized }); persistPopoutState(); }}
@@ -415,15 +469,6 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
               {'\u25B6'}
             </button>
           </span>
-          {activeId && session?.feedbackId && (
-            <button class="btn-resolve" onClick={() => resolveSession(activeId, session.feedbackId)} title="Resolve">Resolve</button>
-          )}
-          {activeId && (isExited ? (
-            <button onClick={() => resumeSession(activeId)} title="Resume">Resume</button>
-          ) : (
-            <button class="btn-kill" onClick={() => killSession(activeId)} title="Kill">Kill</button>
-          ))}
-          <button onClick={() => popBackIn(activeId)} title="Pop back into tab bar">{'\u2199'} Pop in</button>
           <button class="btn-close-panel" onClick={() => { updatePanel(panel.id, { visible: false }); persistPopoutState(); }} title="Hide panel">&times;</button>
         </div>
       </div>
@@ -607,6 +652,23 @@ function DockedPanelGrabHandle({ panel }: { panel: PopoutPanelState }) {
 export function PopoutPanel() {
   const panels = popoutPanels.value;
   const guides = snapGuides.value;
+  const statusMenu = popoutStatusMenuOpen.value;
+  const sessions = allSessions.value;
+  const exited = exitedSessions.value;
+
+  useEffect(() => {
+    if (!popoutIdMenuOpen.value) return;
+    const close = () => { popoutIdMenuOpen.value = null; };
+    document.addEventListener('click', close);
+    return () => document.removeEventListener('click', close);
+  }, [popoutIdMenuOpen.value]);
+
+  useEffect(() => {
+    if (!popoutStatusMenuOpen.value) return;
+    const close = () => { popoutStatusMenuOpen.value = null; };
+    document.addEventListener('click', close);
+    return () => document.removeEventListener('click', close);
+  }, [popoutStatusMenuOpen.value]);
 
   if (panels.length === 0 && guides.length === 0) return null;
 
@@ -614,10 +676,9 @@ export function PopoutPanel() {
     <>
       {panels.map((p) => {
         if (p.docked) {
-          const isAutoJump = p.id === AUTOJUMP_PANEL_ID;
           return (
             <span key={`g-${p.id}`}>
-              {!isAutoJump && <DockedPanelGrabHandle panel={p} />}
+              <DockedPanelGrabHandle panel={p} />
               {p.visible && <PanelView key={p.id} panel={p} />}
             </span>
           );
@@ -625,6 +686,30 @@ export function PopoutPanel() {
         if (!p.visible) return null;
         return <PanelView key={p.id} panel={p} />;
       })}
+      {statusMenu && (() => {
+        const menuSid = statusMenu.sessionId;
+        const menuSess = sessions.find((s: any) => s.id === menuSid);
+        const menuExited = exited.has(menuSid);
+        const isRunning = menuSess?.status === 'running';
+        return (
+          <div
+            class="status-dot-menu"
+            style={{ left: `${statusMenu.x}px`, top: `${statusMenu.y}px`, zIndex: 1100 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {isRunning && !menuExited && (
+              <button onClick={() => { popoutStatusMenuOpen.value = null; killSession(menuSid); }}>Kill</button>
+            )}
+            {isRunning && menuSess?.feedbackId && (
+              <button onClick={() => { popoutStatusMenuOpen.value = null; resolveSession(menuSid, menuSess.feedbackId); }}>Resolve</button>
+            )}
+            {menuExited && (
+              <button onClick={() => { popoutStatusMenuOpen.value = null; resumeSession(menuSid); }}>Resume</button>
+            )}
+            <button onClick={() => { popoutStatusMenuOpen.value = null; closeTab(menuSid); }}>Close tab</button>
+          </div>
+        );
+      })()}
       {guides.map((g, i) => (
         <div
           key={`guide-${i}`}
