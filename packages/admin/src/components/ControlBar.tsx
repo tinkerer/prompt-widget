@@ -36,18 +36,23 @@ export function ControlBar() {
 
   const [running, setRunning] = useState<string | null>(null);
   const [appDropdown, setAppDropdown] = useState(false);
+  const [mruDropdown, setMruDropdown] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const mruDropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!appDropdown) return;
+    if (!appDropdown && !mruDropdown) return;
     const handler = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+      if (appDropdown && dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
         setAppDropdown(false);
+      }
+      if (mruDropdown && mruDropdownRef.current && !mruDropdownRef.current.contains(e.target as Node)) {
+        setMruDropdown(false);
       }
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, [appDropdown]);
+  }, [appDropdown, mruDropdown]);
 
   const panels = popoutPanels.value;
   const zOrders = panelZOrders.value;
@@ -158,20 +163,39 @@ export function ControlBar() {
         Terminal
       </button>
 
-      {/* MRU panel list */}
+      {/* MRU panel dropdown */}
       {mruPanels.length > 0 && (
         <>
           <div class="control-bar-sep" />
-          {mruPanels.map((p: any) => (
+          <div class="control-bar-dropdown" ref={mruDropdownRef}>
             <button
-              key={p.id}
-              class={`control-bar-btn control-bar-mru-btn ${activePanelId.value === p.id ? 'control-bar-mru-active' : ''}`}
-              onClick={() => { bringToFront(p.id); activePanelId.value = p.id; }}
-              title={getMruLabel(p, sessionMap)}
+              class={`control-bar-btn control-bar-mru-btn ${activePanelId.value ? 'control-bar-mru-active' : ''}`}
+              onClick={() => setMruDropdown(!mruDropdown)}
             >
-              {getMruLabel(p, sessionMap)}
+              {(() => {
+                const active = mruPanels.find((p: any) => p.id === activePanelId.value);
+                return active ? getMruLabel(active, sessionMap) : getMruLabel(mruPanels[0], sessionMap);
+              })()}
+              <span class="control-bar-caret">{'\u25BE'}</span>
             </button>
-          ))}
+            {mruDropdown && (
+              <div class="control-bar-menu">
+                {mruPanels.map((p: any) => (
+                  <button
+                    key={p.id}
+                    class={`control-bar-menu-item ${activePanelId.value === p.id ? 'active' : ''}`}
+                    onClick={() => {
+                      bringToFront(p.id);
+                      activePanelId.value = p.id;
+                      setMruDropdown(false);
+                    }}
+                  >
+                    {getMruLabel(p, sessionMap)}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </>
       )}
 
