@@ -6,13 +6,14 @@ import { LoginPage } from '../pages/LoginPage.js';
 import { FeedbackListPage } from '../pages/FeedbackListPage.js';
 import { FeedbackDetailPage } from '../pages/FeedbackDetailPage.js';
 import { AgentsPage } from '../pages/AgentsPage.js';
-import { ApplicationsPage } from '../pages/ApplicationsPage.js';
 import { GettingStartedPage } from '../pages/GettingStartedPage.js';
 import { SessionsPage } from '../pages/SessionsPage.js';
 import { AggregatePage } from '../pages/AggregatePage.js';
 import { LiveConnectionsPage } from '../pages/LiveConnectionsPage.js';
 import { SettingsPage } from '../pages/SettingsPage.js';
+import { AppSettingsPage } from '../pages/AppSettingsPage.js';
 import { HarnessesPage } from '../pages/HarnessesPage.js';
+import { MachinesPage } from '../pages/MachinesPage.js';
 import { StandaloneSessionPage } from '../pages/StandaloneSessionPage.js';
 
 function parseAppRoute(route: string): { appId: string; sub: string; param?: string } | null {
@@ -68,22 +69,29 @@ export function App() {
       page = <AggregatePage appId={parsed.appId} />;
     } else if (parsed.sub === 'live') {
       page = <LiveConnectionsPage appId={parsed.appId} />;
+    } else if (parsed.sub === 'settings') {
+      page = <AppSettingsPage appId={parsed.appId} />;
     } else {
       page = <FeedbackListPage appId={parsed.appId} />;
     }
   } else if (route === '/settings/agents') {
     page = <AgentsPage />;
   } else if (route === '/settings/applications') {
-    selectedAppId.value = null;
-    page = <ApplicationsPage />;
+    // Legacy route — redirect to first app settings
+    const apps = applications.value;
+    if (apps.length > 0) {
+      navigate(`/app/${apps[0].id}/settings`);
+    } else {
+      navigate('/settings/getting-started');
+    }
+    return null;
   } else if (route === '/settings/getting-started') {
-    selectedAppId.value = null;
     page = <GettingStartedPage />;
   } else if (route === '/settings/preferences') {
-    selectedAppId.value = null;
     page = <SettingsPage />;
+  } else if (route === '/settings/machines') {
+    page = <MachinesPage />;
   } else if (route === '/settings/harnesses') {
-    selectedAppId.value = null;
     page = <HarnessesPage />;
   } else if (route.startsWith('/session/')) {
     const sessionId = route.replace('/session/', '');

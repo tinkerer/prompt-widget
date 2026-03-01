@@ -18,6 +18,7 @@ export const openTabs = signal<string[]>(loadJson('pw-open-tabs', []));
 export const activeTabId = signal<string | null>(loadJson('pw-active-tab', null));
 export const previousTabId = signal<string | null>(null);
 export const panelMinimized = signal(loadJson('pw-panel-minimized', false));
+export const panelMaximized = signal(loadJson('pw-panel-maximized', false));
 export const panelHeight = signal(loadJson('pw-panel-height', 400));
 export const exitedSessions = signal<Set<string>>(new Set(loadJson<string[]>('pw-exited-sessions', [])));
 
@@ -27,7 +28,75 @@ export const rightPaneActiveId = signal<string | null>(loadJson('pw-right-pane-a
 export const splitRatio = signal<number>(loadJson('pw-split-ratio', 0.5));
 export const activePanelId = signal<string | null>('split-left');
 
+export const controlBarMinimized = signal(loadJson('pw-control-bar-minimized', false));
+export function toggleControlBarMinimized() {
+  controlBarMinimized.value = !controlBarMinimized.value;
+  localStorage.setItem('pw-control-bar-minimized', JSON.stringify(controlBarMinimized.value));
+}
+
 export const AUTOJUMP_PANEL_ID = 'p-autojump';
+
+export interface AutoJumpSessionDims {
+  docked: boolean;
+  dockedHeight: number;
+  dockedWidth: number;
+  dockedSide?: 'left' | 'right';
+  dockedTopOffset?: number;
+  floatingRect: { x: number; y: number; w: number; h: number };
+  splitEnabled?: boolean;
+  splitRatio?: number;
+}
+
+const autoJumpSessionDims = signal<Record<string, AutoJumpSessionDims>>(
+  loadJson('pw-autojump-session-dims', {})
+);
+
+function persistAutoJumpDims() {
+  localStorage.setItem('pw-autojump-session-dims', JSON.stringify(autoJumpSessionDims.value));
+}
+
+export function saveAutoJumpDimsForActiveSession() {
+  const panel = popoutPanels.value.find((p) => p.id === AUTOJUMP_PANEL_ID);
+  if (!panel) return;
+  const sid = panel.activeSessionId;
+  if (!sid) return;
+  const dims: AutoJumpSessionDims = {
+    docked: panel.docked,
+    dockedHeight: panel.dockedHeight,
+    dockedWidth: panel.dockedWidth,
+    dockedSide: panel.dockedSide,
+    dockedTopOffset: panel.dockedTopOffset,
+    floatingRect: { ...panel.floatingRect },
+    splitEnabled: panel.splitEnabled,
+    splitRatio: panel.splitRatio,
+  };
+  autoJumpSessionDims.value = { ...autoJumpSessionDims.value, [sid]: dims };
+  persistAutoJumpDims();
+}
+
+function applyAutoJumpDimsForSession(sessionId: string) {
+  const saved = autoJumpSessionDims.value[sessionId];
+  if (!saved) return;
+  updatePanel(AUTOJUMP_PANEL_ID, {
+    docked: saved.docked,
+    dockedHeight: saved.dockedHeight,
+    dockedWidth: saved.dockedWidth,
+    dockedSide: saved.dockedSide,
+    dockedTopOffset: saved.dockedTopOffset,
+    floatingRect: { ...saved.floatingRect },
+    splitEnabled: saved.splitEnabled,
+    splitRatio: saved.splitRatio,
+  });
+}
+
+export function switchAutoJumpActiveSession(panelId: string, newSessionId: string) {
+  if (panelId !== AUTOJUMP_PANEL_ID) return false;
+  saveAutoJumpDimsForActiveSession();
+  updatePanel(panelId, { activeSessionId: newSessionId });
+  applyAutoJumpDimsForSession(newSessionId);
+  persistPopoutState();
+  return true;
+}
 
 export interface PopoutPanelState {
   id: string;
@@ -42,6 +111,14 @@ export interface PopoutPanelState {
   minimized?: boolean;
   dockedSide?: 'left' | 'right';
   grabY?: number;
+  alwaysOnTop?: boolean;
+  splitEnabled?: boolean;
+  splitRatio?: number;
+  rightPaneTabs?: string[];
+  rightPaneActiveId?: string | null;
+  autoOpened?: boolean;
+  maximized?: boolean;
+  preMaximizeRect?: { x: number; y: number; w: number; h: number };
 }
 
 function migrateOldPopoutState(): PopoutPanelState[] {
@@ -97,6 +174,33 @@ export function setFocusedPanel(panelId: string | null) {
   if (panelId) {
     focusTimer = setTimeout(() => { focusedPanelId.value = null; }, 2000);
   }
+}
+
+let panelZCounter = 0;
+export const panelZOrders = signal<Map<string, number>>(new Map());
+
+export function bringToFront(panelId: string) {
+  panelZCounter++;
+  const map = new Map(panelZOrders.value);
+  map.set(panelId, panelZCounter);
+  panelZOrders.value = map;
+  requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
+}
+
+export function getPanelZIndex(panelOrId: PopoutPanelState | string): number {
+  const id = typeof panelOrId === 'string' ? panelOrId : panelOrId.id;
+  const order = panelZOrders.value.get(id) || 0;
+  const alwaysOnTop = typeof panelOrId === 'string' ? false : !!panelOrId.alwaysOnTop;
+  const base = alwaysOnTop ? 1000 : 950;
+  return base + order;
+}
+
+export function toggleAlwaysOnTop(panelId: string) {
+  const panel = popoutPanels.value.find((p) => p.id === panelId);
+  if (!panel) return;
+  updatePanel(panelId, { alwaysOnTop: !panel.alwaysOnTop });
+  bringToFront(panelId);
+  persistPopoutState();
 }
 
 export function cyclePanelFocus(direction: 1 | -1) {
@@ -354,15 +458,192 @@ function persistTabs() {
 export function persistPanelState() {
   localStorage.setItem('pw-panel-height', JSON.stringify(panelHeight.value));
   localStorage.setItem('pw-panel-minimized', JSON.stringify(panelMinimized.value));
+  localStorage.setItem('pw-panel-maximized', JSON.stringify(panelMaximized.value));
 }
 
 export function persistPopoutState() {
   localStorage.setItem('pw-popout-panels', JSON.stringify(popoutPanels.value));
+  saveAutoJumpDimsForActiveSession();
 }
 
 function nudgeResize() {
   for (const delay of [50, 150, 300]) {
     setTimeout(() => window.dispatchEvent(new Event('resize')), delay);
+  }
+}
+
+// --- Per-panel split pane functions ---
+
+const panelRightPaneMemory = new Map<string, { tabs: string[]; activeId: string | null }>();
+
+export function panelLeftTabs(panel: PopoutPanelState): string[] {
+  if (!panel.splitEnabled) return panel.sessionIds;
+  const rightSet = new Set(panel.rightPaneTabs || []);
+  return panel.sessionIds.filter((id) => !rightSet.has(id));
+}
+
+export function enablePanelSplit(panelId: string, tabId: string) {
+  const panel = popoutPanels.value.find((p) => p.id === panelId);
+  if (!panel || panel.splitEnabled) return;
+  updatePanel(panelId, {
+    splitEnabled: true,
+    rightPaneTabs: [tabId],
+    rightPaneActiveId: tabId,
+    splitRatio: panel.splitRatio ?? 0.5,
+  });
+  persistPopoutState();
+  nudgeResize();
+}
+
+export function disablePanelSplit(panelId: string) {
+  const panel = popoutPanels.value.find((p) => p.id === panelId);
+  if (!panel || !panel.splitEnabled) return;
+  updatePanel(panelId, {
+    splitEnabled: false,
+    rightPaneTabs: [],
+    rightPaneActiveId: null,
+  });
+  persistPopoutState();
+  nudgeResize();
+}
+
+export function setPanelSplitRatio(panelId: string, ratio: number) {
+  updatePanel(panelId, { splitRatio: Math.max(0.2, Math.min(0.8, ratio)) });
+  persistPopoutState();
+}
+
+export function togglePanelCompanion(panelId: string, sessionId: string, type: CompanionType) {
+  const panel = popoutPanels.value.find((p) => p.id === panelId);
+  if (!panel) return;
+  const tabId = companionTabId(sessionId, type);
+  const rightTabs = panel.rightPaneTabs || [];
+  const isVisible = rightTabs.includes(tabId) && panel.splitEnabled;
+
+  const current = getCompanions(sessionId);
+
+  if (current.includes(type) && isVisible) {
+    // Toggle OFF
+    const next = current.filter((t) => t !== type);
+    if (next.length === 0) {
+      const { [sessionId]: _, ...rest } = sessionCompanions.value;
+      sessionCompanions.value = rest;
+    } else {
+      sessionCompanions.value = { ...sessionCompanions.value, [sessionId]: next };
+    }
+    persistCompanions();
+
+    const remaining = rightTabs.filter((id) => id !== tabId);
+    if (remaining.length === 0) {
+      disablePanelSplit(panelId);
+    } else {
+      updatePanel(panelId, {
+        rightPaneTabs: remaining,
+        rightPaneActiveId: panel.rightPaneActiveId === tabId
+          ? remaining[remaining.length - 1]
+          : panel.rightPaneActiveId,
+      });
+      persistPopoutState();
+    }
+  } else {
+    // Toggle ON
+    if (!current.includes(type)) {
+      sessionCompanions.value = { ...sessionCompanions.value, [sessionId]: [...current, type] };
+      persistCompanions();
+    }
+    const newRight = rightTabs.includes(tabId) ? rightTabs : [...rightTabs, tabId];
+    updatePanel(panelId, {
+      splitEnabled: true,
+      rightPaneTabs: newRight,
+      rightPaneActiveId: tabId,
+      splitRatio: panel.splitRatio ?? 0.5,
+    });
+    persistPopoutState();
+    nudgeResize();
+  }
+}
+
+export function moveToPanelRightPane(panelId: string, tabId: string) {
+  const panel = popoutPanels.value.find((p) => p.id === panelId);
+  if (!panel) return;
+  const rightTabs = panel.rightPaneTabs || [];
+  if (rightTabs.includes(tabId)) return;
+  if (!panel.splitEnabled) {
+    enablePanelSplit(panelId, tabId);
+  } else {
+    updatePanel(panelId, {
+      rightPaneTabs: [...rightTabs, tabId],
+      rightPaneActiveId: tabId,
+    });
+    persistPopoutState();
+  }
+}
+
+export function moveToPanelLeftPane(panelId: string, tabId: string) {
+  const panel = popoutPanels.value.find((p) => p.id === panelId);
+  if (!panel) return;
+  const rightTabs = panel.rightPaneTabs || [];
+  if (!rightTabs.includes(tabId)) return;
+  const remaining = rightTabs.filter((id) => id !== tabId);
+  if (remaining.length === 0) {
+    disablePanelSplit(panelId);
+  } else {
+    updatePanel(panelId, {
+      rightPaneTabs: remaining,
+      rightPaneActiveId: panel.rightPaneActiveId === tabId
+        ? remaining[remaining.length - 1]
+        : panel.rightPaneActiveId,
+    });
+    persistPopoutState();
+  }
+}
+
+export function syncPanelCompanions(panelId: string, newSessionId: string, oldSessionId?: string | null) {
+  if (extractCompanionType(newSessionId)) return;
+
+  const memKey = (sid: string) => `${panelId}:${sid}`;
+  const panel = popoutPanels.value.find((p) => p.id === panelId);
+  if (!panel) return;
+
+  // Snapshot current right pane state for the old session
+  if (oldSessionId && !extractCompanionType(oldSessionId)) {
+    panelRightPaneMemory.set(memKey(oldSessionId), {
+      tabs: [...(panel.rightPaneTabs || [])],
+      activeId: panel.rightPaneActiveId ?? null,
+    });
+  }
+
+  const companions = getCompanions(newSessionId);
+  const memory = panelRightPaneMemory.get(memKey(newSessionId));
+
+  if (memory) {
+    updatePanel(panelId, {
+      splitEnabled: memory.tabs.length > 0,
+      rightPaneTabs: memory.tabs,
+      rightPaneActiveId: memory.activeId,
+    });
+    persistPopoutState();
+    return;
+  }
+
+  if (companions.length > 0) {
+    const companionTabs = companions.map((t) => companionTabId(newSessionId, t));
+    updatePanel(panelId, {
+      splitEnabled: true,
+      rightPaneTabs: companionTabs,
+      rightPaneActiveId: companionTabs[0],
+      splitRatio: panel.splitRatio ?? 0.5,
+    });
+    persistPopoutState();
+  } else if (panel.splitEnabled) {
+    const allCompanion = (panel.rightPaneTabs || []).every((t) => extractCompanionType(t) !== null);
+    if (allCompanion) {
+      updatePanel(panelId, {
+        splitEnabled: false,
+        rightPaneTabs: [],
+        rightPaneActiveId: null,
+      });
+      persistPopoutState();
+    }
   }
 }
 
@@ -438,6 +719,27 @@ export function popOutTab(sessionId: string) {
     nudgeResize();
     return;
   }
+  // Build panel with companions if any
+  const companions = getCompanions(sessionId);
+  const companionTabs = companions.map((t) => companionTabId(sessionId, t));
+
+  // Remove companion tabs from bottom panel's openTabs / rightPaneTabs
+  if (companionTabs.length > 0) {
+    const companionSet = new Set(companionTabs);
+    openTabs.value = openTabs.value.filter((id) => !companionSet.has(id));
+    if (splitEnabled.value) {
+      const remainingRight = rightPaneTabs.value.filter((id) => !companionSet.has(id));
+      rightPaneTabs.value = remainingRight;
+      if (rightPaneActiveId.value && companionSet.has(rightPaneActiveId.value)) {
+        rightPaneActiveId.value = remainingRight.length > 0 ? remainingRight[remainingRight.length - 1] : null;
+      }
+      if (remainingRight.length === 0 && splitEnabled.value) {
+        splitEnabled.value = false;
+      }
+      persistSplitState();
+    }
+  }
+
   const panel: PopoutPanelState = {
     id: 'p-' + Math.random().toString(36).slice(2, 8),
     sessionIds: [sessionId],
@@ -447,6 +749,10 @@ export function popOutTab(sessionId: string) {
     floatingRect: { x: 200, y: 100, w: 700, h: 500 },
     dockedHeight: 400,
     dockedWidth: 500,
+    splitEnabled: companionTabs.length > 0,
+    splitRatio: 0.5,
+    rightPaneTabs: companionTabs,
+    rightPaneActiveId: companionTabs.length > 0 ? companionTabs[0] : null,
   };
   popoutPanels.value = [...popoutPanels.value, panel];
   persistTabs();
@@ -755,6 +1061,14 @@ export function openSession(sessionId: string) {
   panelMinimized.value = false;
   persistTabs();
 
+  // Auto-enable terminal companion if session has companionSessionId
+  const sess = allSessions.value.find((s) => s.id === sessionId);
+  if (sess?.companionSessionId && !getCompanions(sessionId).includes('terminal')) {
+    const companions = getCompanions(sessionId);
+    sessionCompanions.value = { ...sessionCompanions.value, [sessionId]: [...companions, 'terminal'] };
+    persistCompanions();
+  }
+
   // Sync companion pane when switching sessions
   syncCompanionsToRightPane(sessionId, current);
 
@@ -771,20 +1085,16 @@ export function openSession(sessionId: string) {
 }
 
 export function focusOrDockSession(sessionId: string) {
-  // 1. Already in a tab → focus it
-  if (openTabs.value.includes(sessionId)) {
-    openSession(sessionId);
-    focusSessionTerminal(sessionId);
-    return;
-  }
-  // 2. Already in a panel → activate + focus it there
+  // 1. Already in a panel → activate + focus it there
   const panel = findPanelForSession(sessionId);
   if (panel) {
     if (panel.activeSessionId === sessionId && panel.visible) {
+      bringToFront(panel.id);
       focusSessionTerminal(sessionId);
       return;
     }
-    updatePanel(panel.id, { activeSessionId: sessionId, visible: true });
+    updatePanel(panel.id, { activeSessionId: sessionId, visible: true, alwaysOnTop: true });
+    bringToFront(panel.id);
     persistPopoutState();
     nudgeResize();
     focusSessionTerminal(sessionId);
@@ -801,6 +1111,8 @@ export function focusOrDockSession(sessionId: string) {
       activeSessionId: sessionId,
       visible: true,
       dockedSide: 'left',
+      alwaysOnTop: true,
+      autoOpened: false,
     });
   } else {
     const newPanel: PopoutPanelState = {
@@ -813,9 +1125,12 @@ export function focusOrDockSession(sessionId: string) {
       dockedHeight: 500,
       dockedWidth: 500,
       dockedSide: 'left',
+      alwaysOnTop: true,
+      autoOpened: false,
     };
     popoutPanels.value = [newPanel, ...popoutPanels.value];
   }
+  bringToFront(AUTOJUMP_PANEL_ID);
   persistPopoutState();
   nudgeResize();
   focusSessionTerminal(sessionId);
@@ -960,6 +1275,20 @@ export async function spawnTerminal(appId?: string | null) {
     return sessionId;
   } catch (err: any) {
     console.error('Spawn terminal failed:', err.message);
+    return null;
+  }
+}
+
+export async function attachTmuxSession(tmuxTarget: string, appId?: string | null) {
+  try {
+    const data: { tmuxTarget: string; appId?: string } = { tmuxTarget };
+    if (appId && appId !== '__unlinked__') data.appId = appId;
+    const { sessionId } = await api.attachTmuxSession(data);
+    openSession(sessionId);
+    loadAllSessions();
+    return sessionId;
+  } catch (err: any) {
+    console.error('Attach tmux session failed:', err.message);
     return null;
   }
 }
@@ -1170,6 +1499,25 @@ export function cycleWaitingSession() {
 
 export function activateSessionInPlace(sessionId: string) {
   autoJumpLogs.value && console.log(`[auto-jump] activateSessionInPlace: ${sessionId.slice(-6)}, splitEnabled=${splitEnabled.value}, inRightPane=${rightPaneTabs.value.includes(sessionId)}`);
+
+  // Check if session is in a popout panel — bring to front + focus
+  const panel = findPanelForSession(sessionId);
+  if (panel) {
+    autoJumpLogs.value && console.log(`[auto-jump] session ${sessionId.slice(-6)} found in panel ${panel.id}, bringing to front`);
+    if (panel.id === AUTOJUMP_PANEL_ID && panel.activeSessionId !== sessionId) {
+      saveAutoJumpDimsForActiveSession();
+      updatePanel(panel.id, { activeSessionId: sessionId, visible: true });
+      applyAutoJumpDimsForSession(sessionId);
+    } else {
+      updatePanel(panel.id, { activeSessionId: sessionId, visible: true });
+    }
+    bringToFront(panel.id);
+    persistPopoutState();
+    nudgeResize();
+    focusSessionTerminal(sessionId);
+    return;
+  }
+
   if (splitEnabled.value && rightPaneTabs.value.includes(sessionId)) {
     rightPaneActiveId.value = sessionId;
     persistSplitState();
@@ -1187,13 +1535,27 @@ export function syncAutoJumpPanel() {
   );
   const waitingIds = waiting.map((s: any) => s.id);
 
-  // Auto-close: remove the panel entirely when nothing is waiting
-  if (existing && autoCloseWaitingPanel.value) {
-    const anyWaiting = existing.sessionIds.some((id) => waitingIds.includes(id));
-    if (!anyWaiting) {
+  // Always prune non-waiting sessions from the autojump panel
+  if (existing) {
+    const stillWaiting = existing.sessionIds.filter((id) => waitingIds.includes(id));
+    if (stillWaiting.length === 0 && autoCloseWaitingPanel.value) {
+      saveAutoJumpDimsForActiveSession();
       removePanel(AUTOJUMP_PANEL_ID);
       persistPopoutState();
       return;
+    }
+    if (stillWaiting.length < existing.sessionIds.length) {
+      const activeStill = stillWaiting.includes(existing.activeSessionId)
+        ? existing.activeSessionId
+        : stillWaiting[0] || existing.activeSessionId;
+      const activeChanged = activeStill !== existing.activeSessionId;
+      if (activeChanged) saveAutoJumpDimsForActiveSession();
+      updatePanel(AUTOJUMP_PANEL_ID, {
+        sessionIds: stillWaiting,
+        activeSessionId: activeStill,
+      });
+      if (activeChanged) applyAutoJumpDimsForSession(activeStill);
+      persistPopoutState();
     }
   }
 
@@ -1206,16 +1568,21 @@ export function syncAutoJumpPanel() {
     // Don't create the panel if all waiting sessions are already visible in tabs
     const allInTabs = waitingIds.every((id) => id === activeTabId.value);
     if (allInTabs) return;
+    const saved = autoJumpSessionDims.value[waitingIds[0]];
     const panel: PopoutPanelState = {
       id: AUTOJUMP_PANEL_ID,
       sessionIds: waitingIds,
       activeSessionId: waitingIds[0],
-      docked: true,
+      docked: saved?.docked ?? true,
       visible: true,
-      floatingRect: { x: 200, y: 100, w: 500, h: 500 },
-      dockedHeight: 500,
-      dockedWidth: 500,
-      dockedSide: 'left',
+      floatingRect: saved?.floatingRect ?? { x: 200, y: 100, w: 500, h: 500 },
+      dockedHeight: saved?.dockedHeight ?? 500,
+      dockedWidth: saved?.dockedWidth ?? 500,
+      dockedSide: saved?.dockedSide ?? 'left',
+      dockedTopOffset: saved?.dockedTopOffset,
+      splitEnabled: saved?.splitEnabled,
+      splitRatio: saved?.splitRatio,
+      autoOpened: true,
     };
     popoutPanels.value = [panel, ...popoutPanels.value];
     persistPopoutState();
@@ -1237,11 +1604,15 @@ export function syncAutoJumpPanel() {
   const shouldShow = !existing.visible && !allVisibleElsewhere;
 
   if (idsChanged || shouldShow) {
+    const newActive = activeStillPresent ? existing.activeSessionId : merged[0];
+    const activeChanged = newActive !== existing.activeSessionId;
+    if (activeChanged) saveAutoJumpDimsForActiveSession();
     updatePanel(AUTOJUMP_PANEL_ID, {
       sessionIds: merged,
-      activeSessionId: activeStillPresent ? existing.activeSessionId : merged[0],
-      ...(shouldShow ? { visible: true } : {}),
+      activeSessionId: newActive,
+      ...(shouldShow ? { visible: true, autoOpened: true } : {}),
     });
+    if (activeChanged) applyAutoJumpDimsForSession(newActive);
     persistPopoutState();
   }
 }
@@ -1249,7 +1620,8 @@ export function syncAutoJumpPanel() {
 export function toggleAutoJumpPanel() {
   const existing = popoutPanels.value.find((p) => p.id === AUTOJUMP_PANEL_ID);
   if (existing) {
-    updatePanel(AUTOJUMP_PANEL_ID, { visible: !existing.visible });
+    const nowVisible = !existing.visible;
+    updatePanel(AUTOJUMP_PANEL_ID, { visible: nowVisible, ...(nowVisible ? { autoOpened: false } : {}) });
     persistPopoutState();
   }
 }
@@ -1347,7 +1719,7 @@ export function handleTabDigit0to9(digit: number) {
 
 // --- Companion Pane System ---
 
-export type CompanionType = 'jsonl' | 'feedback' | 'iframe';
+export type CompanionType = 'jsonl' | 'feedback' | 'iframe' | 'terminal';
 
 export const sessionCompanions = signal<Record<string, CompanionType[]>>(
   loadJson('pw-session-companions', {})
@@ -1370,7 +1742,7 @@ function extractCompanionType(tabId: string): CompanionType | null {
   const idx = tabId.indexOf(':');
   if (idx < 0) return null;
   const prefix = tabId.slice(0, idx);
-  if (prefix === 'jsonl' || prefix === 'feedback' || prefix === 'iframe') return prefix;
+  if (prefix === 'jsonl' || prefix === 'feedback' || prefix === 'iframe' || prefix === 'terminal') return prefix;
   return null;
 }
 
@@ -1386,8 +1758,10 @@ export function toggleCompanion(sessionId: string, type: CompanionType) {
   const current = getCompanions(sessionId);
   const tabId = companionTabId(sessionId, type);
 
-  if (current.includes(type)) {
-    // Toggle OFF
+  const isVisible = rightPaneTabs.value.includes(tabId) && splitEnabled.value;
+
+  if (current.includes(type) && isVisible) {
+    // Toggle OFF — only if actually visible
     const next = current.filter((t) => t !== type);
     if (next.length === 0) {
       const { [sessionId]: _, ...rest } = sessionCompanions.value;
@@ -1398,27 +1772,27 @@ export function toggleCompanion(sessionId: string, type: CompanionType) {
     persistCompanions();
 
     // Close the tab from right pane
-    if (rightPaneTabs.value.includes(tabId)) {
-      const remaining = rightPaneTabs.value.filter((id) => id !== tabId);
-      rightPaneTabs.value = remaining;
-      if (rightPaneActiveId.value === tabId) {
-        rightPaneActiveId.value = remaining.length > 0 ? remaining[remaining.length - 1] : null;
-      }
-      if (remaining.length === 0 && splitEnabled.value) {
-        disableSplit();
-        return;
-      }
-      persistSplitState();
+    const remaining = rightPaneTabs.value.filter((id) => id !== tabId);
+    rightPaneTabs.value = remaining;
+    if (rightPaneActiveId.value === tabId) {
+      rightPaneActiveId.value = remaining.length > 0 ? remaining[remaining.length - 1] : null;
     }
+    if (remaining.length === 0 && splitEnabled.value) {
+      disableSplit();
+      return;
+    }
+    persistSplitState();
     // Also remove from openTabs
     if (openTabs.value.includes(tabId)) {
       openTabs.value = openTabs.value.filter((id) => id !== tabId);
       persistTabs();
     }
   } else {
-    // Toggle ON
-    sessionCompanions.value = { ...sessionCompanions.value, [sessionId]: [...current, type] };
-    persistCompanions();
+    // Toggle ON (or re-open if registered but not visible)
+    if (!current.includes(type)) {
+      sessionCompanions.value = { ...sessionCompanions.value, [sessionId]: [...current, type] };
+      persistCompanions();
+    }
     openSessionInRightPane(tabId);
   }
 }

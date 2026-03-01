@@ -11,6 +11,8 @@ import { applicationRoutes } from './routes/applications.js';
 import { agentSessionRoutes } from './routes/agent-sessions.js';
 import { aggregateRoutes } from './routes/aggregate.js';
 import launcherRoutes from './routes/launchers.js';
+import machineRoutes from './routes/machines.js';
+import harnessConfigRoutes from './routes/harness-configs.js';
 import { gettingStartedMarkdown } from './getting-started.js';
 
 export const app = new Hono();
@@ -48,6 +50,8 @@ app.route('/api/v1/admin/applications', applicationRoutes);
 app.route('/api/v1/admin/agent-sessions', agentSessionRoutes);
 app.route('/api/v1/admin/aggregate', aggregateRoutes);
 app.route('/api/v1/admin/launchers', launcherRoutes);
+app.route('/api/v1/admin/machines', machineRoutes);
+app.route('/api/v1/admin/harness-configs', harnessConfigRoutes);
 
 app.get('/GETTING_STARTED.md', (c) => {
   const proto = c.req.header('x-forwarded-proto') || 'http';

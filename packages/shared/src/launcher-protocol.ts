@@ -22,12 +22,15 @@ export interface LauncherRegister {
   authToken: string;
   capabilities: LauncherCapabilities;
   harness?: HarnessMetadata;
+  machineId?: string;
+  harnessConfigId?: string;
 }
 
 export interface LauncherCapabilities {
   maxSessions: number;
   hasTmux: boolean;
   hasClaudeCli: boolean;
+  hasDocker?: boolean;
 }
 
 export interface LauncherHeartbeat {
@@ -58,12 +61,20 @@ export interface LauncherSessionEnded {
   outputLog: string;
 }
 
+export interface HarnessStatusUpdate {
+  type: 'harness_status';
+  harnessConfigId: string;
+  status: 'starting' | 'running' | 'stopped' | 'error';
+  errorMessage?: string;
+}
+
 export type LauncherToServerMessage =
   | LauncherRegister
   | LauncherHeartbeat
   | LauncherSessionStarted
   | LauncherSessionOutput
-  | LauncherSessionEnded;
+  | LauncherSessionEnded
+  | HarnessStatusUpdate;
 
 // --- Server → Launcher messages ---
 
@@ -104,12 +115,33 @@ export interface InputToSession {
   input: SequencedInput | { type: 'input'; data: string } | { type: 'resize'; cols: number; rows: number };
 }
 
+export interface StartHarness {
+  type: 'start_harness';
+  harnessConfigId: string;
+  appImage?: string;
+  appPort?: number;
+  appInternalPort?: number;
+  serverPort?: number;
+  browserMcpPort?: number;
+  targetAppUrl?: string;
+  composeDir?: string;
+  envVars?: Record<string, string>;
+}
+
+export interface StopHarness {
+  type: 'stop_harness';
+  harnessConfigId: string;
+  composeDir?: string;
+}
+
 export type ServerToLauncherMessage =
   | LauncherRegistered
   | LaunchSession
   | KillSessionRequest
   | ResizeSessionRequest
-  | InputToSession;
+  | InputToSession
+  | StartHarness
+  | StopHarness;
 
 // --- Combined ---
 

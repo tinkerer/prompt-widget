@@ -6,6 +6,7 @@ import {
   openTabs,
   activeTabId,
   panelMinimized,
+  panelMaximized,
   panelHeight,
   exitedSessions,
   openSession,
@@ -14,9 +15,9 @@ import {
   resumeSession,
   markSessionExited,
   sidebarWidth,
+  sidebarCollapsed,
   allSessions,
   persistPanelState,
-  spawnTerminal,
   popOutTab,
   getViewMode,
   setViewMode,
@@ -44,9 +45,14 @@ import {
   toggleCompanion,
   getCompanions,
   type CompanionType,
+  resolveSession,
+  bringToFront,
+  getPanelZIndex,
+  panelZOrders,
 } from '../lib/sessions.js';
 import { FeedbackCompanionView } from './FeedbackCompanionView.js';
 import { IframeCompanionView } from './IframeCompanionView.js';
+import { TerminalCompanionView } from './TerminalCompanionView.js';
 import { startTabDrag, type TabDragSource } from '../lib/tab-drag.js';
 import { navigate, selectedAppId } from '../lib/state.js';
 import { showTabs, showHotkeyHints, popoutMode, type PopoutMode } from '../lib/settings.js';
@@ -67,6 +73,7 @@ function PaneHeader({
   canSplit,
   showCollapse,
   onToggleMinimized,
+  onToggleMaximized,
 }: {
   sessionId: string | null;
   sessionMap: Map<string, any>;
@@ -74,11 +81,13 @@ function PaneHeader({
   canSplit?: boolean;
   showCollapse?: boolean;
   onToggleMinimized?: () => void;
+  onToggleMaximized?: () => void;
 }) {
   const isJsonlTab = sessionId?.startsWith('jsonl:') || false;
   const isFeedbackTab = sessionId?.startsWith('feedback:') || false;
   const isIframeTab = sessionId?.startsWith('iframe:') || false;
-  const isCompanionTab = isJsonlTab || isFeedbackTab || isIframeTab;
+  const isTerminalTab = sessionId?.startsWith('terminal:') || false;
+  const isCompanionTab = isJsonlTab || isFeedbackTab || isIframeTab || isTerminalTab;
   const realSessionId = isCompanionTab && sessionId ? sessionId.slice(sessionId.indexOf(':') + 1) : sessionId;
   const sess = realSessionId ? sessionMap.get(realSessionId) : null;
   const appId = selectedAppId.value;
@@ -96,6 +105,7 @@ function PaneHeader({
             {isJsonlTab && `JSONL: pw-${realSessionId!.slice(-6)}`}
             {isFeedbackTab && `Feedback: pw-${realSessionId!.slice(-6)}`}
             {isIframeTab && `Page: pw-${realSessionId!.slice(-6)}`}
+            {isTerminalTab && `Terminal: pw-${realSessionId!.slice(-6)}`}
           </span>
           {feedbackPath && (
             <a href={`#${feedbackPath}`} onClick={(e) => { e.preventDefault(); navigate(feedbackPath); }} class="feedback-title-link" title={sess?.feedbackTitle || 'View feedback'}>{sess?.feedbackTitle || 'View feedback'}</a>
@@ -151,6 +161,15 @@ function PaneHeader({
                     </button>
                   );
                 })()}
+                {sess?.companionSessionId && (() => {
+                  const companions = getCompanions(sessionId);
+                  const termActive = companions.includes('terminal');
+                  return (
+                    <button onClick={() => { idMenuOpen.value = null; toggleCompanion(sessionId, 'terminal'); }}>
+                      {termActive ? '\u2713 ' : ''}Terminal companion <kbd>M</kbd>
+                    </button>
+                  );
+                })()}
                 <div class="id-dropdown-separator" />
                 <button onClick={() => { executePopout(sessionId, 'panel'); }}>Panel <kbd>P</kbd></button>
                 <button onClick={() => { executePopout(sessionId, 'window'); }}>Window <kbd>W</kbd></button>
@@ -203,28 +222,22 @@ function PaneHeader({
           )}
         </>
       )}
-      {showCollapse && onToggleMinimized && (
-        <button class="terminal-collapse-btn" onClick={onToggleMinimized}>
-          {panelMinimized.value ? '\u25B2' : '\u25BC'}
-        </button>
+      {showCollapse && (
+        <>
+          {onToggleMaximized && (
+            <button class="terminal-collapse-btn" onClick={onToggleMaximized} title={panelMaximized.value ? 'Restore' : 'Maximize'}>
+              {panelMaximized.value ? '\u25A3' : '\u25B2'}
+            </button>
+          )}
+          {onToggleMinimized && (
+            <button class="terminal-collapse-btn" onClick={onToggleMinimized}>
+              {panelMinimized.value ? '\u25B2' : '\u25BC'}
+            </button>
+          )}
+        </>
       )}
     </div>
   );
-}
-
-async function resolveSession(sessionId: string, feedbackId?: string) {
-  const alreadyExited = exitedSessions.value.has(sessionId);
-  if (!alreadyExited) {
-    await killSession(sessionId);
-  }
-  if (feedbackId) {
-    try {
-      await api.updateFeedback(feedbackId, { status: 'resolved' });
-    } catch (err: any) {
-      console.error('Resolve feedback failed:', err.message);
-    }
-  }
-  closeTab(sessionId);
 }
 
 function executePopout(sessionId: string, mode: PopoutMode) {
@@ -286,7 +299,8 @@ function PaneTabBar({
         const isJsonl = sid.startsWith('jsonl:');
         const isFeedback = sid.startsWith('feedback:');
         const isIframe = sid.startsWith('iframe:');
-        const isCompanion = isJsonl || isFeedback || isIframe;
+        const isTerminal = sid.startsWith('terminal:');
+        const isCompanion = isJsonl || isFeedback || isIframe || isTerminal;
         const realSid = isCompanion ? sid.slice(sid.indexOf(':') + 1) : sid;
         const isExited = exited.has(realSid);
         const inputState = !isExited && !isCompanion ? (sessionInputStates.value.get(sid) || null) : null;
@@ -300,6 +314,7 @@ function PaneTabBar({
         const companionLabel = isJsonl ? `JSONL: ${sess?.feedbackTitle || sess?.agentName || realSid.slice(-6)}`
           : isFeedback ? `FB: ${sess?.feedbackTitle || realSid.slice(-6)}`
           : isIframe ? `Page: ${realSid.slice(-6)}`
+          : isTerminal ? `Term: ${realSid.slice(-6)}`
           : '';
         const raw = customLabel || (isCompanion ? companionLabel : isPlain ? `\u{1F5A5}\uFE0F ${plainLabel}` : (sess?.feedbackTitle || sess?.agentName || `Session ${sid.slice(-6)}`));
         const tabLabel = raw;
@@ -372,7 +387,8 @@ function renderTabContent(
   const isJsonl = sid.startsWith('jsonl:');
   const isFeedback = sid.startsWith('feedback:');
   const isIframe = sid.startsWith('iframe:');
-  const isCompanion = isJsonl || isFeedback || isIframe;
+  const isTerminal = sid.startsWith('terminal:');
+  const isCompanion = isJsonl || isFeedback || isIframe || isTerminal;
   const realSid = isCompanion ? sid.slice(sid.indexOf(':') + 1) : sid;
   const sess = sessionMap.get(realSid);
 
@@ -384,6 +400,8 @@ function renderTabContent(
         sess?.feedbackId ? <FeedbackCompanionView feedbackId={sess.feedbackId} /> : <div class="companion-error">No feedback linked</div>
       ) : isIframe ? (
         sess?.url ? <IframeCompanionView url={sess.url} /> : <div class="companion-error">No URL available</div>
+      ) : isTerminal ? (
+        sess?.companionSessionId ? <TerminalCompanionView companionSessionId={sess.companionSessionId} /> : <div class="companion-error">No companion terminal</div>
       ) : (
         <SessionViewToggle
           sessionId={sid}
@@ -470,6 +488,9 @@ export function GlobalTerminalPanel() {
       } else if (key === 'i') {
         const s = sessionMap.get(menuSessionId);
         if (s?.url) toggleCompanion(menuSessionId, 'iframe');
+      } else if (key === 'm') {
+        const s = sessionMap.get(menuSessionId);
+        if (s?.companionSessionId) toggleCompanion(menuSessionId, 'terminal');
       } else if (key === 's' && tabs.length >= 2 && !isSplit) {
         enableSplit();
       } else if (key === 'escape') {
@@ -489,7 +510,9 @@ export function GlobalTerminalPanel() {
 
   useEffect(() => {
     const held = ctrlShiftHeld.value;
-    if (!held || !activeId || !showHotkeyHints.value) {
+    const ap = activePanelId.value;
+    const isGlobalFocused = ap === 'global' || ap === 'split-left' || ap === 'split-right';
+    if (!held || !activeId || !showHotkeyHints.value || !isGlobalFocused) {
       hotkeyMenuOpen.value = null;
       return;
     }
@@ -513,7 +536,7 @@ export function GlobalTerminalPanel() {
     const scrollEl = tabsRef.current;
     scrollEl?.addEventListener('scroll', updatePos, { passive: true });
     return () => scrollEl?.removeEventListener('scroll', updatePos);
-  }, [ctrlShiftHeld.value, activeId]);
+  }, [ctrlShiftHeld.value, activeId, activePanelId.value]);
 
   const onResizeMouseDown = useCallback((e: MouseEvent) => {
     e.preventDefault();
@@ -522,6 +545,7 @@ export function GlobalTerminalPanel() {
     if (panelMinimized.value) {
       panelMinimized.value = false;
     }
+    panelMaximized.value = false;
     const onMove = (ev: MouseEvent) => {
       if (!dragging.current) return;
       const newH = window.innerHeight - ev.clientY;
@@ -561,22 +585,40 @@ export function GlobalTerminalPanel() {
   }, []);
 
   const hasTabs = showTabs.value;
+  const maximized = panelMaximized.value;
   const toggleMinimized = () => { panelMinimized.value = !panelMinimized.value; persistPanelState(); };
+  const toggleMaximized = () => {
+    if (panelMaximized.value) {
+      panelMaximized.value = false;
+    } else {
+      panelMaximized.value = true;
+      panelMinimized.value = false;
+    }
+    persistPanelState();
+  };
   const appId = selectedAppId.value;
 
-  const collapseBtn = (
-    <button class="terminal-collapse-btn" onClick={toggleMinimized}>
-      {minimized ? '\u25B2' : '\u25BC'}
-    </button>
+  const panelButtons = (
+    <>
+      <button class="terminal-collapse-btn" onClick={toggleMaximized} title={maximized ? 'Restore' : 'Maximize'}>
+        {maximized ? '\u25A3' : '\u25B2'}
+      </button>
+      <button class="terminal-collapse-btn" onClick={toggleMinimized}>
+        {minimized ? '\u25B2' : '\u25BC'}
+      </button>
+    </>
   );
 
   const isFocused = focusedPanelId.value === 'global' || focusedPanelId.value === 'split-left' || focusedPanelId.value === 'split-right';
   const canSplit = tabs.length >= 2 && !isSplit;
+  const _zOrders = panelZOrders.value;
+  const globalZIdx = getPanelZIndex('global-panel');
 
   return (
     <div
       class={`global-terminal-panel${sidebarAnimating.value ? ' animating' : ''}${panelResizing.value ? ' dragging' : ''}${isFocused ? ' panel-focused' : ''}`}
-      style={{ height: minimized ? (hasTabs ? '66px' : '32px') : `${height}px`, left: `${sidebarWidth.value}px` }}
+      style={{ height: minimized ? (hasTabs ? '66px' : '32px') : maximized ? '100vh' : `${height}px`, left: `${sidebarWidth.value + (sidebarCollapsed.value ? 0 : 3)}px`, zIndex: globalZIdx }}
+      onMouseDown={() => { activePanelId.value = isSplit ? 'split-left' : 'global'; bringToFront('global-panel'); }}
     >
       <div class="terminal-resize-handle" onMouseDown={onResizeMouseDown} />
       {hasTabs && !isSplit && (
@@ -591,8 +633,7 @@ export function GlobalTerminalPanel() {
             onActivate={openSession}
           />
           <div class="terminal-tab-actions">
-            <button class="terminal-new-btn" onClick={() => spawnTerminal(appId)} title="New terminal">+</button>
-            {collapseBtn}
+            {panelButtons}
           </div>
         </div>
       )}
@@ -682,6 +723,7 @@ export function GlobalTerminalPanel() {
           canSplit={canSplit}
           showCollapse={!hasTabs}
           onToggleMinimized={toggleMinimized}
+          onToggleMaximized={toggleMaximized}
         />
       )}
       {!minimized && !isSplit && (
@@ -708,8 +750,7 @@ export function GlobalTerminalPanel() {
                 onActivate={openSession}
               />
               <div class="terminal-tab-actions">
-                <button class="terminal-new-btn" onClick={() => spawnTerminal(appId)} title="New terminal">+</button>
-                {collapseBtn}
+                {panelButtons}
               </div>
             </div>
             <PaneHeader sessionId={activeId} sessionMap={sessionMap} exited={exited} />

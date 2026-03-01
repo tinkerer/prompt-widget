@@ -39,6 +39,7 @@ export async function spawnAgentSession(params: {
   allowedTools?: string | null;
   claudeSessionId?: string;
   resumeSessionId?: string;
+  tmuxTarget?: string;
 }): Promise<void> {
   await spawnSessionRemote(params);
 }

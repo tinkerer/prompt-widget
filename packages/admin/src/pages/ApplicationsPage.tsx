@@ -3,6 +3,7 @@ import { api } from '../lib/api.js';
 import { loadApplications as refreshSidebarApps } from '../lib/state.js';
 import { spawnTerminal } from '../lib/sessions.js';
 import { copyWithTooltip } from '../lib/clipboard.js';
+import { DeletedItemsPanel, trackDeletion } from '../components/DeletedItemsPanel.js';
 
 const apps = signal<any[]>([]);
 const loading = signal(true);
@@ -133,15 +134,14 @@ async function saveApp(e: Event) {
   }
 }
 
-async function deleteApp(id: string) {
-  if (!confirm('Delete this application? Agent endpoints linked to it will be unlinked.')) return;
+async function deleteApp(id: string, name: string) {
   await api.deleteApplication(id);
+  trackDeletion('applications', id, name);
   await loadApps();
   refreshSidebarApps();
 }
 
 async function regenerateKey(id: string) {
-  if (!confirm('Regenerate API key? The old key will stop working immediately.')) return;
   const result = await api.regenerateApplicationKey(id);
   await loadApps();
   navigator.clipboard.writeText(result.apiKey);
@@ -191,7 +191,7 @@ export function ApplicationsPage() {
             <div style="display:flex;gap:8px;flex-shrink:0">
               <button class="btn btn-sm" onClick={() => spawnTerminal(app.id)} title="Open terminal in this app's directory">Terminal</button>
               <button class="btn btn-sm" onClick={() => openEdit(app)}>Edit</button>
-              <button class="btn btn-sm btn-danger" onClick={() => deleteApp(app.id)}>Delete</button>
+              <button class="btn btn-sm btn-danger" onClick={() => deleteApp(app.id, app.name)}>Delete</button>
             </div>
           </div>
         ))}
@@ -201,6 +201,7 @@ export function ApplicationsPage() {
           </div>
         )}
       </div>
+      <DeletedItemsPanel type="applications" />
 
       {showForm.value && (
         <div class="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) showForm.value = false; }}>

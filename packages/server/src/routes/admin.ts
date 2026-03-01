@@ -16,6 +16,9 @@ import {
 import { db, schema } from '../db/index.js';
 import {
   dispatchTerminalSession,
+  dispatchTmuxAttachSession,
+  dispatchAgentSession,
+  dispatchCompanionTerminal,
   hydrateFeedback,
   DEFAULT_PROMPT_TEMPLATE,
   dispatchFeedbackToAgent,
@@ -862,6 +865,361 @@ adminRoutes.get('/read-file', (c) => {
   }
 });
 
+// Setup assist — AI assistant for configuring machines and harnesses
+adminRoutes.post('/setup-assist', async (c) => {
+  const body = await c.req.json();
+  const { request, entityType, entityId } = body as {
+    request?: string;
+    entityType?: 'machine' | 'harness' | 'agent';
+    entityId?: string;
+  };
+
+  if (!request?.trim()) return c.json({ error: 'request text is required' }, 400);
+  if (!entityType) return c.json({ error: 'entityType is required' }, 400);
+
+  // Look up the entity (if entityId provided)
+  let entity: Record<string, unknown> | null = null;
+  let machine: Record<string, unknown> | null = null;
+
+  if (entityId) {
+    if (entityType === 'machine') {
+      const row = db.select().from(schema.machines).where(eq(schema.machines.id, entityId)).get();
+      if (!row) return c.json({ error: 'Machine not found' }, 404);
+      entity = { ...row, capabilities: row.capabilities ? JSON.parse(row.capabilities) : null, tags: row.tags ? JSON.parse(row.tags) : [] };
+    } else if (entityType === 'harness') {
+      const row = db.select().from(schema.harnessConfigs).where(eq(schema.harnessConfigs.id, entityId)).get();
+      if (!row) return c.json({ error: 'Harness config not found' }, 404);
+      entity = { ...row, envVars: row.envVars ? JSON.parse(row.envVars) : null };
+      if (row.machineId) {
+        const mRow = db.select().from(schema.machines).where(eq(schema.machines.id, row.machineId)).get();
+        if (mRow) machine = { ...mRow, capabilities: mRow.capabilities ? JSON.parse(mRow.capabilities) : null, tags: mRow.tags ? JSON.parse(mRow.tags) : [] };
+      }
+    } else if (entityType === 'agent') {
+      const row = db.select().from(schema.agentEndpoints).where(eq(schema.agentEndpoints.id, entityId)).get();
+      if (!row) return c.json({ error: 'Agent endpoint not found' }, 404);
+      entity = { ...row };
+    }
+  }
+
+  // Find agent endpoint (default → any)
+  let agentEndpointId: string | null = null;
+  const defaultAgent = db.select().from(schema.agentEndpoints)
+    .where(eq(schema.agentEndpoints.isDefault, true)).get();
+  if (defaultAgent) {
+    agentEndpointId = defaultAgent.id;
+  } else {
+    const anyAgent = db.select().from(schema.agentEndpoints).get();
+    if (anyAgent) agentEndpointId = anyAgent.id;
+  }
+  if (!agentEndpointId) return c.json({ error: 'No agent endpoint configured' }, 400);
+
+  const agentRow = db.select().from(schema.agentEndpoints)
+    .where(eq(schema.agentEndpoints.id, agentEndpointId)).get();
+  if (!agentRow) return c.json({ error: 'Agent endpoint not found' }, 404);
+
+  const host = c.req.header('host') || 'localhost:3001';
+  const proto = c.req.header('x-forwarded-proto') || 'http';
+  const baseUrl = `${proto}://${host}`;
+
+  // Spawn companion terminal for machine entities that have a hostname/address
+  let companionSessionId: string | null = null;
+  let companionTmuxName: string | null = null;
+  if (entityType === 'machine' && entity && ((entity as any).hostname || (entity as any).address)) {
+    try {
+      const companion = await dispatchCompanionTerminal({
+        parentSessionId: '', // will link after agent session is created
+        cwd: process.cwd(),
+      });
+      companionSessionId = companion.sessionId;
+      companionTmuxName = `pw-${companionSessionId}`;
+    } catch (err) {
+      console.warn('[setup-assist] Failed to spawn companion terminal:', err);
+    }
+  }
+
+  const prompt = entity
+    ? buildSetupPrompt(entityType as 'machine' | 'harness' | 'agent', entity, machine, request.trim(), baseUrl, companionTmuxName)
+    : buildNewEntityPrompt(entityType, request.trim(), baseUrl);
+
+  // Create feedback item
+  const feedbackId = ulid();
+  const now = new Date().toISOString();
+  const entityLabel = entity ? ((entity as any).name || entityId!.slice(0, 8)) : `New ${entityType}`;
+  db.insert(schema.feedbackItems).values({
+    id: feedbackId,
+    type: 'request',
+    status: 'dispatched',
+    title: `[Setup Assist] ${entityLabel}: ${request.trim().slice(0, 60)}`,
+    description: request.trim(),
+    dispatchedTo: agentRow.name,
+    dispatchedAt: now,
+    dispatchStatus: 'dispatched',
+    createdAt: now,
+    updatedAt: now,
+  }).run();
+
+  try {
+    const { sessionId } = await dispatchAgentSession({
+      feedbackId,
+      agentEndpointId,
+      prompt,
+      cwd: process.cwd(),
+      permissionProfile: 'interactive' as any,
+      allowedTools: agentRow.allowedTools,
+    });
+
+    // Link companion terminal to agent session
+    if (companionSessionId) {
+      db.update(schema.agentSessions)
+        .set({ companionSessionId })
+        .where(eq(schema.agentSessions.id, sessionId))
+        .run();
+      // Also set parentSessionId on the companion
+      db.update(schema.agentSessions)
+        .set({ parentSessionId: sessionId })
+        .where(eq(schema.agentSessions.id, companionSessionId))
+        .run();
+    }
+
+    return c.json({ sessionId, feedbackId, companionSessionId });
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+    return c.json({ error: errorMsg }, 500);
+  }
+});
+
+function buildSetupPrompt(
+  entityType: 'machine' | 'harness' | 'agent',
+  entity: Record<string, unknown>,
+  machine: Record<string, unknown> | null,
+  request: string,
+  baseUrl: string,
+  companionTmuxName?: string | null,
+): string {
+  const parts: string[] = [];
+  const typeLabel = entityType === 'machine' ? 'Machine' : entityType === 'harness' ? 'Harness' : 'Agent';
+  parts.push(`# Setup Assistant — ${typeLabel} Configuration`);
+  parts.push('');
+
+  if (entityType === 'agent') {
+    const a = entity as any;
+    parts.push('## Current Agent Configuration');
+    parts.push(`- **ID**: ${a.id}`);
+    parts.push(`- **Name**: ${a.name}`);
+    parts.push(`- **Mode**: ${a.mode || 'interactive'}`);
+    parts.push(`- **Permission Profile**: ${a.permissionProfile || 'interactive'}`);
+    parts.push(`- **Is Default**: ${a.isDefault ? 'Yes' : 'No'}`);
+    parts.push(`- **App ID**: ${a.appId || '(global)'}`);
+    parts.push(`- **Allowed Tools**: ${a.allowedTools || '(none)'}`);
+    parts.push(`- **Auto Plan**: ${a.autoPlan ? 'Yes' : 'No'}`);
+    if (a.url) parts.push(`- **Webhook URL**: ${a.url}`);
+    parts.push('');
+    parts.push('## Update API');
+    parts.push(`PATCH ${baseUrl}/api/v1/admin/agents/${a.id}`);
+    parts.push('Fields: name, url, authHeader, isDefault, appId, mode (interactive|headless|webhook), promptTemplate, permissionProfile (interactive|auto|yolo), allowedTools, autoPlan');
+    parts.push('');
+  } else if (entityType === 'machine') {
+    const m = entity as any;
+    parts.push('## Current Machine Configuration');
+    parts.push(`- **ID**: ${m.id}`);
+    parts.push(`- **Name**: ${m.name}`);
+    parts.push(`- **Hostname**: ${m.hostname || '(not set)'}`);
+    parts.push(`- **Address**: ${m.address || '(not set)'}`);
+    parts.push(`- **Type**: ${m.type}`);
+    parts.push(`- **Status**: ${m.status}`);
+    parts.push(`- **Capabilities**: ${JSON.stringify(m.capabilities || {})}`);
+    parts.push(`- **Tags**: ${(m.tags || []).join(', ') || '(none)'}`);
+    parts.push('');
+    parts.push('## Update API');
+    parts.push(`PATCH ${baseUrl}/api/v1/admin/machines/${m.id}`);
+    parts.push('Fields: name, hostname, address, type, capabilities (object with hasDocker, hasTmux, hasClaudeCli booleans), tags (string array), authToken');
+    parts.push('');
+    parts.push('## Setup Steps');
+    parts.push('1. If the machine has an address, verify SSH connectivity: `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new <address> "echo ok"`');
+    parts.push('2. Check for Docker: `ssh <address> "docker --version" 2>&1`');
+    parts.push('3. Check for tmux: `ssh <address> "tmux -V" 2>&1`');
+    parts.push('4. Check for Claude CLI: `ssh <address> "which claude" 2>&1`');
+    parts.push('5. Update capabilities via the PATCH API: `curl -s -X PATCH ' + baseUrl + '/api/v1/admin/machines/' + m.id + ' -H "Content-Type: application/json" -d \'{"capabilities":{"hasDocker":true,"hasTmux":true,"hasClaudeCli":false}}\'`');
+    parts.push('6. Help configure auth token for launcher daemon if requested');
+    parts.push('');
+    parts.push('Note: The admin UI auto-refreshes every 10 seconds, so updates via PATCH will appear automatically.');
+  } else {
+    const h = entity as any;
+    parts.push('## Current Harness Configuration');
+    parts.push(`- **ID**: ${h.id}`);
+    parts.push(`- **Name**: ${h.name}`);
+    parts.push(`- **Status**: ${h.status}`);
+    parts.push(`- **App ID**: ${h.appId || '(none)'}`);
+    parts.push(`- **Machine ID**: ${h.machineId || '(none)'}`);
+    parts.push(`- **App Image**: ${h.appImage || '(not set)'}`);
+    parts.push(`- **App Port**: ${h.appPort || '(not set)'}`);
+    parts.push(`- **Internal Port**: ${h.appInternalPort || '(not set)'}`);
+    parts.push(`- **Server Port**: ${h.serverPort || '(not set)'}`);
+    parts.push(`- **Browser MCP Port**: ${h.browserMcpPort || '(not set)'}`);
+    parts.push(`- **Target App URL**: ${h.targetAppUrl || '(not set)'}`);
+    parts.push(`- **Env Vars**: ${JSON.stringify(h.envVars || {})}`);
+    if (machine) {
+      const m = machine as any;
+      parts.push('');
+      parts.push('## Assigned Machine');
+      parts.push(`- **Name**: ${m.name}`);
+      parts.push(`- **Address**: ${m.address || '(not set)'}`);
+      parts.push(`- **Capabilities**: ${JSON.stringify(m.capabilities || {})}`);
+    }
+    parts.push('');
+    parts.push('## Update API');
+    parts.push(`PATCH ${baseUrl}/api/v1/admin/harness-configs/${h.id}`);
+    parts.push('Fields: name, appId, machineId, appImage, appPort, appInternalPort, serverPort, browserMcpPort, targetAppUrl, envVars (JSON object)');
+    parts.push('');
+    parts.push('## Setup Steps');
+    parts.push('1. If a machine is assigned, verify Docker is available: `ssh <machine-address> "docker --version"`');
+    parts.push('2. If an app image is set, check if it exists: `ssh <machine-address> "docker image inspect <image>" 2>&1`');
+    parts.push('3. Help configure ports (ensure no conflicts)');
+    parts.push('4. Set up environment variables as needed');
+    parts.push('5. Update config via the PATCH API: `curl -s -X PATCH ' + baseUrl + '/api/v1/admin/harness-configs/' + h.id + ' -H "Content-Type: application/json" -d \'{"appPort":8080}\'`');
+    parts.push('');
+    parts.push('Note: The admin UI auto-refreshes every 10 seconds, so updates via PATCH will appear automatically.');
+  }
+
+  if (companionTmuxName) {
+    parts.push('');
+    parts.push('## Companion Terminal');
+    parts.push(`You have a companion terminal at tmux session \`${companionTmuxName}\`.`);
+    parts.push(`Use \`tmux send-keys -t ${companionTmuxName} "command" Enter\` to run commands.`);
+    parts.push(`Use \`tmux capture-pane -t ${companionTmuxName} -p\` to read output.`);
+    parts.push('Use the companion terminal for SSH connectivity checks, capability detection, and any shell commands needed for setup.');
+  }
+
+  parts.push('');
+  parts.push('## User Request');
+  parts.push(request);
+  parts.push('');
+  parts.push('## Instructions');
+  parts.push('- Ask clarifying questions if the request is ambiguous');
+  parts.push('- Use the PATCH API to update fields as you discover information');
+  parts.push('- Show the user what you find and what you plan to update before making changes');
+  if (companionTmuxName) {
+    parts.push('- Use the companion terminal for running shell commands instead of trying to execute them directly');
+  }
+
+  return parts.join('\n');
+}
+
+function buildNewEntityPrompt(
+  entityType: 'machine' | 'harness' | 'agent',
+  request: string,
+  baseUrl: string,
+): string {
+  const parts: string[] = [];
+  const typeLabel = entityType === 'machine' ? 'Machine' : entityType === 'harness' ? 'Harness' : 'Agent';
+  parts.push(`# Setup Assistant — Create New ${typeLabel}`);
+  parts.push('');
+
+  // Gather existing entities for context
+  if (entityType === 'machine') {
+    const existing = db.select().from(schema.machines).all();
+    if (existing.length > 0) {
+      parts.push('## Existing Machines');
+      for (const m of existing) {
+        parts.push(`- ${m.name} (${m.type}, ${m.status}) — ${m.hostname || m.address || 'no address'}`);
+      }
+      parts.push('');
+    }
+    parts.push('## Create API');
+    parts.push(`POST ${baseUrl}/api/v1/admin/machines`);
+    parts.push('Fields: name (required), hostname, address, type (local|remote|cloud), capabilities (object with hasDocker, hasTmux, hasClaudeCli booleans), tags (string array)');
+    parts.push('');
+    parts.push('## Workflow');
+    parts.push('1. Ask the user for the machine details (name, hostname/address, type)');
+    parts.push('2. Create the machine via POST API');
+    parts.push('3. If the machine has an address, verify SSH connectivity');
+    parts.push('4. Detect capabilities (Docker, tmux, Claude CLI)');
+    parts.push('5. Update capabilities via PATCH API');
+  } else if (entityType === 'harness') {
+    const existing = db.select().from(schema.harnessConfigs).all();
+    const machineList = db.select().from(schema.machines).all();
+    const appList = db.select().from(schema.applications).all();
+    if (existing.length > 0) {
+      parts.push('## Existing Harness Configs');
+      for (const h of existing) {
+        parts.push(`- ${h.name} (${h.status}) — image: ${h.appImage || 'none'}`);
+      }
+      parts.push('');
+    }
+    if (machineList.length > 0) {
+      parts.push('## Available Machines');
+      for (const m of machineList) {
+        parts.push(`- ${m.name} (id: ${m.id}, ${m.type}, ${m.status})`);
+      }
+      parts.push('');
+    }
+    if (appList.length > 0) {
+      parts.push('## Available Applications');
+      for (const a of appList) {
+        parts.push(`- ${a.name} (id: ${a.id})`);
+      }
+      parts.push('');
+    }
+    parts.push('## Create API');
+    parts.push(`POST ${baseUrl}/api/v1/admin/harness-configs`);
+    parts.push('Fields: name (required), appId, machineId, appImage, appPort, appInternalPort, serverPort, browserMcpPort, targetAppUrl, envVars (JSON object)');
+    parts.push('');
+    parts.push('## Workflow');
+    parts.push('1. Ask the user which application and machine to use');
+    parts.push('2. Help choose Docker image and configure ports');
+    parts.push('3. Create the harness config via POST API');
+    parts.push('4. Suggest starting the harness if ready');
+  } else {
+    const existing = db.select().from(schema.agentEndpoints).all();
+    const appList = db.select().from(schema.applications).all();
+    if (existing.length > 0) {
+      parts.push('## Existing Agents');
+      for (const a of existing) {
+        parts.push(`- ${a.name} (${a.mode || 'interactive'}, ${a.isDefault ? 'default' : 'non-default'})`);
+      }
+      parts.push('');
+    }
+    if (appList.length > 0) {
+      parts.push('## Available Applications');
+      for (const a of appList) {
+        parts.push(`- ${a.name} (id: ${a.id})`);
+      }
+      parts.push('');
+    }
+    parts.push('## Create API');
+    parts.push(`POST ${baseUrl}/api/v1/admin/agents`);
+    parts.push('Fields: name (required), mode (interactive|headless|webhook), permissionProfile (interactive|auto|yolo), isDefault, appId, allowedTools, autoPlan, url (webhook only), authHeader (webhook only), promptTemplate');
+    parts.push('');
+    parts.push('## Agent Modes');
+    parts.push('- **interactive**: Claude Code runs in a terminal with real-time supervision. Best for development.');
+    parts.push('- **headless**: Claude Code runs without a terminal UI. Good for automation.');
+    parts.push('- **webhook**: Forwards dispatch to an external URL. For custom integrations.');
+    parts.push('');
+    parts.push('## Permission Levels');
+    parts.push('- **interactive**: User approves each tool use in real-time');
+    parts.push('- **auto**: Pre-approved tools run automatically, others prompt');
+    parts.push('- **yolo**: No permission checks (only use in sandboxed environments)');
+    parts.push('');
+    parts.push('## Workflow');
+    parts.push('1. Ask the user what kind of agent they need');
+    parts.push('2. Recommend mode and permission level based on use case');
+    parts.push('3. Create the agent via POST API');
+    parts.push('4. Optionally set as default if no default exists');
+  }
+
+  parts.push('');
+  parts.push('## User Request');
+  parts.push(request);
+  parts.push('');
+  parts.push('## Instructions');
+  parts.push('- Ask clarifying questions if the request is ambiguous');
+  parts.push('- Use the POST API to create the new entity');
+  parts.push('- Show the user what you plan to create before making the API call');
+  parts.push('- The admin UI auto-refreshes every 10 seconds, so new entities will appear automatically');
+
+  return parts.join('\n');
+}
+
 // Plain terminal session (no agent, no feedback)
 adminRoutes.post('/terminal', async (c) => {
   const body = await c.req.json().catch(() => ({}));
@@ -877,6 +1235,30 @@ adminRoutes.post('/terminal', async (c) => {
 
   try {
     const { sessionId } = await dispatchTerminalSession({ cwd: resolvedCwd, appId });
+    return c.json({ sessionId });
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+    return c.json({ error: errorMsg }, 500);
+  }
+});
+
+// List tmux sessions from the default tmux server
+adminRoutes.get('/tmux-sessions', async (c) => {
+  const { listDefaultTmuxSessions } = await import('../tmux-pty.js');
+  return c.json({ sessions: listDefaultTmuxSessions() });
+});
+
+// Attach to an existing tmux session from the default server
+adminRoutes.post('/terminal/attach-tmux', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const { tmuxTarget, appId } = body as { tmuxTarget?: string; appId?: string };
+
+  if (!tmuxTarget) {
+    return c.json({ error: 'tmuxTarget is required' }, 400);
+  }
+
+  try {
+    const { sessionId } = await dispatchTmuxAttachSession({ tmuxTarget, appId });
     return c.json({ sessionId });
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : 'Unknown error';

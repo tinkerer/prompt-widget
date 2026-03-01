@@ -4,6 +4,7 @@ import { api } from '../lib/api.js';
 import { navigate, currentRoute } from '../lib/state.js';
 import { quickDispatch, quickDispatchState, batchQuickDispatch, openSession, sessionInputStates, startSessionPolling } from '../lib/sessions.js';
 import { copyWithTooltip } from '../lib/clipboard.js';
+import { DeletedItemsPanel, trackDeletion } from '../components/DeletedItemsPanel.js';
 
 const items = signal<any[]>([]);
 const total = signal(0);
@@ -130,8 +131,11 @@ async function batchDelete() {
 
 async function batchPermanentDelete() {
   if (selected.value.size === 0) return;
-  if (!confirm(`Permanently delete ${selected.value.size} items? This cannot be undone.`)) return;
-  await api.batchOperation({ ids: Array.from(selected.value), operation: 'permanentDelete' });
+  const ids = Array.from(selected.value);
+  await api.batchOperation({ ids, operation: 'permanentDelete' });
+  for (const id of ids) {
+    trackDeletion('feedback', id, `Feedback ${id.slice(-6)}`);
+  }
   selected.value = new Set();
   await loadFeedback();
 }
@@ -164,7 +168,7 @@ async function createFeedback() {
     createTags.value = '';
     navigate(`/app/${currentAppId.value}/feedback/${result.id}`);
   } catch (err: any) {
-    alert('Failed to create: ' + err.message);
+    console.error('Failed to create:', err.message);
   } finally {
     createLoading.value = false;
   }
@@ -614,6 +618,7 @@ export function FeedbackListPage({ appId }: { appId: string }) {
           </div>
         )}
       </div>
+      <DeletedItemsPanel type="feedback" />
     </div>
   );
 }

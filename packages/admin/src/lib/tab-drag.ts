@@ -13,6 +13,9 @@ import {
   moveToRightPane,
   moveToLeftPane,
   reorderRightPaneTab,
+  moveToPanelRightPane,
+  moveToPanelLeftPane,
+  popoutPanels,
 } from './sessions.js';
 
 export type TabDragSource = 'main' | 'split-left' | 'split-right' | { panelId: string };
@@ -36,7 +39,7 @@ export function startTabDrag(e: MouseEvent, config: TabDragConfig): void {
   let dragging = false;
   let ghost: HTMLElement | null = null;
   let sourceTab: HTMLElement | null = (e.currentTarget as HTMLElement);
-  let dropTarget: { type: 'panel'; panelId: string } | { type: 'main' } | { type: 'split-left' } | { type: 'split-right' } | null = null;
+  let dropTarget: { type: 'panel'; panelId: string } | { type: 'main' } | { type: 'split-left' } | { type: 'split-right' } | { type: 'popout-split'; panelId: string; pane: 'left' | 'right' } | null = null;
   let lastHighlighted: Element | null = null;
   let reorderIndicator: HTMLElement | null = null;
   let reorderInsertBefore: string | null = null;
@@ -64,6 +67,21 @@ export function startTabDrag(e: MouseEvent, config: TabDragConfig): void {
     const els = document.elementsFromPoint(x, y);
     for (const el of els) {
       if (el === ghost || el === reorderIndicator) continue;
+
+      // Check popout split panes
+      const popoutSplitPane = (el as HTMLElement).closest?.('[data-popout-split-pane]') as HTMLElement | null;
+      if (popoutSplitPane) {
+        const val = popoutSplitPane.dataset.popoutSplitPane!; // "panelId:left" or "panelId:right"
+        const colonIdx = val.lastIndexOf(':');
+        const panelId = val.slice(0, colonIdx);
+        const pane = val.slice(colonIdx + 1) as 'left' | 'right';
+        const srcPanelId = sourceIsPanelId();
+        if (srcPanelId === panelId) {
+          // Same panel — allow cross-pane drops
+          return { type: 'popout-split', panelId, pane };
+        }
+        return { type: 'popout-split', panelId, pane };
+      }
 
       // Check split panes
       const splitPane = (el as HTMLElement).closest?.('[data-split-pane]') as HTMLElement | null;
@@ -98,7 +116,10 @@ export function startTabDrag(e: MouseEvent, config: TabDragConfig): void {
       return;
     }
     ghost?.classList.add('will-drop');
-    if (target.type === 'panel') {
+    if (target.type === 'popout-split') {
+      const el = document.querySelector(`[data-popout-split-pane="${target.panelId}:${target.pane}"]`);
+      if (el) { el.classList.add('drop-target'); lastHighlighted = el; }
+    } else if (target.type === 'panel') {
       const el = document.querySelector(`[data-panel-id="${target.panelId}"]`);
       if (el) { el.classList.add('drop-target'); lastHighlighted = el; }
     } else if (target.type === 'split-left' || target.type === 'split-right') {
@@ -253,6 +274,9 @@ export function startTabDrag(e: MouseEvent, config: TabDragConfig): void {
     if (config.source === 'main' || config.source === 'split-left') {
       if (dropTarget?.type === 'split-right') {
         moveToRightPane(config.sessionId);
+      } else if (dropTarget?.type === 'popout-split') {
+        moveSessionToPanel(config.sessionId, dropTarget.panelId);
+        if (dropTarget.pane === 'right') moveToPanelRightPane(dropTarget.panelId, config.sessionId);
       } else if (dropTarget?.type === 'panel') {
         moveSessionToPanel(config.sessionId, dropTarget.panelId);
       } else if (!dropTarget && !hadReorderIndicator) {
@@ -261,6 +285,9 @@ export function startTabDrag(e: MouseEvent, config: TabDragConfig): void {
     } else if (config.source === 'split-right') {
       if (dropTarget?.type === 'main' || dropTarget?.type === 'split-left') {
         moveToLeftPane(config.sessionId);
+      } else if (dropTarget?.type === 'popout-split') {
+        moveSessionToPanel(config.sessionId, dropTarget.panelId);
+        if (dropTarget.pane === 'right') moveToPanelRightPane(dropTarget.panelId, config.sessionId);
       } else if (dropTarget?.type === 'panel') {
         moveSessionToPanel(config.sessionId, dropTarget.panelId);
       } else if (!dropTarget && !hadReorderIndicator) {
@@ -272,6 +299,15 @@ export function startTabDrag(e: MouseEvent, config: TabDragConfig): void {
       } else if (dropTarget?.type === 'split-right') {
         popBackIn(config.sessionId);
         moveToRightPane(config.sessionId);
+      } else if (dropTarget?.type === 'popout-split') {
+        if (dropTarget.panelId === srcPanelId) {
+          // Same panel, cross-pane
+          if (dropTarget.pane === 'right') moveToPanelRightPane(srcPanelId, config.sessionId);
+          else moveToPanelLeftPane(srcPanelId, config.sessionId);
+        } else {
+          moveSessionToPanel(config.sessionId, dropTarget.panelId);
+          if (dropTarget.pane === 'right') moveToPanelRightPane(dropTarget.panelId, config.sessionId);
+        }
       } else if (dropTarget?.type === 'panel' && dropTarget.panelId !== srcPanelId) {
         moveSessionToPanel(config.sessionId, dropTarget.panelId);
       } else if (!dropTarget && !hadReorderIndicator) {

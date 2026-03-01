@@ -1,17 +1,18 @@
 import { ComponentChildren } from 'preact';
 import { useEffect, useRef, useCallback, useState } from 'preact/hooks';
 import { signal } from '@preact/signals';
-import { currentRoute, clearToken, navigate, selectedAppId, applications, unlinkedCount, appFeedbackCounts } from '../lib/state.js';
+import { currentRoute, clearToken, navigate, selectedAppId, applications, unlinkedCount, appFeedbackCounts, addAppModalOpen } from '../lib/state.js';
 import { api } from '../lib/api.js';
 import { timed } from '../lib/perf.js';
 import { GlobalTerminalPanel, idMenuOpen } from './GlobalTerminalPanel.js';
-import { PopoutPanel } from './PopoutPanel.js';
+import { PopoutPanel, popoutIdMenuOpen, popoutWindowMenuOpen } from './PopoutPanel.js';
 import { PerfOverlay } from './PerfOverlay.js';
 import { FileViewerOverlay } from './FileViewerPanel.js';
 import { Tooltip } from './Tooltip.js';
 import { ShortcutHelpModal } from './ShortcutHelpModal.js';
 import { SpotlightSearch } from './SpotlightSearch.js';
 import { AddAppModal } from './AddAppModal.js';
+import { RequestPanel } from './RequestPanel.js';
 import { ControlBar } from './ControlBar.js';
 import { registerShortcut, ctrlShiftHeld } from '../lib/shortcuts.js';
 import { toggleTheme, showTabs, arrowTabSwitching, showHotkeyHints, autoJumpWaiting, autoJumpInterrupt, autoJumpDelay, autoJumpShowPopup, autoJumpLogs, autoCloseWaitingPanel } from '../lib/settings.js';
@@ -45,6 +46,7 @@ import {
   setTerminalsHeight,
   setSidebarWidth,
   spawnTerminal,
+  attachTmuxSession,
   handleTabDigit0to9,
   togglePopOutActive,
   pendingFirstDigit,
@@ -80,6 +82,8 @@ import {
   focusSessionTerminal,
   getSessionLabel,
   toggleAutoJumpPanel,
+  resolveSession,
+  activePanelId,
 } from '../lib/sessions.js';
 
 interface LiveConnection {
@@ -95,7 +99,6 @@ const totalLiveConnections = signal(0);
 const liveSites = signal<{ origin: string; hostname: string; count: number }[]>([]);
 const sidebarStatusMenu = signal<{ sessionId: string; x: number; y: number } | null>(null);
 const sidebarItemMenu = signal<{ sessionId: string; x: number; y: number } | null>(null);
-const addAppModalOpen = signal(false);
 
 function highlightMatch(text: string, query: string) {
   const lower = text.toLowerCase();
@@ -111,21 +114,6 @@ function highlightMatch(text: string, query: string) {
   );
 }
 const autoJumpMenuOpen = signal(false);
-
-async function sidebarResolveSession(sessionId: string, feedbackId?: string) {
-  const alreadyExited = exitedSessions.value.has(sessionId);
-  if (!alreadyExited) {
-    await killSession(sessionId);
-  }
-  if (feedbackId) {
-    try {
-      await api.updateFeedback(feedbackId, { status: 'resolved' });
-    } catch (err: any) {
-      console.error('Resolve feedback failed:', err.message);
-    }
-  }
-  closeTab(sessionId);
-}
 
 async function pollLiveConnections() {
   try {
@@ -154,6 +142,25 @@ async function pollLiveConnections() {
   } catch {
     // ignore
   }
+}
+
+const tmuxMenuOpen = signal<{ x: number; y: number; btnTop: number } | null>(null);
+const tmuxSessions = signal<{ name: string; windows: number; created: string; attached: boolean }[]>([]);
+const tmuxMenuLoading = signal(false);
+
+async function openTmuxMenu(e: MouseEvent, appId?: string | null) {
+  e.stopPropagation();
+  const btn = e.currentTarget as HTMLElement;
+  const rect = btn.getBoundingClientRect();
+  tmuxMenuOpen.value = { x: rect.left, y: rect.bottom + 4, btnTop: rect.top };
+  tmuxMenuLoading.value = true;
+  try {
+    const result = await api.listTmuxSessions();
+    tmuxSessions.value = result.sessions;
+  } catch {
+    tmuxSessions.value = [];
+  }
+  tmuxMenuLoading.value = false;
 }
 
 function SidebarTabBadge({ tabNum }: { tabNum: number }) {
@@ -219,11 +226,32 @@ export function Layout({ children }: { children: ComponentChildren }) {
   }, [sidebarItemMenu.value]);
 
   useEffect(() => {
+    if (!tmuxMenuOpen.value) return;
+    const close = () => { tmuxMenuOpen.value = null; };
+    document.addEventListener('click', close);
+    return () => document.removeEventListener('click', close);
+  }, [tmuxMenuOpen.value]);
+
+  useEffect(() => {
     if (!autoJumpMenuOpen.value) return;
     const close = () => { autoJumpMenuOpen.value = false; };
     document.addEventListener('click', close);
     return () => document.removeEventListener('click', close);
   }, [autoJumpMenuOpen.value]);
+
+  function getActivePanelSession(): string | null {
+    const ap = activePanelId.value;
+    if (!ap || ap === 'global' || ap === 'split-left' || ap === 'split-right') {
+      return activeTabId.value;
+    }
+    const panel = popoutPanels.value.find((p) => p.id === ap);
+    return panel ? (panel.activeSessionId || panel.sessionIds[0] || null) : null;
+  }
+
+  function isPopoutFocused(): boolean {
+    const ap = activePanelId.value;
+    return !!ap && ap !== 'global' && ap !== 'split-left' && ap !== 'split-right';
+  }
 
   useEffect(() => {
     const cleanups = [
@@ -379,7 +407,14 @@ export function Layout({ children }: { children: ComponentChildren }) {
         modifiers: { ctrl: true, shift: true },
         label: 'Session menu',
         category: 'Panels',
-        action: () => { idMenuOpen.value = idMenuOpen.value ? null : (activeTabId.value || null); },
+        action: () => {
+          if (isPopoutFocused()) {
+            const sid = getActivePanelSession();
+            popoutIdMenuOpen.value = popoutIdMenuOpen.value ? null : (sid || null);
+          } else {
+            idMenuOpen.value = idMenuOpen.value ? null : (activeTabId.value || null);
+          }
+        },
       }),
       registerShortcut({
         key: 'B',
@@ -442,6 +477,18 @@ export function Layout({ children }: { children: ComponentChildren }) {
           if (showSpotlightRef.current) { setShowSpotlight(false); return; }
           if (showShortcutHelpRef.current) { setShowShortcutHelp(false); return; }
           if (hotkeyMenuOpen.value) { hotkeyMenuOpen.value = null; }
+          if (isPopoutFocused()) {
+            const ap = activePanelId.value;
+            const panel = popoutPanels.value.find((p) => p.id === ap && p.visible);
+            if (panel) {
+              const sid = panel.activeSessionId || panel.sessionIds[0];
+              if (sid) {
+                showActionToast('W', 'Close tab', 'var(--pw-text-muted)');
+                closeTab(sid);
+              }
+              return;
+            }
+          }
           const visiblePanels = popoutPanels.value.filter((p) => p.visible);
           if (visiblePanels.length > 0) {
             const panel = visiblePanels[visiblePanels.length - 1];
@@ -504,13 +551,13 @@ export function Layout({ children }: { children: ComponentChildren }) {
         label: 'Resolve active session',
         category: 'Panels',
         action: () => {
-          const sid = activeTabId.value;
+          const sid = getActivePanelSession();
           if (!sid) return;
           const sess = allSessions.value.find((s: any) => s.id === sid);
           if (!sess || !sess.feedbackId) return;
           hotkeyMenuOpen.value = null;
           showActionToast('R', 'Resolve', 'var(--pw-success)');
-          sidebarResolveSession(sid, sess.feedbackId);
+          resolveSession(sid, sess.feedbackId);
         },
       }),
       registerShortcut({
@@ -520,11 +567,23 @@ export function Layout({ children }: { children: ComponentChildren }) {
         label: 'Kill active session',
         category: 'Panels',
         action: () => {
-          const sid = activeTabId.value;
+          const sid = getActivePanelSession();
           if (!sid || exitedSessions.value.has(sid)) return;
           hotkeyMenuOpen.value = null;
           showActionToast('K', 'Kill', 'var(--pw-danger)');
           killSession(sid);
+        },
+      }),
+      registerShortcut({
+        key: 'E',
+        code: 'KeyE',
+        modifiers: { ctrl: true, shift: true },
+        label: 'Window menu (popout)',
+        category: 'Panels',
+        action: () => {
+          if (!isPopoutFocused()) return;
+          const ap = activePanelId.value;
+          popoutWindowMenuOpen.value = popoutWindowMenuOpen.value ? null : (ap || null);
         },
       }),
       registerShortcut({
@@ -606,8 +665,8 @@ export function Layout({ children }: { children: ComponentChildren }) {
     document.addEventListener('mouseup', up);
   }
 
-  const appSubTabs = ['feedback', 'aggregate', 'sessions', 'live'];
-  const settingsTabs = ['/settings/agents', '/settings/applications', '/settings/machines', '/settings/harnesses', '/settings/getting-started', '/settings/preferences'];
+  const appSubTabs = ['feedback', 'aggregate', 'sessions', 'live', 'settings'];
+  const settingsTabs = ['/settings/agents', '/settings/machines', '/settings/harnesses', '/settings/getting-started', '/settings/preferences'];
 
   function cycleNav(dir: number) {
     const r = currentRoute.value;
@@ -760,7 +819,6 @@ export function Layout({ children }: { children: ComponentChildren }) {
 
   const settingsItems = [
     { path: '/settings/agents', label: 'Agents', icon: '\u{1F916}' },
-    { path: '/settings/applications', label: 'Applications', icon: '\u{1F4E6}' },
     { path: '/settings/machines', label: 'Machines', icon: '\u{1F5A5}' },
     { path: '/settings/harnesses', label: 'Harnesses', icon: '\u{1F433}' },
     { path: '/settings/getting-started', label: 'Getting Started', icon: '\u{1F4D6}' },
@@ -845,6 +903,13 @@ export function Layout({ children }: { children: ComponentChildren }) {
                       {(liveConnectionCounts.value[app.id] || 0) > 0 && (
                         <span class="sidebar-count">{liveConnectionCounts.value[app.id]}</span>
                       )}
+                    </a>
+                    <a
+                      href={`#/app/${app.id}/settings`}
+                      class={route === `/app/${app.id}/settings` ? 'active' : ''}
+                      onClick={(e) => { e.preventDefault(); navigate(`/app/${app.id}/settings`); }}
+                    >
+                      {'\u2699'} Settings
                     </a>
                   </div>
                 )}
@@ -1004,7 +1069,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
                   </div>
                 <button
                   class="sidebar-new-terminal-btn"
-                  onClick={(e) => { e.stopPropagation(); spawnTerminal(selAppId); }}
+                  onClick={(e) => openTmuxMenu(e, selAppId)}
                   title="New terminal (g t)"
                 >+</button>
               </div>
@@ -1087,7 +1152,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
                 Terminals ({terminals.length})
                 <button
                   class="sidebar-new-terminal-btn"
-                  onClick={(e) => { e.stopPropagation(); spawnTerminal(selAppId); }}
+                  onClick={(e) => openTmuxMenu(e, selAppId)}
                   title="New terminal (g t)"
                 >+</button>
               </div>
@@ -1110,11 +1175,14 @@ export function Layout({ children }: { children: ComponentChildren }) {
           }}
         />
       )}
-      <div class="main" style={{
-        paddingBottom: bottomPad ? `${bottomPad + 16}px` : undefined,
-      }}>
+      <div class="main-wrapper">
         <ControlBar />
-        {children}
+        <div class="main" style={{
+          paddingBottom: bottomPad ? `${bottomPad + 16}px` : undefined,
+        }}>
+          <RequestPanel />
+          {children}
+        </div>
       </div>
       <GlobalTerminalPanel />
       <PopoutPanel />
@@ -1155,7 +1223,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
               <button onClick={() => { sidebarStatusMenu.value = null; killSession(menuSid); }}>Kill {showHotkeyHints.value && <kbd>⌃⇧K</kbd>}</button>
             )}
             {isRunning && menuSess?.feedbackId && (
-              <button onClick={() => { sidebarStatusMenu.value = null; sidebarResolveSession(menuSid, menuSess.feedbackId); }}>Resolve {showHotkeyHints.value && <kbd>⌃⇧R</kbd>}</button>
+              <button onClick={() => { sidebarStatusMenu.value = null; resolveSession(menuSid, menuSess.feedbackId); }}>Resolve {showHotkeyHints.value && <kbd>⌃⇧R</kbd>}</button>
             )}
             {menuExited && (
               <button onClick={() => { sidebarStatusMenu.value = null; resumeSession(menuSid); }}>Resume</button>
@@ -1197,6 +1265,44 @@ export function Layout({ children }: { children: ComponentChildren }) {
               api.openSessionInTerminal(menuSid).catch((err: any) => console.error('Open in terminal failed:', err.message));
             }}>Open in Terminal.app</button>
             <button onClick={() => { sidebarItemMenu.value = null; enableSplit(menuSid); }}>Split pane</button>
+          </div>
+        );
+      })()}
+      {tmuxMenuOpen.value && (() => {
+        const pos = tmuxMenuOpen.value!;
+        const sessions = tmuxSessions.value;
+        const loading = tmuxMenuLoading.value;
+        const menuHeight = 36 + (loading ? 28 : 0) + (sessions.length > 0 ? 20 : 0) + sessions.length * 30 + (sessions.length > 0 || loading ? 9 : 0);
+        const flipUp = pos.y + menuHeight > window.innerHeight;
+        const menuStyle = flipUp
+          ? { left: `${pos.x}px`, bottom: `${window.innerHeight - pos.btnTop + 4}px` }
+          : { left: `${pos.x}px`, top: `${pos.y}px` };
+        return (
+          <div
+            class="status-dot-menu tmux-session-menu"
+            style={menuStyle}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button onClick={() => { tmuxMenuOpen.value = null; spawnTerminal(selAppId); }}>
+              New terminal
+            </button>
+            {(loading || sessions.length > 0) && <div class="id-dropdown-separator" />}
+            {loading && <div class="tmux-menu-loading">Loading tmux sessions...</div>}
+            {!loading && sessions.length > 0 && (
+              <div class="tmux-menu-label">Attach tmux session</div>
+            )}
+            {!loading && sessions.map((s) => (
+              <button
+                key={s.name}
+                onClick={() => { tmuxMenuOpen.value = null; attachTmuxSession(s.name, selAppId); }}
+                title={`${s.windows} window${s.windows !== 1 ? 's' : ''}${s.attached ? ', attached' : ''}`}
+              >
+                {s.name}
+                <span class="tmux-session-meta">
+                  {s.windows}w{s.attached ? ' \u2022' : ''}
+                </span>
+              </button>
+            ))}
           </div>
         );
       })()}

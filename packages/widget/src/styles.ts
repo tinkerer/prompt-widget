@@ -44,6 +44,32 @@ export const WIDGET_CSS = `
 .pw-trigger.top-right { top: 20px; right: 20px; }
 .pw-trigger.top-left { top: 20px; left: 20px; }
 
+.pw-trigger-dragging {
+  transition: none !important;
+  cursor: grabbing !important;
+}
+
+.pw-trigger-stowed {
+  pointer-events: none;
+  transition: right 0.3s, bottom 0.3s, width 0.3s, height 0.3s;
+}
+
+.pw-trigger-peek {
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  background: #94a3b8;
+  clip-path: circle(50% at 100% 100%);
+  pointer-events: auto;
+  cursor: grab;
+  transition: right 0.6s ease-out, bottom 0.6s ease-out, width 0.6s ease-out, height 0.6s ease-out, opacity 0.6s ease-out;
+}
+
+.pw-trigger-peek:hover {
+  opacity: 1;
+  background: #64748b;
+}
+
 .pw-panel {
   position: fixed;
   z-index: 2147483647;

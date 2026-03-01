@@ -1,5 +1,7 @@
 import { signal } from '@preact/signals';
 import { api } from '../lib/api.js';
+import { SetupAssistButton } from '../components/SetupAssistButton.js';
+import { DeletedItemsPanel, trackDeletion } from '../components/DeletedItemsPanel.js';
 
 const DEFAULT_PROMPT_TEMPLATE = `do feedback item {{feedback.id}}
 
@@ -148,9 +150,9 @@ async function saveAgent(e: Event) {
   }
 }
 
-async function deleteAgent(id: string) {
-  if (!confirm('Delete this agent?')) return;
+async function deleteAgent(id: string, name: string) {
   await api.deleteAgent(id);
+  trackDeletion('agents', id, name);
   await loadAgents();
 }
 
@@ -180,7 +182,10 @@ export function AgentsPage() {
             Compute environments where Claude Code runs to handle dispatched feedback.
           </p>
         </div>
-        <button class="btn btn-primary" onClick={openCreate}>+ Add Agent</button>
+        <div style="display:flex;gap:6px;align-items:center">
+          <SetupAssistButton entityType="agent" entityLabel="Agents" />
+          <button class="btn btn-primary" onClick={openCreate}>+ Add Agent</button>
+        </div>
       </div>
 
       <div class="agent-list">
@@ -199,7 +204,7 @@ export function AgentsPage() {
                   </div>
                   <div class="agent-card-actions">
                     <button class="btn btn-sm" onClick={() => openEdit(agent)}>Edit</button>
-                    <button class="btn btn-sm btn-danger" onClick={() => deleteAgent(agent.id)}>Delete</button>
+                    <button class="btn btn-sm btn-danger" onClick={() => deleteAgent(agent.id, agent.name)}>Delete</button>
                   </div>
                 </div>
                 <div class="agent-card-meta">
@@ -236,6 +241,7 @@ export function AgentsPage() {
           </div>
         )}
       </div>
+      <DeletedItemsPanel type="agents" />
 
       {showForm.value && (
         <div class="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) showForm.value = false; }}>

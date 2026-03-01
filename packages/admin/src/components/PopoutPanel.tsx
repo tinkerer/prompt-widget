@@ -4,6 +4,7 @@ import { copyWithTooltip } from '../lib/clipboard.js';
 import { SessionViewToggle, type ViewMode } from './SessionViewToggle.js';
 import {
   type PopoutPanelState,
+  type CompanionType,
   popoutPanels,
   allSessions,
   exitedSessions,
@@ -26,39 +27,48 @@ import {
   setSessionInputState,
   sessionInputStates,
   getSessionLabel,
+  setSessionLabel,
+  getCompanions,
+  togglePanelCompanion,
+  panelLeftTabs,
+  setPanelSplitRatio,
+  disablePanelSplit,
+  syncPanelCompanions,
+  companionTabId,
   sidebarWidth,
+  sidebarCollapsed,
   AUTOJUMP_PANEL_ID,
   popOutTab,
   resolveSession,
+  bringToFront,
+  getPanelZIndex,
+  panelZOrders,
+  toggleAlwaysOnTop,
+  switchAutoJumpActiveSession,
 } from '../lib/sessions.js';
 import { startTabDrag } from '../lib/tab-drag.js';
 import { ctrlShiftHeld } from '../lib/shortcuts.js';
 import { navigate, selectedAppId } from '../lib/state.js';
+import { showHotkeyHints } from '../lib/settings.js';
 import { api } from '../lib/api.js';
+import { JsonlView } from './JsonlView.js';
+import { FeedbackCompanionView } from './FeedbackCompanionView.js';
+import { IframeCompanionView } from './IframeCompanionView.js';
+import { TerminalCompanionView } from './TerminalCompanionView.js';
 
-const popoutIdMenuOpen = signal<string | null>(null);
+export const popoutIdMenuOpen = signal<string | null>(null);
 const popoutStatusMenuOpen = signal<{ sessionId: string; panelId: string; x: number; y: number } | null>(null);
-
-async function resolveSession(sessionId: string, feedbackId?: string) {
-  const alreadyExited = exitedSessions.value.has(sessionId);
-  if (!alreadyExited) {
-    await killSession(sessionId);
-  }
-  if (feedbackId) {
-    try {
-      await api.updateFeedback(feedbackId, { status: 'resolved' });
-    } catch (err: any) {
-      console.error('Resolve feedback failed:', err.message);
-    }
-  }
-  closeTab(sessionId);
-}
+const popoutHotkeyMenuOpen = signal<{ sessionId: string; panelId: string; x: number; y: number } | null>(null);
+export const popoutWindowMenuOpen = signal<string | null>(null);
+const renamingSessionId = signal<string | null>(null);
+const renameValue = signal('');
 
 const SNAP_THRESHOLD = 20;
 const UNDOCK_THRESHOLD = 40;
 const MIN_W = 300;
 const MIN_H = 200;
 const EDGE_SNAP = 8;
+const CONTROL_BAR_BOTTOM = 40;
 const GRAB_HANDLE_H = 48;
 
 function snapPosition(x: number, y: number, w: number, h: number, selfId: string): { x: number; y: number; guides: { x?: number; y?: number }[] } {
@@ -69,6 +79,7 @@ function snapPosition(x: number, y: number, w: number, h: number, selfId: string
   const targets: { left: number; right: number; top: number; bottom: number }[] = [
     { left: 0, right: 0, top: 0, bottom: 0 },
     { left: window.innerWidth, right: window.innerWidth, top: window.innerHeight, bottom: window.innerHeight },
+    { left: 0, right: window.innerWidth, top: CONTROL_BAR_BOTTOM, bottom: CONTROL_BAR_BOTTOM },
   ];
 
   for (const p of popoutPanels.value) {
@@ -113,6 +124,43 @@ function PanelTabBadge({ tabNum }: { tabNum: number }) {
   return <span class="tab-number-badge">{tabNum}</span>;
 }
 
+function renderPanelTabContent(
+  sid: string,
+  isVisible: boolean,
+  sessionMap: Map<string, any>,
+) {
+  const isJsonl = sid.startsWith('jsonl:');
+  const isFeedback = sid.startsWith('feedback:');
+  const isIframe = sid.startsWith('iframe:');
+  const isTerminal = sid.startsWith('terminal:');
+  const isCompanion = isJsonl || isFeedback || isIframe || isTerminal;
+  const realSid = isCompanion ? sid.slice(sid.indexOf(':') + 1) : sid;
+  const sess = sessionMap.get(realSid);
+
+  return (
+    <div key={sid} style={{ display: isVisible ? 'flex' : 'none', width: '100%', flex: 1, minHeight: 0 }}>
+      {isJsonl ? (
+        <JsonlView sessionId={realSid} />
+      ) : isFeedback ? (
+        sess?.feedbackId ? <FeedbackCompanionView feedbackId={sess.feedbackId} /> : <div class="companion-error">No feedback linked</div>
+      ) : isIframe ? (
+        sess?.url ? <IframeCompanionView url={sess.url} /> : <div class="companion-error">No URL available</div>
+      ) : isTerminal ? (
+        sess?.companionSessionId ? <TerminalCompanionView companionSessionId={sess.companionSessionId} /> : <div class="companion-error">No companion terminal</div>
+      ) : (
+        <SessionViewToggle
+          sessionId={sid}
+          isActive={isVisible}
+          onExit={() => markSessionExited(sid)}
+          onInputStateChange={(s) => setSessionInputState(sid, s)}
+          permissionProfile={sess?.permissionProfile}
+          mode={getViewMode(sid, sess?.permissionProfile)}
+        />
+      )}
+    </div>
+  );
+}
+
 function PanelView({ panel }: { panel: PopoutPanelState }) {
   const ids = panel.sessionIds;
   const activeId = panel.activeSessionId || ids[0];
@@ -125,7 +173,22 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
   const dragging = useRef(false);
   const dragMoved = useRef(false);
   const resizing = useRef<string | null>(null);
+  const splitDragging = useRef(false);
+  const prevActiveRef = useRef<string | null>(null);
   const startPos = useRef({ mx: 0, my: 0, x: 0, y: 0, w: 0, h: 0, dockedHeight: 0, dockedTopOffset: 0, dockedBaseTop: 0 });
+
+  // Sync companions when active session changes
+  useEffect(() => {
+    if (activeId && prevActiveRef.current !== activeId) {
+      syncPanelCompanions(panel.id, activeId, prevActiveRef.current);
+      prevActiveRef.current = activeId;
+    }
+  }, [activeId, panel.id]);
+
+  const isSplit = !!panel.splitEnabled;
+  const panelRightTabs = panel.rightPaneTabs || [];
+  const panelRightActive = panel.rightPaneActiveId || null;
+  const leftTabs = isSplit ? panelLeftTabs(panel) : ids;
 
   const hasTabs = ids.length > 1;
   const panelTop = docked ? getDockedPanelTop(panel.id) : undefined;
@@ -135,9 +198,11 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
   const isActive = activePanelId.value === panel.id;
 
   const isLeftDocked = docked && panel.dockedSide === 'left';
+  const _zOrders = panelZOrders.value;  // subscribe to signal
+  const panelZIdx = getPanelZIndex(panel);
   const panelStyle = docked
     ? isLeftDocked
-      ? { position: 'fixed' as const, left: sidebarWidth.value, top: panelTop, width: panel.dockedWidth, height: panel.dockedHeight }
+      ? { position: 'fixed' as const, left: sidebarWidth.value + (sidebarCollapsed.value ? 0 : 3), top: panelTop, width: panel.dockedWidth, height: panel.dockedHeight, zIndex: panelZIdx }
       : orientation === 'horizontal'
         ? (() => {
             const dockedPanels = popoutPanels.value.filter((p) => p.docked && p.visible && p.dockedSide !== 'left');
@@ -146,18 +211,20 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
             const topStart = 40;
             const availH = window.innerHeight - topStart;
             const perPanel = count > 0 ? availH / count : availH;
-            return { position: 'fixed' as const, right: 0, top: topStart + idx * perPanel, width: panel.dockedWidth, height: perPanel };
+            return { position: 'fixed' as const, right: 0, top: topStart + idx * perPanel, width: panel.dockedWidth, height: perPanel, zIndex: panelZIdx };
           })()
-        : { position: 'fixed' as const, right: 0, top: panelTop, width: panel.dockedWidth, height: panel.dockedHeight }
-    : { position: 'fixed' as const, left: panel.floatingRect.x, top: panel.floatingRect.y, width: panel.floatingRect.w, height: isMinimized ? (hasTabs ? 62 : 34) : panel.floatingRect.h };
+        : { position: 'fixed' as const, right: 0, top: panelTop, width: panel.dockedWidth, height: panel.dockedHeight, zIndex: panelZIdx }
+    : { position: 'fixed' as const, left: panel.floatingRect.x, top: panel.floatingRect.y, width: panel.floatingRect.w, height: isMinimized ? 34 : panel.floatingRect.h, zIndex: panelZIdx };
 
   const onHeaderDragStart = useCallback((e: MouseEvent) => {
-    if ((e.target as HTMLElement).closest('button, select, a, .popout-tab-bar, .id-dropdown-wrapper, .session-status-dot')) return;
+    if ((e.target as HTMLElement).closest('button, select, a, .id-dropdown-wrapper, .session-status-dot')) return;
     e.preventDefault();
     dragging.current = true;
     dragMoved.current = false;
-    const fr = panel.floatingRect;
-    startPos.current = { mx: e.clientX, my: e.clientY, x: fr.x, y: fr.y, w: fr.w, h: fr.h, dockedHeight: panel.dockedHeight, dockedTopOffset: 0, dockedBaseTop: 0 };
+    const cp = popoutPanels.value.find((p) => p.id === panel.id);
+    if (!cp) return;
+    const fr = cp.floatingRect;
+    startPos.current = { mx: e.clientX, my: e.clientY, x: fr.x, y: fr.y, w: fr.w, h: fr.h, dockedHeight: cp.dockedHeight, dockedTopOffset: 0, dockedBaseTop: 0 };
     const onMove = (ev: MouseEvent) => {
       if (!dragging.current) return;
       const dx = ev.clientX - startPos.current.mx;
@@ -278,16 +345,51 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
     document.addEventListener('mouseup', onUp);
   }, [panel.id]);
 
-  const showBadges = ctrlShiftHeld.value;
+  const onSplitDividerMouseDown = useCallback((e: MouseEvent) => {
+    e.preventDefault();
+    splitDragging.current = true;
+    const container = (e.currentTarget as HTMLElement).parentElement;
+    if (!container) return;
+    container.classList.add('dragging');
+    const containerRect = container.getBoundingClientRect();
+    const onMove = (ev: MouseEvent) => {
+      if (!splitDragging.current) return;
+      const ratio = (ev.clientX - containerRect.left) / containerRect.width;
+      setPanelSplitRatio(panel.id, ratio);
+    };
+    const onUp = () => {
+      splitDragging.current = false;
+      container.classList.remove('dragging');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, [panel.id]);
+
   const globalSessions = allNumberedSessions();
   const inputSt = activeId ? (sessionInputStates.value.get(activeId) || null) : null;
+  const tabsRef = useRef<HTMLDivElement>(null);
 
   function tabLabel(sid: string) {
+    const isJsonl = sid.startsWith('jsonl:');
+    const isFeedback = sid.startsWith('feedback:');
+    const isIframe = sid.startsWith('iframe:');
+    const isTerminal = sid.startsWith('terminal:');
+    const isCompanion = isJsonl || isFeedback || isIframe || isTerminal;
+    const realSid = isCompanion ? sid.slice(sid.indexOf(':') + 1) : sid;
     const custom = getSessionLabel(sid);
     if (custom) return custom;
-    const s = sessionMap.get(sid);
-    const isPlain = s?.permissionProfile === 'plain';
-    return isPlain ? `Term ${sid.slice(-6)}` : (s?.feedbackTitle || s?.agentName || `Sess ${sid.slice(-6)}`);
+    const s = sessionMap.get(realSid);
+    if (isJsonl) return `JSONL: ${s?.feedbackTitle || s?.agentName || realSid.slice(-6)}`;
+    if (isFeedback) return `FB: ${s?.feedbackTitle || realSid.slice(-6)}`;
+    if (isIframe) return `Page: ${realSid.slice(-6)}`;
+    if (isTerminal) return `Term: ${realSid.slice(-6)}`;
+    const isPlainSess = s?.permissionProfile === 'plain';
+    const plainLabel = s?.paneCommand
+      ? `${s.paneCommand}:${s.panePath || ''} \u2014 ${s?.paneTitle || sid.slice(-6)}`
+      : (s?.paneTitle || sid.slice(-6));
+    return isPlainSess ? `\u{1F5A5}\uFE0F ${plainLabel}` : (s?.feedbackTitle || s?.agentName || `Session ${sid.slice(-6)}`);
   }
 
   function globalNum(sid: string): number | null {
@@ -295,6 +397,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
     return idx >= 0 ? idx + 1 : null;
   }
 
+  const showBadges = ctrlShiftHeld.value;
   const activeGlobalNum = activeId ? globalNum(activeId) : null;
   const isPlain = session?.permissionProfile === 'plain';
   const appId = selectedAppId.value;
@@ -314,19 +417,29 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
         </div>
       )}
       <div
-        class={`${docked ? `popout-docked${isLeftDocked ? ' docked-left' : ''}` : 'popout-floating'}${isMinimized ? ' minimized' : ''}${isFocused ? ' panel-focused' : ''}${isActive ? ' panel-active' : ''}`}
+        class={`${docked ? `popout-docked${isLeftDocked ? ' docked-left' : ''}` : 'popout-floating'}${isMinimized ? ' minimized' : ''}${isFocused ? ' panel-focused' : ''}${isActive ? ' panel-active' : ''}${panel.alwaysOnTop ? ' always-on-top' : ''}`}
         style={panelStyle}
         data-panel-id={panel.id}
-        onMouseDown={() => { activePanelId.value = panel.id; }}
+        onMouseDown={() => { activePanelId.value = panel.id; bringToFront(panel.id); }}
       >
-      {hasTabs && (
-        <div class="popout-tab-bar" onWheel={(e: WheelEvent) => { const delta = (e as any).deltaX || (e as any).deltaY; if (delta) { e.preventDefault(); (e.currentTarget as HTMLElement).scrollLeft += delta; } }}>
+      <div class="popout-tab-bar" onMouseDown={onHeaderDragStart} onDblClick={() => {
+        if (!docked) {
+          updatePanel(panel.id, { minimized: !panel.minimized });
+          persistPopoutState();
+        }
+      }}>
+        <div ref={tabsRef} class="popout-tab-scroll" onWheel={(e: WheelEvent) => { const delta = (e as any).deltaX || (e as any).deltaY; if (delta) { e.preventDefault(); (e.currentTarget as HTMLElement).scrollLeft += delta; } }}>
           {ids.map((sid) => {
             const gn = globalNum(sid);
+            const tabSess = sessionMap.get(sid);
+            const tabExited = exitedSessions.value.has(sid);
+            const tabInputState = !tabExited ? (sessionInputStates.value.get(sid) || null) : null;
+            const tabIsPlain = tabSess?.permissionProfile === 'plain';
+            const isActiveTab = sid === activeId;
             return (
               <button
                 key={sid}
-                class={`popout-tab ${sid === activeId ? 'active' : ''}`}
+                class={`popout-tab ${isActiveTab ? 'active' : ''}`}
                 onMouseDown={(e) => {
                   if (e.button !== 0) return;
                   startTabDrag(e, {
@@ -334,27 +447,140 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
                     source: { panelId: panel.id },
                     label: tabLabel(sid),
                     onClickFallback: () => {
-                      updatePanel(panel.id, { activeSessionId: sid });
-                      persistPopoutState();
+                      if (!switchAutoJumpActiveSession(panel.id, sid)) {
+                        updatePanel(panel.id, { activeSessionId: sid });
+                        persistPopoutState();
+                      }
                     },
                   });
                 }}
-                title={sessionMap.get(sid)?.feedbackTitle || sid}
+                title={tabSess?.feedbackTitle || sid}
+                onDblClick={(e) => {
+                  e.stopPropagation();
+                  renameValue.value = getSessionLabel(sid) || '';
+                  renamingSessionId.value = sid;
+                }}
               >
-                {showBadges && !docked && gn !== null && <PanelTabBadge tabNum={gn} />}
-                <span>{tabLabel(sid)}</span>
+                <span
+                  class={`status-dot${tabExited ? ' exited' : ''}${tabIsPlain ? ' plain' : ''}${tabInputState ? ` ${tabInputState}` : ''}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                    popoutStatusMenuOpen.value = { sessionId: sid, panelId: panel.id, x: rect.left, y: rect.bottom + 4 };
+                  }}
+                >
+                  {ctrlShiftHeld.value && gn !== null && <PanelTabBadge tabNum={gn} />}
+                </span>
+                {renamingSessionId.value === sid ? (
+                  <input
+                    type="text"
+                    value={renameValue.value}
+                    onInput={(e) => { renameValue.value = (e.target as HTMLInputElement).value; }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') { setSessionLabel(sid, renameValue.value); renamingSessionId.value = null; }
+                      if (e.key === 'Escape') { renamingSessionId.value = null; }
+                    }}
+                    onBlur={() => { setSessionLabel(sid, renameValue.value); renamingSessionId.value = null; }}
+                    onClick={(e) => e.stopPropagation()}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    style="font-size:11px;padding:1px 4px;border:1px solid var(--pw-accent);border-radius:3px;background:var(--pw-input-bg);color:var(--pw-primary-text);width:120px;outline:none"
+                    ref={(el) => el?.focus()}
+                  />
+                ) : (
+                  <span class="popout-tab-label">{tabLabel(sid)}</span>
+                )}
                 <span class="popout-tab-close" onClick={(e) => { e.stopPropagation(); closeTab(sid); }}>&times;</span>
               </button>
             );
           })}
         </div>
-      )}
-      <div class="popout-header" onMouseDown={onHeaderDragStart} onDblClick={() => {
-        if (!docked) {
-          updatePanel(panel.id, { minimized: !panel.minimized });
-          persistPopoutState();
-        }
-      }}>
+        <span style="flex:1;min-width:40px" />
+        <div class="popout-window-controls">
+          <div class="window-menu-wrapper">
+            <button
+              class="btn-window-menu"
+              onClick={(e) => { e.stopPropagation(); popoutWindowMenuOpen.value = popoutWindowMenuOpen.value === panel.id ? null : panel.id; }}
+              title="Window options"
+            >
+              {'\u2261'}
+            </button>
+            {popoutWindowMenuOpen.value === panel.id && (
+              <div class="window-menu" onClick={(e) => e.stopPropagation()}>
+                {activeId && (
+                  <button onClick={() => { popoutWindowMenuOpen.value = null; popBackIn(activeId); }}>
+                    {'\u2B05'} Pop in <kbd>S</kbd>
+                  </button>
+                )}
+                <button onClick={() => { popoutWindowMenuOpen.value = null; toggleAlwaysOnTop(panel.id); }}>
+                  {panel.alwaysOnTop ? '\u2713 ' : ''}{'\u{1F4CC}'} Pin on top <kbd>W</kbd>
+                </button>
+                {!docked && (
+                  <button onClick={() => { popoutWindowMenuOpen.value = null; updatePanel(panel.id, { minimized: !panel.minimized }); persistPopoutState(); }}>
+                    {isMinimized ? '\u25A1 Restore' : '\u2212 Minimize'} <kbd>Space</kbd>
+                  </button>
+                )}
+                {!docked && (
+                  <button onClick={() => {
+                    popoutWindowMenuOpen.value = null;
+                    if (panel.maximized) {
+                      if (panel.preMaximizeRect) {
+                        updatePanel(panel.id, { maximized: false, floatingRect: panel.preMaximizeRect, preMaximizeRect: undefined });
+                      } else {
+                        updatePanel(panel.id, { maximized: false });
+                      }
+                    } else {
+                      updatePanel(panel.id, {
+                        maximized: true,
+                        minimized: false,
+                        preMaximizeRect: { ...panel.floatingRect },
+                        floatingRect: { x: 0, y: 40, w: window.innerWidth, h: window.innerHeight - 40 },
+                      });
+                    }
+                    persistPopoutState();
+                  }}>
+                    {panel.maximized ? '\u25A3 Restore size' : '\u25A1 Maximize'} <kbd>M</kbd>
+                  </button>
+                )}
+                <div class="window-menu-separator" />
+                <div class="window-menu-dock-row">
+                  <button
+                    class={isLeftDocked ? 'dock-active' : ''}
+                    onClick={() => {
+                      popoutWindowMenuOpen.value = null;
+                      if (isLeftDocked) {
+                        updatePanel(panel.id, { docked: false, minimized: false, grabY: 0 });
+                      } else {
+                        updatePanel(panel.id, { docked: true, dockedSide: 'left', dockedTopOffset: 0, minimized: false, grabY: 0, dockedHeight: docked ? panel.dockedHeight : panel.floatingRect.h, dockedWidth: docked ? panel.dockedWidth : panel.floatingRect.w });
+                      }
+                      persistPopoutState();
+                      window.dispatchEvent(new Event('resize'));
+                    }}
+                  >
+                    {'\u25C0'} Left <kbd>A</kbd>
+                  </button>
+                  <button
+                    class={docked && !isLeftDocked ? 'dock-active' : ''}
+                    onClick={() => {
+                      popoutWindowMenuOpen.value = null;
+                      if (docked && !isLeftDocked) {
+                        updatePanel(panel.id, { docked: false, minimized: false, grabY: 0 });
+                      } else {
+                        updatePanel(panel.id, { docked: true, dockedSide: 'right', dockedTopOffset: 0, minimized: false, grabY: 0, dockedHeight: docked ? panel.dockedHeight : panel.floatingRect.h, dockedWidth: docked ? panel.dockedWidth : panel.floatingRect.w });
+                      }
+                      persistPopoutState();
+                      window.dispatchEvent(new Event('resize'));
+                    }}
+                  >
+                    Right {'\u25B6'} <kbd>D</kbd>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+          <button class="btn-close-panel" onClick={() => { updatePanel(panel.id, { visible: false }); persistPopoutState(); }} title="Hide panel">&times;</button>
+        </div>
+      </div>
+      <div class="popout-header">
         {activeId && (
           <div class="id-dropdown-wrapper">
             <span
@@ -366,22 +592,58 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
             {showIdMenu && (
               <div class="id-dropdown-menu" onClick={() => { popoutIdMenuOpen.value = null; }}>
                 <button onClick={(e) => { e.stopPropagation(); popoutIdMenuOpen.value = null; copyWithTooltip(activeId, e as any); }}>
-                  Copy {activeId}
+                  Copy {activeId} <kbd>C</kbd>
                 </button>
                 <button onClick={(e) => { e.stopPropagation(); popoutIdMenuOpen.value = null; copyWithTooltip(`TMUX= tmux -L prompt-widget attach-session -t pw-${activeId}`, e as any); }}>
-                  Copy tmux command
+                  Copy tmux command <kbd>T</kbd>
                 </button>
                 {session?.jsonlPath && (
                   <button onClick={(e) => { e.stopPropagation(); popoutIdMenuOpen.value = null; copyWithTooltip(session.jsonlPath, e as any); }}>
-                    Copy JSONL path
+                    Copy JSONL path <kbd>J</kbd>
                   </button>
                 )}
+                {session?.jsonlPath && (() => {
+                  const panelRight = panel.rightPaneTabs || [];
+                  const jsonlActive = panelRight.includes(companionTabId(activeId, 'jsonl')) && panel.splitEnabled;
+                  return (
+                    <button onClick={() => { popoutIdMenuOpen.value = null; togglePanelCompanion(panel.id, activeId, 'jsonl'); }}>
+                      {jsonlActive ? '\u2713 ' : ''}JSONL companion <kbd>L</kbd>
+                    </button>
+                  );
+                })()}
+                {session?.feedbackId && (() => {
+                  const panelRight = panel.rightPaneTabs || [];
+                  const fbActive = panelRight.includes(companionTabId(activeId, 'feedback')) && panel.splitEnabled;
+                  return (
+                    <button onClick={() => { popoutIdMenuOpen.value = null; togglePanelCompanion(panel.id, activeId, 'feedback'); }}>
+                      {fbActive ? '\u2713 ' : ''}Feedback companion <kbd>F</kbd>
+                    </button>
+                  );
+                })()}
+                {session?.url && (() => {
+                  const panelRight = panel.rightPaneTabs || [];
+                  const iframeActive = panelRight.includes(companionTabId(activeId, 'iframe')) && panel.splitEnabled;
+                  return (
+                    <button onClick={() => { popoutIdMenuOpen.value = null; togglePanelCompanion(panel.id, activeId, 'iframe'); }}>
+                      {iframeActive ? '\u2713 ' : ''}Page iframe <kbd>I</kbd>
+                    </button>
+                  );
+                })()}
+                {session?.companionSessionId && (() => {
+                  const panelRight = panel.rightPaneTabs || [];
+                  const termActive = panelRight.includes(companionTabId(activeId, 'terminal')) && panel.splitEnabled;
+                  return (
+                    <button onClick={() => { popoutIdMenuOpen.value = null; togglePanelCompanion(panel.id, activeId, 'terminal'); }}>
+                      {termActive ? '\u2713 ' : ''}Terminal companion <kbd>M</kbd>
+                    </button>
+                  );
+                })()}
                 <div class="id-dropdown-separator" />
-                <button onClick={() => { popoutIdMenuOpen.value = null; popBackIn(activeId); }}>Pop back to tab bar</button>
-                <button onClick={() => { popoutIdMenuOpen.value = null; window.open(`#/session/${activeId}`, '_blank', 'width=900,height=600,menubar=no,toolbar=no'); }}>Open in window</button>
-                <button onClick={() => { popoutIdMenuOpen.value = null; window.open(`#/session/${activeId}`, '_blank'); }}>Open in browser tab</button>
+                <button onClick={() => { popoutIdMenuOpen.value = null; popBackIn(activeId); }}>Pop back to tab bar <kbd>P</kbd></button>
+                <button onClick={() => { popoutIdMenuOpen.value = null; window.open(`#/session/${activeId}`, '_blank', 'width=900,height=600,menubar=no,toolbar=no'); }}>Open in window <kbd>W</kbd></button>
+                <button onClick={() => { popoutIdMenuOpen.value = null; window.open(`#/session/${activeId}`, '_blank'); }}>Open in browser tab <kbd>B</kbd></button>
                 {!isExited && (
-                  <button onClick={() => { popoutIdMenuOpen.value = null; api.openSessionInTerminal(activeId).catch(() => {}); }}>Open in Terminal.app</button>
+                  <button onClick={() => { popoutIdMenuOpen.value = null; api.openSessionInTerminal(activeId).catch(() => {}); }}>Open in Terminal.app <kbd>A</kbd></button>
                 )}
               </div>
             )}
@@ -410,69 +672,17 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
               <option value="split">Split</option>
             </select>
           )}
-          {!hasTabs && activeId && (
-            <span
-              class={`session-status-dot popout-status-dot ${session?.status || 'pending'}${isPlain ? ' plain' : ''}${inputSt ? ` ${inputSt}` : ''}${isExited ? ' completed' : ''}`}
-              title={isExited ? 'exited' : inputSt === 'waiting' ? 'waiting for input' : inputSt === 'idle' ? 'idle' : session?.status || 'pending'}
-              onClick={(e) => {
-                e.stopPropagation();
-                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                popoutStatusMenuOpen.value = { sessionId: activeId, panelId: panel.id, x: rect.left, y: rect.bottom + 4 };
-              }}
-            />
-          )}
-          {hasTabs && activeId && session?.feedbackId && (
+          {activeId && session?.feedbackId && (
             <button class="btn-resolve" onClick={() => resolveSession(activeId, session.feedbackId)} title="Resolve">Resolve</button>
           )}
-          {hasTabs && activeId && (isExited ? (
+          {activeId && (isExited ? (
             <button onClick={() => resumeSession(activeId)} title="Resume">Resume</button>
           ) : (
             <button class="btn-kill" onClick={() => killSession(activeId)} title="Kill">Kill</button>
           ))}
-          {!docked && (
-            <button
-              onClick={() => { updatePanel(panel.id, { minimized: !panel.minimized }); persistPopoutState(); }}
-              title={isMinimized ? 'Restore' : 'Minimize'}
-            >
-              {isMinimized ? '\u25A1' : '\u2212'}
-            </button>
-          )}
-          <span class="dock-arrows">
-            <button
-              class={`dock-arrow dock-arrow-left${isLeftDocked ? ' dock-arrow-active' : ''}`}
-              onClick={() => {
-                if (isLeftDocked) {
-                  updatePanel(panel.id, { docked: false, minimized: false, grabY: 0 });
-                } else {
-                  updatePanel(panel.id, { docked: true, dockedSide: 'left', dockedTopOffset: 0, minimized: false, grabY: 0, dockedHeight: docked ? panel.dockedHeight : panel.floatingRect.h, dockedWidth: docked ? panel.dockedWidth : panel.floatingRect.w });
-                }
-                persistPopoutState();
-                window.dispatchEvent(new Event('resize'));
-              }}
-              title={isLeftDocked ? 'Undock to floating' : 'Dock to left edge'}
-            >
-              {'\u25C0'}
-            </button>
-            <button
-              class={`dock-arrow dock-arrow-right${docked && !isLeftDocked ? ' dock-arrow-active' : ''}`}
-              onClick={() => {
-                if (docked && !isLeftDocked) {
-                  updatePanel(panel.id, { docked: false, minimized: false, grabY: 0 });
-                } else {
-                  updatePanel(panel.id, { docked: true, dockedSide: 'right', dockedTopOffset: 0, minimized: false, grabY: 0, dockedHeight: docked ? panel.dockedHeight : panel.floatingRect.h, dockedWidth: docked ? panel.dockedWidth : panel.floatingRect.w });
-                }
-                persistPopoutState();
-                window.dispatchEvent(new Event('resize'));
-              }}
-              title={docked && !isLeftDocked ? 'Undock to floating' : 'Dock to right edge'}
-            >
-              {'\u25B6'}
-            </button>
-          </span>
-          <button class="btn-close-panel" onClick={() => { updatePanel(panel.id, { visible: false }); persistPopoutState(); }} title="Hide panel">&times;</button>
         </div>
       </div>
-      {!isMinimized && (
+      {!isMinimized && !isSplit && (
         <div class="popout-body">
           {activeId && (
             <SessionViewToggle
@@ -485,6 +695,90 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
               mode={viewMode}
             />
           )}
+        </div>
+      )}
+      {!isMinimized && isSplit && (
+        <div class="popout-split-container">
+          <div
+            class="popout-split-pane"
+            data-popout-split-pane={`${panel.id}:left`}
+            style={{ flex: panel.splitRatio ?? 0.5 }}
+          >
+            {hasTabs && leftTabs.length > 1 && (
+              <div class="split-pane-tab-bar">
+                <div class="popout-tab-scroll">
+                  {leftTabs.map((sid) => (
+                    <button
+                      key={sid}
+                      class={`popout-tab ${sid === activeId ? 'active' : ''}`}
+                      onClick={() => {
+                        if (!switchAutoJumpActiveSession(panel.id, sid)) {
+                          updatePanel(panel.id, { activeSessionId: sid });
+                          persistPopoutState();
+                        }
+                      }}
+                    >
+                      <span class="popout-tab-label">{tabLabel(sid)}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div class="popout-body">
+              {leftTabs.map((sid) => renderPanelTabContent(sid, sid === activeId, sessionMap))}
+            </div>
+          </div>
+          <div class="popout-split-divider" onMouseDown={onSplitDividerMouseDown} />
+          <div
+            class="popout-split-pane"
+            data-popout-split-pane={`${panel.id}:right`}
+            style={{ flex: 1 - (panel.splitRatio ?? 0.5) }}
+          >
+            {panelRightTabs.length > 1 && (
+              <div class="split-pane-tab-bar">
+                <div class="popout-tab-scroll">
+                  {panelRightTabs.map((sid) => (
+                    <button
+                      key={sid}
+                      class={`popout-tab ${sid === panelRightActive ? 'active' : ''}`}
+                      onClick={() => {
+                        updatePanel(panel.id, { rightPaneActiveId: sid });
+                        persistPopoutState();
+                      }}
+                    >
+                      <span class="popout-tab-label">{tabLabel(sid)}</span>
+                    </button>
+                  ))}
+                </div>
+                <button
+                  class="split-pane-unsplit-btn"
+                  onClick={() => disablePanelSplit(panel.id)}
+                  title="Close split pane"
+                >
+                  &times;
+                </button>
+              </div>
+            )}
+            {panelRightTabs.length === 1 && (
+              <div class="split-pane-tab-bar">
+                <div class="popout-tab-scroll">
+                  <span class="popout-tab active">
+                    <span class="popout-tab-label">{tabLabel(panelRightTabs[0])}</span>
+                  </span>
+                </div>
+                <button
+                  class="split-pane-unsplit-btn"
+                  onClick={() => disablePanelSplit(panel.id)}
+                  title="Close split pane"
+                >
+                  &times;
+                </button>
+              </div>
+            )}
+            <div class="popout-body">
+              {panelRightTabs.map((sid) => renderPanelTabContent(sid, sid === panelRightActive, sessionMap))}
+            </div>
+          </div>
         </div>
       )}
       {!isMinimized && (docked ? (
@@ -519,7 +813,6 @@ function DockedPanelGrabHandle({ panel }: { panel: PopoutPanelState }) {
   const orientation = dockedOrientation.value;
 
   const isLeft = panel.dockedSide === 'left';
-  const handleH = 48;
 
   const onGrabMouseDown = useCallback((e: MouseEvent) => {
     e.preventDefault();
@@ -539,21 +832,47 @@ function DockedPanelGrabHandle({ panel }: { panel: PopoutPanelState }) {
         const delta = ev.clientX - startMx;
         updatePanel(panel.id, { dockedWidth: Math.max(MIN_W, isLeft ? startW + delta : startW - delta) });
       }
-      // Vertical drag = move grab handle
+      // Vertical drag = move grab handle, resize panel if beyond bounds
       if (dy > 3) {
         const dyMove = ev.clientY - grabStart.current.my;
         let newGrabY = grabStart.current.grabY + dyMove;
         const cp = popoutPanels.value.find((p) => p.id === panel.id);
         if (cp?.visible) {
           const panelH = cp.dockedHeight;
-          newGrabY = Math.max(0, Math.min(newGrabY, panelH - handleH));
+          const topOff = cp.dockedTopOffset || 0;
+          const baseTop = getDockedPanelTop(panel.id) - topOff;
+          const maxGrabY = panelH - GRAB_HANDLE_H;
+          if (newGrabY < 0) {
+            // Dragging above top: grow panel upward
+            const overflow = -newGrabY;
+            const newTopOff = topOff - overflow;
+            const minTopOff = -(baseTop - 40);
+            const clampedTopOff = Math.max(minTopOff, newTopOff);
+            const actualGrow = topOff - clampedTopOff;
+            updatePanel(panel.id, {
+              grabY: 0,
+              dockedHeight: panelH + actualGrow,
+              dockedTopOffset: clampedTopOff,
+            });
+          } else if (newGrabY > maxGrabY) {
+            // Dragging below bottom: grow panel downward
+            const overflow = newGrabY - maxGrabY;
+            const maxH = window.innerHeight - (baseTop + topOff);
+            const newH = Math.min(maxH, panelH + overflow);
+            updatePanel(panel.id, {
+              grabY: newH - GRAB_HANDLE_H,
+              dockedHeight: newH,
+            });
+          } else {
+            updatePanel(panel.id, { grabY: newGrabY });
+          }
         } else {
           const minY = 40;
-          const maxY = window.innerHeight - handleH;
+          const maxY = window.innerHeight - GRAB_HANDLE_H;
           const baseTop = getDockedPanelTop(panel.id);
           newGrabY = Math.max(minY - baseTop, Math.min(newGrabY, maxY - baseTop));
+          updatePanel(panel.id, { grabY: newGrabY });
         }
-        updatePanel(panel.id, { grabY: newGrabY });
       }
     };
     const onUp = () => {
@@ -572,10 +891,13 @@ function DockedPanelGrabHandle({ panel }: { panel: PopoutPanelState }) {
   const globalSessions = allNumberedSessions();
   const activeId = panel.activeSessionId || panel.sessionIds[0];
   const globalIdx = globalSessions.indexOf(activeId);
-  const grabY = panel.grabY ?? 0;
+  const rawGrabY = panel.grabY ?? 0;
+  const grabY = panel.visible ? Math.max(0, Math.min(rawGrabY, panel.dockedHeight - GRAB_HANDLE_H)) : rawGrabY;
+  const _zOrders = panelZOrders.value;  // subscribe to signal
+  const grabZIndex = getPanelZIndex(panel) + 1;
 
   if (isLeft) {
-    const leftPos = sidebarWidth.value + (panel.visible ? panel.dockedWidth : 0);
+    const leftPos = sidebarWidth.value + (sidebarCollapsed.value ? 0 : 3) + (panel.visible ? panel.dockedWidth : 0);
     const panelTop = getDockedPanelTop(panel.id);
     return (
       <div
@@ -584,7 +906,8 @@ function DockedPanelGrabHandle({ panel }: { panel: PopoutPanelState }) {
           left: leftPos,
           right: 'auto',
           top: panelTop + grabY,
-          height: handleH,
+          height: GRAB_HANDLE_H,
+          zIndex: grabZIndex,
         }}
         onMouseDown={onGrabMouseDown}
         title="Drag to resize/reposition, click to toggle"
@@ -614,7 +937,8 @@ function DockedPanelGrabHandle({ panel }: { panel: PopoutPanelState }) {
         style={{
           right: rightPos,
           top: panelTopH + grabY,
-          height: handleH,
+          height: GRAB_HANDLE_H,
+          zIndex: grabZIndex,
         }}
         onMouseDown={onGrabMouseDown}
         title="Drag to resize/reposition, click to toggle"
@@ -636,7 +960,8 @@ function DockedPanelGrabHandle({ panel }: { panel: PopoutPanelState }) {
       style={{
         right: rightPos,
         top: panelTop + grabY,
-        height: handleH,
+        height: GRAB_HANDLE_H,
+        zIndex: grabZIndex,
       }}
       onMouseDown={onGrabMouseDown}
       title="Drag to resize/reposition, click to toggle"
@@ -653,6 +978,7 @@ export function PopoutPanel() {
   const panels = popoutPanels.value;
   const guides = snapGuides.value;
   const statusMenu = popoutStatusMenuOpen.value;
+  const hotkeyMenu = popoutHotkeyMenuOpen.value;
   const sessions = allSessions.value;
   const exited = exitedSessions.value;
 
@@ -669,6 +995,189 @@ export function PopoutPanel() {
     document.addEventListener('click', close);
     return () => document.removeEventListener('click', close);
   }, [popoutStatusMenuOpen.value]);
+
+  useEffect(() => {
+    if (!popoutWindowMenuOpen.value) return;
+    const close = () => { popoutWindowMenuOpen.value = null; };
+    document.addEventListener('click', close);
+    return () => document.removeEventListener('click', close);
+  }, [popoutWindowMenuOpen.value]);
+
+  // Keyboard shortcuts for the ID dropdown menu (matches bottom panel)
+  useEffect(() => {
+    const menuSessionId = popoutIdMenuOpen.value;
+    if (!menuSessionId) return;
+    const sessionMap = new Map(sessions.map((s: any) => [s.id, s]));
+    const onKey = (e: KeyboardEvent) => {
+      const key = e.key.toLowerCase();
+      let handled = true;
+      if (key === 'c') {
+        navigator.clipboard.writeText(menuSessionId);
+      } else if (key === 't') {
+        navigator.clipboard.writeText(`TMUX= tmux -L prompt-widget attach-session -t pw-${menuSessionId}`);
+      } else if (key === 'p') {
+        popBackIn(menuSessionId);
+      } else if (key === 'w') {
+        window.open(`#/session/${menuSessionId}`, '_blank', 'width=900,height=600,menubar=no,toolbar=no');
+      } else if (key === 'b') {
+        window.open(`#/session/${menuSessionId}`, '_blank');
+      } else if (key === 'a' && !exited.has(menuSessionId)) {
+        api.openSessionInTerminal(menuSessionId);
+      } else if (key === 'j') {
+        const s = sessionMap.get(menuSessionId);
+        if (s?.jsonlPath) navigator.clipboard.writeText(s.jsonlPath);
+      } else if (key === 'l') {
+        const s = sessionMap.get(menuSessionId);
+        if (s?.jsonlPath) {
+          const ownerPanel = panels.find((p) => p.sessionIds.includes(menuSessionId));
+          if (ownerPanel) togglePanelCompanion(ownerPanel.id, menuSessionId, 'jsonl');
+        }
+      } else if (key === 'f') {
+        const s = sessionMap.get(menuSessionId);
+        if (s?.feedbackId) {
+          const ownerPanel = panels.find((p) => p.sessionIds.includes(menuSessionId));
+          if (ownerPanel) togglePanelCompanion(ownerPanel.id, menuSessionId, 'feedback');
+        }
+      } else if (key === 'i') {
+        const s = sessionMap.get(menuSessionId);
+        if (s?.url) {
+          const ownerPanel = panels.find((p) => p.sessionIds.includes(menuSessionId));
+          if (ownerPanel) togglePanelCompanion(ownerPanel.id, menuSessionId, 'iframe');
+        }
+      } else if (key === 'm') {
+        const s = sessionMap.get(menuSessionId);
+        if (s?.companionSessionId) {
+          const ownerPanel = panels.find((p) => p.sessionIds.includes(menuSessionId));
+          if (ownerPanel) togglePanelCompanion(ownerPanel.id, menuSessionId, 'terminal');
+        }
+      } else if (key === 'escape') {
+        // just close
+      } else {
+        handled = false;
+      }
+      if (handled) {
+        e.preventDefault();
+        e.stopPropagation();
+        popoutIdMenuOpen.value = null;
+      }
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [popoutIdMenuOpen.value]);
+
+  // Keyboard shortcuts for the window menu
+  useEffect(() => {
+    const menuPanelId = popoutWindowMenuOpen.value;
+    if (!menuPanelId) return;
+    const onKey = (e: KeyboardEvent) => {
+      const key = e.key.toLowerCase();
+      let handled = true;
+      const panel = panels.find((p) => p.id === menuPanelId);
+      if (!panel) { popoutWindowMenuOpen.value = null; return; }
+      const activeId = panel.activeSessionId || panel.sessionIds[0];
+      if (key === 's' && activeId) {
+        popBackIn(activeId);
+      } else if (key === 'w') {
+        toggleAlwaysOnTop(panel.id);
+      } else if (key === 'a') {
+        const isLeftDocked = panel.docked && panel.dockedSide === 'left';
+        if (isLeftDocked) {
+          updatePanel(panel.id, { docked: false, minimized: false, grabY: 0 });
+        } else {
+          updatePanel(panel.id, { docked: true, dockedSide: 'left', dockedTopOffset: 0, minimized: false, grabY: 0, dockedHeight: panel.docked ? panel.dockedHeight : panel.floatingRect.h, dockedWidth: panel.docked ? panel.dockedWidth : panel.floatingRect.w });
+        }
+        persistPopoutState();
+        window.dispatchEvent(new Event('resize'));
+      } else if (key === 'd') {
+        const isRightDocked = panel.docked && panel.dockedSide !== 'left';
+        if (isRightDocked) {
+          updatePanel(panel.id, { docked: false, minimized: false, grabY: 0 });
+        } else {
+          updatePanel(panel.id, { docked: true, dockedSide: 'right', dockedTopOffset: 0, minimized: false, grabY: 0, dockedHeight: panel.docked ? panel.dockedHeight : panel.floatingRect.h, dockedWidth: panel.docked ? panel.dockedWidth : panel.floatingRect.w });
+        }
+        persistPopoutState();
+        window.dispatchEvent(new Event('resize'));
+      } else if (key === ' ' && !panel.docked) {
+        updatePanel(panel.id, { minimized: !panel.minimized });
+        persistPopoutState();
+      } else if (key === 'm' && !panel.docked) {
+        if (panel.maximized) {
+          if (panel.preMaximizeRect) {
+            updatePanel(panel.id, { maximized: false, floatingRect: panel.preMaximizeRect, preMaximizeRect: undefined });
+          } else {
+            updatePanel(panel.id, { maximized: false });
+          }
+        } else {
+          updatePanel(panel.id, {
+            maximized: true,
+            minimized: false,
+            preMaximizeRect: { ...panel.floatingRect },
+            floatingRect: { x: 0, y: 40, w: window.innerWidth, h: window.innerHeight - 40 },
+          });
+        }
+        persistPopoutState();
+      } else if (key === 'escape') {
+        // just close
+      } else {
+        handled = false;
+      }
+      if (handled) {
+        e.preventDefault();
+        e.stopPropagation();
+        popoutWindowMenuOpen.value = null;
+      }
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [popoutWindowMenuOpen.value]);
+
+  // Ctrl+Shift hotkey helper menu for the focused popout panel
+  useEffect(() => {
+    const held = ctrlShiftHeld.value;
+    if (!held || !showHotkeyHints.value) {
+      popoutHotkeyMenuOpen.value = null;
+      return;
+    }
+    // Find the focused/active popout panel
+    const focusedId = activePanelId.value;
+    const panel = panels.find((p) => p.id === focusedId && p.visible);
+    if (!panel) {
+      popoutHotkeyMenuOpen.value = null;
+      return;
+    }
+    const activeSessionId = panel.activeSessionId || panel.sessionIds[0];
+    if (!activeSessionId) {
+      popoutHotkeyMenuOpen.value = null;
+      return;
+    }
+
+    function updatePos() {
+      const panelEl = document.querySelector(`[data-panel-id="${panel!.id}"]`);
+      const dot = panelEl?.querySelector('.popout-tab.active .status-dot, .popout-tab .status-dot') as HTMLElement | null;
+      const scrollBox = panelEl?.querySelector('.popout-tab-scroll') as HTMLElement | null;
+      if (!dot) {
+        popoutHotkeyMenuOpen.value = null;
+        return;
+      }
+      const dotRect = dot.getBoundingClientRect();
+      if (scrollBox) {
+        const scrollRect = scrollBox.getBoundingClientRect();
+        if (dotRect.right < scrollRect.left || dotRect.left > scrollRect.right) {
+          popoutHotkeyMenuOpen.value = null;
+          return;
+        }
+      }
+      const x = dotRect.left;
+      const y = dotRect.bottom + 4;
+      popoutHotkeyMenuOpen.value = { sessionId: activeSessionId!, panelId: panel!.id, x, y };
+    }
+
+    updatePos();
+    const panelEl = document.querySelector(`[data-panel-id="${panel.id}"]`);
+    const scrollEl = panelEl?.querySelector('.popout-tab-scroll');
+    scrollEl?.addEventListener('scroll', updatePos, { passive: true });
+    return () => scrollEl?.removeEventListener('scroll', updatePos);
+  }, [ctrlShiftHeld.value, activePanelId.value]);
 
   if (panels.length === 0 && guides.length === 0) return null;
 
@@ -690,23 +1199,80 @@ export function PopoutPanel() {
         const menuSid = statusMenu.sessionId;
         const menuSess = sessions.find((s: any) => s.id === menuSid);
         const menuExited = exited.has(menuSid);
-        const isRunning = menuSess?.status === 'running';
         return (
           <div
             class="status-dot-menu"
             style={{ left: `${statusMenu.x}px`, top: `${statusMenu.y}px`, zIndex: 1100 }}
             onClick={(e) => e.stopPropagation()}
           >
-            {isRunning && !menuExited && (
-              <button onClick={() => { popoutStatusMenuOpen.value = null; killSession(menuSid); }}>Kill</button>
+            {!menuExited && (
+              <button onClick={() => { popoutStatusMenuOpen.value = null; killSession(menuSid); }}>
+                Kill {showHotkeyHints.value && <kbd>{'\u2303\u21E7'}K</kbd>}
+              </button>
             )}
-            {isRunning && menuSess?.feedbackId && (
-              <button onClick={() => { popoutStatusMenuOpen.value = null; resolveSession(menuSid, menuSess.feedbackId); }}>Resolve</button>
+            {menuSess?.feedbackId && (
+              <button onClick={() => { popoutStatusMenuOpen.value = null; resolveSession(menuSid, menuSess.feedbackId); }}>
+                Resolve {showHotkeyHints.value && <kbd>{'\u2303\u21E7'}R</kbd>}
+              </button>
+            )}
+            {!menuExited && (
+              <button onClick={() => { popoutStatusMenuOpen.value = null; popBackIn(menuSid); }}>
+                Pop back in
+              </button>
             )}
             {menuExited && (
               <button onClick={() => { popoutStatusMenuOpen.value = null; resumeSession(menuSid); }}>Resume</button>
             )}
-            <button onClick={() => { popoutStatusMenuOpen.value = null; closeTab(menuSid); }}>Close tab</button>
+            <button onClick={() => {
+              popoutStatusMenuOpen.value = null;
+              renameValue.value = getSessionLabel(menuSid) || '';
+              renamingSessionId.value = menuSid;
+            }}>
+              Rename
+            </button>
+            {getSessionLabel(menuSid) && (
+              <button onClick={() => { popoutStatusMenuOpen.value = null; setSessionLabel(menuSid, ''); }}>
+                Clear name
+              </button>
+            )}
+            <button onClick={() => { popoutStatusMenuOpen.value = null; closeTab(menuSid); }}>
+              Close tab {showHotkeyHints.value && <kbd>{'\u2303\u21E7'}W</kbd>}
+            </button>
+          </div>
+        );
+      })()}
+      {hotkeyMenu && !statusMenu && (() => {
+        const hkSid = hotkeyMenu.sessionId;
+        const hkSess = sessions.find((s: any) => s.id === hkSid);
+        const hkExited = exited.has(hkSid);
+        return (
+          <div
+            class="status-dot-menu"
+            style={{ left: `${hotkeyMenu.x}px`, top: `${hotkeyMenu.y}px`, zIndex: 1100 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {!hkExited && (
+              <button onClick={() => killSession(hkSid)}>
+                Kill <kbd>K</kbd>
+              </button>
+            )}
+            {hkSess?.feedbackId && (
+              <button onClick={() => resolveSession(hkSid, hkSess.feedbackId)}>
+                Resolve <kbd>R</kbd>
+              </button>
+            )}
+            <button onClick={() => { popoutIdMenuOpen.value = popoutIdMenuOpen.value ? null : hkSid; }}>
+              Session menu <kbd>P</kbd>
+            </button>
+            <button onClick={() => { popoutWindowMenuOpen.value = popoutWindowMenuOpen.value ? null : hotkeyMenu.panelId; }}>
+              Window menu <kbd>E</kbd>
+            </button>
+            {hkExited && (
+              <button onClick={() => resumeSession(hkSid)}>Resume</button>
+            )}
+            <button onClick={() => closeTab(hkSid)}>
+              Close tab <kbd>W</kbd>
+            </button>
           </div>
         );
       })()}

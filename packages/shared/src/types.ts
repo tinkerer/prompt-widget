@@ -97,6 +97,25 @@ export interface ControlAction {
   icon?: string;
 }
 
+export interface RequestPanelSuggestion {
+  label: string;
+  prompt: string;
+}
+
+export interface RequestPanelPreference {
+  id: string;
+  label: string;
+  promptSnippet: string;
+  default?: boolean;
+}
+
+export interface RequestPanelConfig {
+  suggestions: RequestPanelSuggestion[];
+  preferences: RequestPanelPreference[];
+  defaultAgentId?: string;
+  promptPrefix?: string;
+}
+
 export interface Application {
   id: string;
   name: string;
@@ -106,6 +125,7 @@ export interface Application {
   hooks: string[];
   description: string;
   controlActions: ControlAction[];
+  requestPanel: RequestPanelConfig;
   createdAt: string;
   updatedAt: string;
 }
@@ -234,6 +254,53 @@ export interface AggregateResponse {
   clusters: FeedbackCluster[];
   totalGroups: number;
   totalItems: number;
+}
+
+export type MachineType = 'local' | 'remote' | 'cloud';
+export type MachineStatus = 'online' | 'offline';
+
+export interface MachineCapabilities {
+  maxSessions?: number;
+  hasTmux?: boolean;
+  hasDocker?: boolean;
+  hasClaudeCli?: boolean;
+}
+
+export interface Machine {
+  id: string;
+  name: string;
+  hostname: string | null;
+  address: string | null;
+  type: MachineType;
+  status: MachineStatus;
+  lastSeenAt: string | null;
+  capabilities: MachineCapabilities | null;
+  tags: string[] | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type HarnessConfigStatus = 'stopped' | 'starting' | 'running' | 'error';
+
+export interface HarnessConfig {
+  id: string;
+  appId: string | null;
+  machineId: string | null;
+  name: string;
+  status: HarnessConfigStatus;
+  appImage: string | null;
+  appPort: number | null;
+  appInternalPort: number | null;
+  serverPort: number | null;
+  browserMcpPort: number | null;
+  targetAppUrl: string | null;
+  envVars: Record<string, string> | null;
+  launcherId: string | null;
+  lastStartedAt: string | null;
+  lastStoppedAt: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface LoginRequest {

@@ -254,7 +254,7 @@ export async function dispatchAgentSession(params: {
   const now = new Date().toISOString();
   const claudeSessionId = crypto.randomUUID();
 
-  // Resolve launcher: explicit param > agent endpoint preference > local
+  // Resolve launcher: explicit param > agent endpoint preference > harnessConfigId > local
   let targetLauncherId = params.launcherId || null;
   if (!targetLauncherId) {
     const agent = db
@@ -264,6 +264,17 @@ export async function dispatchAgentSession(params: {
       .get();
     if (agent?.preferredLauncherId) {
       targetLauncherId = agent.preferredLauncherId;
+    }
+    // Try harnessConfigId — look up the harness config's connected launcher
+    if (!targetLauncherId && agent?.harnessConfigId) {
+      const harnessConfig = db
+        .select()
+        .from(schema.harnessConfigs)
+        .where(eq(schema.harnessConfigs.id, agent.harnessConfigId))
+        .get();
+      if (harnessConfig?.launcherId) {
+        targetLauncherId = harnessConfig.launcherId;
+      }
     }
   }
 
@@ -367,6 +378,81 @@ export async function dispatchTerminalSession(params: {
     });
   } catch (err) {
     console.error(`Failed to spawn terminal session ${sessionId}:`, err);
+    db.update(schema.agentSessions)
+      .set({ status: 'failed', completedAt: new Date().toISOString() })
+      .where(eq(schema.agentSessions.id, sessionId))
+      .run();
+    throw err;
+  }
+
+  return { sessionId };
+}
+
+export async function dispatchCompanionTerminal(params: {
+  parentSessionId: string;
+  cwd: string;
+}): Promise<{ sessionId: string }> {
+  const sessionId = ulid();
+  const now = new Date().toISOString();
+
+  db.insert(schema.agentSessions)
+    .values({
+      id: sessionId,
+      feedbackId: null,
+      agentEndpointId: null,
+      permissionProfile: 'plain',
+      parentSessionId: params.parentSessionId,
+      status: 'pending',
+      outputBytes: 0,
+      createdAt: now,
+    })
+    .run();
+
+  try {
+    await spawnAgentSession({
+      sessionId,
+      cwd: params.cwd,
+      permissionProfile: 'plain',
+    });
+  } catch (err) {
+    console.error(`Failed to spawn companion terminal ${sessionId}:`, err);
+    db.update(schema.agentSessions)
+      .set({ status: 'failed', completedAt: new Date().toISOString() })
+      .where(eq(schema.agentSessions.id, sessionId))
+      .run();
+    throw err;
+  }
+
+  return { sessionId };
+}
+
+export async function dispatchTmuxAttachSession(params: {
+  tmuxTarget: string;
+  appId?: string | null;
+}): Promise<{ sessionId: string }> {
+  const sessionId = ulid();
+  const now = new Date().toISOString();
+
+  db.insert(schema.agentSessions)
+    .values({
+      id: sessionId,
+      feedbackId: null,
+      agentEndpointId: null,
+      permissionProfile: 'plain',
+      status: 'pending',
+      outputBytes: 0,
+      createdAt: now,
+    })
+    .run();
+
+  try {
+    await spawnAgentSession({
+      sessionId,
+      cwd: process.cwd(),
+      permissionProfile: 'plain',
+    });
+  } catch (err) {
+    console.error(`Failed to attach tmux session ${sessionId}:`, err);
     db.update(schema.agentSessions)
       .set({ status: 'failed', completedAt: new Date().toISOString() })
       .where(eq(schema.agentSessions.id, sessionId))

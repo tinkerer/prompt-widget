@@ -224,15 +224,25 @@ async function captureHtmlToImage(opts?: CaptureOptions): Promise<Blob | null> {
     }
     cleanup();
 
-    // Sanitize SVG — strip characters invalid in XML 1.0
-    const sanitized = svgDataUri.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+    // Re-encode SVG as base64 to avoid character-escaping issues that break
+    // Image loading (unescaped &, #, unicode, etc. in the charset=utf-8 data URI)
+    const svgPrefix = 'data:image/svg+xml;charset=utf-8,';
+    let safeSrc: string;
+    if (svgDataUri.startsWith(svgPrefix)) {
+      const rawSvg = decodeURIComponent(svgDataUri.slice(svgPrefix.length));
+      const sanitized = rawSvg.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+      safeSrc = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(sanitized)));
+    } else {
+      // Fallback: sanitize in place
+      safeSrc = svgDataUri.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+    }
 
     // Load as image, draw to canvas, convert to blob
     const img = await new Promise<HTMLImageElement>((resolve, reject) => {
       const image = new Image();
       image.onload = () => resolve(image);
-      image.onerror = () => reject(new Error(`SVG image load failed (SVG ${(sanitized.length / 1024 / 1024).toFixed(1)}MB)`));
-      image.src = sanitized;
+      image.onerror = () => reject(new Error(`SVG image load failed (SVG ${(safeSrc.length / 1024 / 1024).toFixed(1)}MB)`));
+      image.src = safeSrc;
     });
 
     const canvas = document.createElement('canvas');

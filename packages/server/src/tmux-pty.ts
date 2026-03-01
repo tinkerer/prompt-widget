@@ -158,6 +158,76 @@ export function listPwTmuxSessions(): string[] {
   }
 }
 
+export interface TmuxSessionInfo {
+  name: string;
+  windows: number;
+  created: string;
+  attached: boolean;
+}
+
+export function listDefaultTmuxSessions(): TmuxSessionInfo[] {
+  try {
+    const output = execFileSync('tmux', [
+      'list-sessions', '-F',
+      '#{session_name}\t#{session_windows}\t#{session_created}\t#{session_attached}',
+    ], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    return output
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .filter(line => !line.startsWith(TMUX_PREFIX))
+      .map(line => {
+        const [name, windows, created, attached] = line.split('\t');
+        return {
+          name,
+          windows: parseInt(windows, 10) || 1,
+          created: new Date(parseInt(created, 10) * 1000).toISOString(),
+          attached: attached === '1',
+        };
+      });
+  } catch {
+    return [];
+  }
+}
+
+export function attachDefaultTmuxSession(params: {
+  sessionId: string;
+  tmuxTarget: string;
+  cols: number;
+  rows: number;
+}): { ptyProcess: pty.IPty; tmuxSessionName: string } {
+  const { sessionId, tmuxTarget, cols, rows } = params;
+  const pwName = tmuxName(sessionId);
+
+  // Create a pw-prefixed tmux session in our socket that runs `tmux attach -t <target>` on the default server.
+  // This lets us bridge the default tmux session into our prompt-widget PTY infrastructure.
+  const attachCmd = `tmux attach-session -t ${tmuxTarget.replace(/'/g, "'\\''")}`;
+  execFileSync('tmux', [
+    ...TMUX_SOCKET,
+    '-f', PW_TMUX_CONF,
+    'new-session', '-d',
+    '-s', pwName,
+    '-x', String(cols),
+    '-y', String(rows),
+    attachCmd,
+  ], {
+    stdio: 'pipe',
+    env: cleanEnv(),
+  });
+
+  const ptyProcess = pty.spawn('tmux', [...TMUX_SOCKET, 'attach-session', '-t', pwName], {
+    name: 'xterm-256color',
+    cols,
+    rows,
+    env: cleanEnv(),
+  });
+
+  return { ptyProcess, tmuxSessionName: pwName };
+}
+
 export function detachTmuxClients(sessionId: string): void {
   const name = tmuxName(sessionId);
   spawnSync('tmux', [...TMUX_SOCKET, 'detach-client', '-s', name], { stdio: 'pipe' });

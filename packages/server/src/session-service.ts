@@ -17,6 +17,7 @@ import {
   captureTmuxPane,
   listPwTmuxSessions,
   detachTmuxClients,
+  attachDefaultTmuxSession,
 } from './tmux-pty.js';
 
 const PORT = parseInt(process.env.SESSION_SERVICE_PORT || '3002', 10);
@@ -67,22 +68,26 @@ function extractOscTitle(data: string): string | null {
 }
 
 // Classify a title as active, idle, or waiting.
-// When the title indicates idle (✳), check visible text for permission prompts
-// or interactive selection prompts (arrow key navigation, Enter to select).
-// We match on specific prompt text rather than "Esc to cancel" because the
-// auto-accept-edits status bar also contains "Esc to cancel".
+// When the title indicates idle (✳), check the LAST FEW LINES of visible text
+// for permission prompts or interactive selection prompts.
+// Only checking the tail avoids false positives when an agent's output text
+// *discusses* these patterns (e.g. "arrow keys" appearing in code analysis).
 function classifyFromTitle(title: string, visibleText: string): InputState {
   const firstChar = title.charAt(0);
   if (BRAILLE_SPINNERS.has(firstChar)) return 'active';
   if (firstChar !== '✳') return 'active'; // unknown title = assume active
 
-  if (/Do you want to .+\?/.test(visibleText)) return 'waiting';
-  if (visibleText.includes('Would you like to proceed')) return 'waiting';
+  // Only check the last ~8 lines where actual prompts appear
+  const lines = visibleText.trimEnd().split('\n');
+  const tail = lines.slice(-8).join('\n');
+
+  if (/Do you want to .+\?/.test(tail)) return 'waiting';
+  if (tail.includes('Would you like to proceed')) return 'waiting';
   // Interactive selection prompts (fzf, inquirer, Claude Code menus)
-  if (/enter to select/i.test(visibleText)) return 'waiting';
-  if (/arrow keys/i.test(visibleText)) return 'waiting';
-  if (/use the arrows/i.test(visibleText)) return 'waiting';
-  if (/↑.*↓|↓.*↑/.test(visibleText)) return 'waiting';
+  if (/enter to select/i.test(tail)) return 'waiting';
+  if (/arrow keys/i.test(tail)) return 'waiting';
+  if (/use the arrows/i.test(tail)) return 'waiting';
+  if (/↑.*↓|↓.*↑/.test(tail)) return 'waiting';
   return 'idle';
 }
 
@@ -273,47 +278,61 @@ function spawnSession(params: {
   allowedTools?: string | null;
   claudeSessionId?: string;
   resumeSessionId?: string;
+  tmuxTarget?: string;
 }): void {
-  const { sessionId, prompt = '', cwd, permissionProfile, allowedTools, claudeSessionId, resumeSessionId } = params;
+  const { sessionId, prompt = '', cwd, permissionProfile, allowedTools, claudeSessionId, resumeSessionId, tmuxTarget } = params;
 
   if (activeSessions.has(sessionId)) {
     throw new Error(`Session ${sessionId} is already running`);
   }
 
-  const { command, args } = buildClaudeArgs(
-    prompt,
-    permissionProfile,
-    allowedTools,
-    claudeSessionId,
-    resumeSessionId,
-  );
-
   const useTmux = isTmuxAvailable();
-  console.log(`[session-service] Spawning session ${sessionId}: profile=${permissionProfile}, cwd=${cwd}, tmux=${useTmux}`);
-
   let ptyProcess: pty.IPty;
   let tmuxSessionName: string | null = null;
 
-  if (useTmux) {
-    const result = spawnInTmux({
+  if (tmuxTarget) {
+    // Attach to an existing tmux session from the default server
+    console.log(`[session-service] Attaching session ${sessionId} to tmux target: ${tmuxTarget}`);
+    const result = attachDefaultTmuxSession({
       sessionId,
-      command,
-      args,
-      cwd,
+      tmuxTarget,
       cols: 120,
       rows: 40,
     });
     ptyProcess = result.ptyProcess;
     tmuxSessionName = result.tmuxSessionName;
   } else {
-    const { CLAUDECODE, ...cleanedEnv } = process.env as Record<string, string>;
-    ptyProcess = pty.spawn(command, args, {
-      name: 'xterm-256color',
-      cols: 120,
-      rows: 40,
-      cwd,
-      env: { ...cleanedEnv, TERM: 'xterm-256color' },
-    });
+    const { command, args } = buildClaudeArgs(
+      prompt,
+      permissionProfile,
+      allowedTools,
+      claudeSessionId,
+      resumeSessionId,
+    );
+
+    console.log(`[session-service] Spawning session ${sessionId}: profile=${permissionProfile}, cwd=${cwd}, tmux=${useTmux}`);
+
+    if (useTmux) {
+      const result = spawnInTmux({
+        sessionId,
+        command,
+        args,
+        cwd,
+        cols: 120,
+        rows: 40,
+      });
+      ptyProcess = result.ptyProcess;
+      tmuxSessionName = result.tmuxSessionName;
+    } else {
+      const { CLAUDECODE, ...cleanedEnv } = process.env as Record<string, string>;
+      ptyProcess = pty.spawn(command, args, {
+        name: 'xterm-256color',
+        cols: 120,
+        rows: 40,
+        cwd,
+        env: { ...cleanedEnv, TERM: 'xterm-256color' },
+      });
+    }
   }
 
   const proc: AgentProcess = {
@@ -702,17 +721,17 @@ app.get('/waiting', (c) => {
 
 app.post('/spawn', async (c) => {
   const body = await c.req.json();
-  const { sessionId, prompt, cwd, permissionProfile, allowedTools, claudeSessionId, resumeSessionId } = body;
+  const { sessionId, prompt, cwd, permissionProfile, allowedTools, claudeSessionId, resumeSessionId, tmuxTarget } = body;
 
   if (!sessionId || !cwd || !permissionProfile) {
     return c.json({ error: 'Missing required fields' }, 400);
   }
-  if (permissionProfile !== 'plain' && !prompt && !resumeSessionId) {
+  if (permissionProfile !== 'plain' && !prompt && !resumeSessionId && !tmuxTarget) {
     return c.json({ error: 'Prompt required for non-plain sessions' }, 400);
   }
 
   try {
-    spawnSession({ sessionId, prompt, cwd, permissionProfile, allowedTools, claudeSessionId, resumeSessionId });
+    spawnSession({ sessionId, prompt, cwd, permissionProfile, allowedTools, claudeSessionId, resumeSessionId, tmuxTarget });
     return c.json({ ok: true, sessionId });
   } catch (err) {
     const pending = pendingConnections.get(sessionId);

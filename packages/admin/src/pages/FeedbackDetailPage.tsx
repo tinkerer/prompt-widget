@@ -1,9 +1,12 @@
 import { signal, effect } from '@preact/signals';
+import { marked } from 'marked';
 import { api } from '../lib/api.js';
 import { navigate } from '../lib/state.js';
 import { openSession, resumeSession } from '../lib/sessions.js';
 import { copyWithTooltip } from '../lib/clipboard.js';
 import { CropEditor } from '../components/CropEditor.js';
+
+marked.setOptions({ gfm: true, breaks: true });
 
 const feedback = signal<any>(null);
 const loading = signal(true);
@@ -169,11 +172,10 @@ async function doDispatch() {
   } catch (err: any) {
     const msg = err.message || 'Unknown error';
     const isServiceDown = msg.includes('unreachable') || msg.includes('503');
-    if (isServiceDown && confirm(`Dispatch failed — session service may be down.\n\n${msg}\n\nRetry?`)) {
-      dispatchLoading.value = false;
-      return doDispatch();
-    } else if (!isServiceDown) {
-      alert('Dispatch failed: ' + msg);
+    if (isServiceDown) {
+      error.value = `Dispatch failed — session service may be down: ${msg}`;
+    } else {
+      error.value = 'Dispatch failed: ' + msg;
     }
   } finally {
     dispatchLoading.value = false;
@@ -310,11 +312,12 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
               </div>
             ) : (
               <div
-                class={`detail-description${!fb.description ? ' detail-description-empty' : ''}`}
+                class={`detail-description markdown-body${!fb.description ? ' detail-description-empty' : ''}`}
                 title="Click to edit"
                 onClick={() => { editDescValue.value = fb.description || ''; editingDescription.value = true; }}
+                dangerouslySetInnerHTML={fb.description ? { __html: marked.parse(fb.description) as string } : undefined}
               >
-                {fb.description || 'No description'}
+                {fb.description ? undefined : 'No description'}
               </div>
             )}
 

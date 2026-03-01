@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { eq, desc, ne, and } from 'drizzle-orm';
 import { homedir } from 'node:os';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, openSync, readSync, closeSync } from 'node:fs';
 import { db, schema } from '../db/index.js';
 import { killSession } from '../agent-sessions.js';
 import { resumeAgentSession, dispatchTerminalSession } from '../dispatch.js';
@@ -11,6 +11,99 @@ function computeJsonlPath(projectDir: string | null, claudeSessionId: string | n
   if (!projectDir || !claudeSessionId) return null;
   const sanitized = projectDir.replaceAll('/', '-').replaceAll('.', '-');
   return `${homedir()}/.claude/projects/${sanitized}/${claudeSessionId}.jsonl`;
+}
+
+// Find continuation JSONL files when Claude Code rotates sessionId mid-conversation.
+// Returns ordered list of JSONL paths: [original, continuation1, continuation2, ...]
+function findContinuationJsonls(mainJsonlPath: string): string[] {
+  const dir = mainJsonlPath.replace(/\/[^/]+$/, '');
+  if (!existsSync(dir)) return [];
+
+  // Get the last timestamp from the main file
+  const mainContent = readFileSync(mainJsonlPath, 'utf-8');
+  const mainLines = mainContent.trimEnd().split('\n');
+  let lastTimestamp = '';
+  for (let i = mainLines.length - 1; i >= 0; i--) {
+    try {
+      const obj = JSON.parse(mainLines[i]);
+      if (obj.timestamp) { lastTimestamp = obj.timestamp; break; }
+    } catch { /* skip */ }
+  }
+  if (!lastTimestamp) return [];
+
+  const mainBasename = mainJsonlPath.split('/').pop()!;
+  const candidates: { path: string; firstTimestamp: string }[] = [];
+
+  for (const file of readdirSync(dir)) {
+    if (!file.endsWith('.jsonl') || file === mainBasename) continue;
+    const fullPath = `${dir}/${file}`;
+    try {
+      // Read just the first few KB to find the first timestamp
+      const fd = openSync(fullPath, 'r');
+      const buf = Buffer.alloc(4096);
+      const bytesRead = readSync(fd, buf, 0, 4096, 0);
+      closeSync(fd);
+      const head = buf.toString('utf-8', 0, bytesRead);
+      for (const line of head.split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          const obj = JSON.parse(line);
+          if (obj.timestamp && obj.type !== 'file-history-snapshot') {
+            // Only include if its first timestamp matches the main file's last timestamp (within 1s)
+            const mainTime = new Date(lastTimestamp).getTime();
+            const candidateTime = new Date(obj.timestamp).getTime();
+            if (Math.abs(candidateTime - mainTime) < 2000) {
+              candidates.push({ path: fullPath, firstTimestamp: obj.timestamp });
+            }
+            break;
+          }
+        } catch { /* skip */ }
+      }
+    } catch { /* skip unreadable files */ }
+  }
+
+  // Sort by first timestamp
+  candidates.sort((a, b) => a.firstTimestamp.localeCompare(b.firstTimestamp));
+  return candidates.map(c => c.path);
+}
+
+function filterJsonlLines(text: string): string[] {
+  return text.split('\n').filter(line => {
+    if (!line.trim()) return false;
+    try {
+      const obj = JSON.parse(line);
+      return obj.type !== 'progress' && obj.type !== 'file-history-snapshot';
+    } catch {
+      return true;
+    }
+  });
+}
+
+function readJsonlWithSubagents(filePath: string, out: string[]): void {
+  if (!existsSync(filePath)) return;
+  const raw = readFileSync(filePath, 'utf-8');
+  out.push(...filterJsonlLines(raw));
+
+  // Include subagent JSONL files
+  const subagentDir = filePath.replace(/\.jsonl$/, '') + '/subagents';
+  if (existsSync(subagentDir)) {
+    try {
+      const files = readdirSync(subagentDir).filter(f => f.endsWith('.jsonl')).sort();
+      for (const file of files) {
+        const content = readFileSync(`${subagentDir}/${file}`, 'utf-8');
+        const agentId = file.replace(/^agent-/, '').replace(/\.jsonl$/, '');
+        for (const line of filterJsonlLines(content)) {
+          try {
+            const obj = JSON.parse(line);
+            obj._subagentId = agentId;
+            out.push(JSON.stringify(obj));
+          } catch {
+            out.push(line);
+          }
+        }
+      }
+    } catch { /* ignore */ }
+  }
 }
 
 export const agentSessionRoutes = new Hono();
@@ -178,18 +271,17 @@ agentSessionRoutes.get('/:id/jsonl', async (c) => {
     return c.json({ error: `JSONL file not found: ${jsonlPath}` }, 404);
   }
 
-  const raw = readFileSync(jsonlPath, 'utf-8');
-  const filtered = raw.split('\n').filter(line => {
-    if (!line.trim()) return false;
-    try {
-      const obj = JSON.parse(line);
-      return obj.type !== 'progress' && obj.type !== 'file-history-snapshot';
-    } catch {
-      return true;
-    }
-  }).join('\n');
+  const allLines: string[] = [];
+  // Read main file + continuations
+  const continuations = findContinuationJsonls(jsonlPath);
+  console.log(`[jsonl] ${id}: main=${jsonlPath}, continuations=${continuations.length}`, continuations);
+  const jsonlFiles = [jsonlPath, ...continuations];
+  for (const filePath of jsonlFiles) {
+    readJsonlWithSubagents(filePath, allLines);
+  }
+  console.log(`[jsonl] ${id}: total lines=${allLines.length}`);
 
-  return c.text(filtered);
+  return c.text(allLines.join('\n'));
 });
 
 agentSessionRoutes.post('/:id/tail-jsonl', async (c) => {

@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'preact/hooks';
 import { api } from '../lib/api.js';
 import { navigate, isEmbedded } from '../lib/state.js';
 import { allSessions, openSession, closeTab, deleteSession, permanentlyDeleteSession, spawnTerminal, sessionInputStates, includeDeletedInPolling } from '../lib/sessions.js';
+import { DeletedItemsPanel, trackDeletion } from '../components/DeletedItemsPanel.js';
 
 const filterStatus = signal('');
 const feedbackMap = signal<Record<string, string>>({});
@@ -62,13 +63,15 @@ function formatDuration(startedAt: string | null, completedAt: string | null): s
 }
 
 async function permanentlyDelete(id: string) {
-  if (!confirm('Permanently delete this session? This cannot be undone.')) return;
   await permanentlyDeleteSession(id);
+  trackDeletion('sessions', id, `Session ${id.slice(-8)}`);
 }
 
 async function permanentlyDeleteAll(ids: string[]) {
-  if (!confirm(`Permanently delete ${ids.length} session(s)? This cannot be undone.`)) return;
   await Promise.all(ids.map((id) => permanentlyDeleteSession(id)));
+  for (const id of ids) {
+    trackDeletion('sessions', id, `Session ${id.slice(-8)}`);
+  }
 }
 
 export function SessionsPage({ appId }: { appId?: string | null }) {
@@ -224,6 +227,7 @@ export function SessionsPage({ appId }: { appId?: string | null }) {
           );
         })}
       </div>
+      <DeletedItemsPanel type="sessions" />
     </div>
   );
 }

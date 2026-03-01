@@ -1,5 +1,7 @@
 import type { WebSocket } from 'ws';
 import type { LauncherCapabilities, HarnessMetadata } from '@prompt-widget/shared';
+import { eq } from 'drizzle-orm';
+import { db, schema } from './db/index.js';
 
 export interface LauncherInfo {
   id: string;
@@ -12,6 +14,8 @@ export interface LauncherInfo {
   capabilities: LauncherCapabilities;
   harness?: HarnessMetadata;
   isLocal?: boolean;
+  machineId?: string;
+  harnessConfigId?: string;
 }
 
 const launchers = new Map<string, LauncherInfo>();
@@ -24,12 +28,63 @@ export function registerLauncher(info: LauncherInfo): void {
     try { existing.ws.close(4010, 'Replaced by new connection'); } catch {}
   }
   launchers.set(info.id, info);
-  console.log(`[launcher-registry] Registered: ${info.id} (${info.name}@${info.hostname})${info.harness ? ' [harness]' : ''}`);
+  console.log(`[launcher-registry] Registered: ${info.id} (${info.name}@${info.hostname})${info.harness ? ' [harness]' : ''}${info.machineId ? ` [machine:${info.machineId}]` : ''}`);
+
+  const now = new Date().toISOString();
+
+  // Update machine status to online
+  if (info.machineId) {
+    try {
+      db.update(schema.machines)
+        .set({ status: 'online', lastSeenAt: now, updatedAt: now })
+        .where(eq(schema.machines.id, info.machineId))
+        .run();
+    } catch {}
+  }
+
+  // Update harness config status to running
+  if (info.harnessConfigId) {
+    try {
+      db.update(schema.harnessConfigs)
+        .set({ status: 'running', launcherId: info.id, updatedAt: now })
+        .where(eq(schema.harnessConfigs.id, info.harnessConfigId))
+        .run();
+    } catch {}
+  }
 }
 
 export function unregisterLauncher(id: string): void {
+  const info = launchers.get(id);
   launchers.delete(id);
   console.log(`[launcher-registry] Unregistered: ${id}`);
+
+  if (!info) return;
+  const now = new Date().toISOString();
+
+  // Check if machine still has other launchers before marking offline
+  if (info.machineId) {
+    const otherFromSameMachine = Array.from(launchers.values()).some(
+      l => l.machineId === info.machineId
+    );
+    if (!otherFromSameMachine) {
+      try {
+        db.update(schema.machines)
+          .set({ status: 'offline', updatedAt: now })
+          .where(eq(schema.machines.id, info.machineId))
+          .run();
+      } catch {}
+    }
+  }
+
+  // Update harness config status
+  if (info.harnessConfigId) {
+    try {
+      db.update(schema.harnessConfigs)
+        .set({ status: 'stopped', launcherId: null, lastStoppedAt: now, updatedAt: now })
+        .where(eq(schema.harnessConfigs.id, info.harnessConfigId))
+        .run();
+    } catch {}
+  }
 }
 
 export function getLauncher(id: string): LauncherInfo | undefined {
@@ -109,6 +164,8 @@ export function serializeLauncher(l: LauncherInfo) {
     online: l.isLocal ? true : l.ws?.readyState === 1,
     isHarness: !!l.harness,
     harness: l.harness || null,
+    machineId: l.machineId || null,
+    harnessConfigId: l.harnessConfigId || null,
   };
 }
 

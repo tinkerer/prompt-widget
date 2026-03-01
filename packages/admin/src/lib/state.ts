@@ -19,6 +19,7 @@ export const selectedAppId = signal<string | null>(embedAppId);
 export const applications = signal<any[]>([]);
 export const unlinkedCount = signal(0);
 export const appFeedbackCounts = signal<Record<string, number>>({});
+export const addAppModalOpen = signal(false);
 
 export async function loadApplications() {
   try {

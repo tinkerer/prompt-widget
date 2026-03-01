@@ -103,6 +103,15 @@ export const api = {
       body: JSON.stringify(data || {}),
     }),
 
+  listTmuxSessions: () =>
+    request<{ sessions: { name: string; windows: number; created: string; attached: boolean }[] }>('/admin/tmux-sessions'),
+
+  attachTmuxSession: (data: { tmuxTarget: string; appId?: string }) =>
+    request<{ sessionId: string }>('/admin/terminal/attach-tmux', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
   getApplications: () => request<any[]>('/admin/applications'),
 
   getApplication: (id: string) => request<any>(`/admin/applications/${id}`),
@@ -126,6 +135,24 @@ export const api = {
     request<{ sessionId: string; actionId: string }>(`/admin/applications/${appId}/run-action`, {
       method: 'POST',
       body: JSON.stringify({ actionId }),
+    }),
+
+  submitAppRequest: (appId: string, data: { request: string; preferences?: string[] }) =>
+    request<{ sessionId: string; feedbackId: string }>(`/admin/applications/${appId}/request`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  designAssist: (appId: string, data: { request: string; context: string; settingPath?: string }) =>
+    request<{ sessionId: string; feedbackId: string }>(`/admin/applications/${appId}/design-assist`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  setupAssist: (data: { request: string; entityType: 'machine' | 'harness' | 'agent'; entityId?: string }) =>
+    request<{ sessionId: string; feedbackId: string; companionSessionId?: string }>('/admin/setup-assist', {
+      method: 'POST',
+      body: JSON.stringify(data),
     }),
 
   scaffoldApp: (data: { name: string; parentDir: string; projectName: string }) =>
@@ -310,6 +337,51 @@ export const api = {
 
   deleteLauncher: (id: string) =>
     request<{ ok: boolean; id: string }>(`/admin/launchers/${id}`, { method: 'DELETE' }),
+
+  // Machines
+  getMachines: () => request<any[]>('/admin/machines'),
+
+  createMachine: (data: Record<string, unknown>) =>
+    request<any>('/admin/machines', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  updateMachine: (id: string, data: Record<string, unknown>) =>
+    request<any>(`/admin/machines/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  deleteMachine: (id: string) =>
+    request<{ ok: boolean; id: string }>(`/admin/machines/${id}`, { method: 'DELETE' }),
+
+  // Harness configs
+  getHarnessConfigs: (appId?: string) => {
+    const qs = appId ? `?appId=${encodeURIComponent(appId)}` : '';
+    return request<any[]>(`/admin/harness-configs${qs}`);
+  },
+
+  createHarnessConfig: (data: Record<string, unknown>) =>
+    request<any>('/admin/harness-configs', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  updateHarnessConfig: (id: string, data: Record<string, unknown>) =>
+    request<any>(`/admin/harness-configs/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  deleteHarnessConfig: (id: string) =>
+    request<{ ok: boolean; id: string }>(`/admin/harness-configs/${id}`, { method: 'DELETE' }),
+
+  startHarness: (id: string) =>
+    request<{ ok: boolean; status: string }>(`/admin/harness-configs/${id}/start`, { method: 'POST' }),
+
+  stopHarness: (id: string) =>
+    request<{ ok: boolean; status: string }>(`/admin/harness-configs/${id}/stop`, { method: 'POST' }),
 
   getDefaultPromptTemplate: () =>
     request<{ template: string }>('/admin/default-prompt-template'),

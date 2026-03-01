@@ -4,6 +4,7 @@ export const FEEDBACK_TYPES = [
   'analytics',
   'error_report',
   'programmatic',
+  'request',
 ] as const;
 
 export const FEEDBACK_STATUSES = [

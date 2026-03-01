@@ -147,6 +147,11 @@ export function runMigrations() {
     `ALTER TABLE applications ADD COLUMN auto_dispatch INTEGER NOT NULL DEFAULT 0`,
     `ALTER TABLE agent_sessions ADD COLUMN claude_session_id TEXT`,
     `ALTER TABLE applications ADD COLUMN control_actions TEXT NOT NULL DEFAULT '[]'`,
+    `ALTER TABLE agent_endpoints ADD COLUMN harness_config_id TEXT`,
+    `ALTER TABLE agent_sessions ADD COLUMN machine_id TEXT`,
+    `ALTER TABLE applications ADD COLUMN request_panel TEXT NOT NULL DEFAULT '{}'`,
+    `ALTER TABLE agent_sessions ADD COLUMN companion_session_id TEXT`,
+    `ALTER TABLE harness_configs ADD COLUMN compose_dir TEXT`,
   ];
 
   for (const stmt of alterStatements) {
@@ -246,6 +251,52 @@ export function runMigrations() {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+  `);
+
+  // Machines table
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS machines (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      hostname TEXT,
+      address TEXT,
+      type TEXT NOT NULL DEFAULT 'local',
+      status TEXT NOT NULL DEFAULT 'offline',
+      last_seen_at TEXT,
+      capabilities TEXT,
+      tags TEXT,
+      auth_token TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+
+  // Harness configs table
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS harness_configs (
+      id TEXT PRIMARY KEY,
+      app_id TEXT REFERENCES applications(id) ON DELETE SET NULL,
+      machine_id TEXT REFERENCES machines(id) ON DELETE SET NULL,
+      name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'stopped',
+      app_image TEXT,
+      app_port INTEGER,
+      app_internal_port INTEGER,
+      server_port INTEGER,
+      browser_mcp_port INTEGER,
+      target_app_url TEXT,
+      compose_dir TEXT,
+      env_vars TEXT,
+      launcher_id TEXT,
+      last_started_at TEXT,
+      last_stopped_at TEXT,
+      error_message TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_harness_configs_app ON harness_configs(app_id);
+    CREATE INDEX IF NOT EXISTS idx_harness_configs_machine ON harness_configs(machine_id);
   `);
 
   // Seed default tmux config from tmux-pw.conf if table is empty or default has empty content

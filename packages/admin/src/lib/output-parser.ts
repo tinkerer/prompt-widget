@@ -51,6 +51,8 @@ export class JsonOutputParser {
 
   // Track in-progress streaming blocks by index
   private activeBlocks: Map<number, { id: string; type: string; toolName?: string; textAccum: string; jsonAccum: string; thinkingAccum: string }> = new Map();
+  // Track which subagent IDs we've already emitted a marker for
+  private seenSubagents: Set<string> = new Set();
 
   feed(chunk: string): ParsedMessage[] {
     this.buffer += chunk;
@@ -79,6 +81,18 @@ export class JsonOutputParser {
   }
 
   private parseJsonEvent(obj: any): ParsedMessage[] {
+    // --- Subagent marker: emit a system message on first entry from a new subagent ---
+    const subagentId = obj._subagentId || obj.agentId;
+    if (subagentId && !this.seenSubagents.has(subagentId)) {
+      this.seenSubagents.add(subagentId);
+      const marker: ParsedMessage = { id: genId(), role: 'system', timestamp: Date.now(), content: `Subagent: ${subagentId}` };
+      this.messages.push(marker);
+      return [marker, ...this.parseJsonEventInner(obj)];
+    }
+    return this.parseJsonEventInner(obj);
+  }
+
+  private parseJsonEventInner(obj: any): ParsedMessage[] {
     const type = obj.type;
 
     // --- CLI stream-json: system message (session metadata) ---

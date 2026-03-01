@@ -1,12 +1,14 @@
 import WebSocket from 'ws';
 import * as os from 'node:os';
 import * as pty from 'node-pty';
+import { execSync } from 'node:child_process';
 import type {
   LauncherRegister,
   LauncherHeartbeat,
   LauncherSessionStarted,
   LauncherSessionOutput,
   LauncherSessionEnded,
+  HarnessStatusUpdate,
   ServerToLauncherMessage,
   LauncherCapabilities,
   SequencedOutput,
@@ -28,6 +30,7 @@ const LAUNCHER_ID = process.env.LAUNCHER_ID || `launcher-${os.hostname()}`;
 const LAUNCHER_NAME = process.env.LAUNCHER_NAME || os.hostname();
 const LAUNCHER_AUTH_TOKEN = process.env.LAUNCHER_AUTH_TOKEN || '';
 const MAX_SESSIONS = parseInt(process.env.MAX_SESSIONS || '5', 10);
+const MACHINE_ID = process.env.MACHINE_ID || undefined;
 
 const MAX_OUTPUT_LOG = 500 * 1024;
 
@@ -260,6 +263,59 @@ function handleServerMessage(msg: ServerToLauncherMessage): void {
       }
       break;
     }
+
+    case 'start_harness': {
+      console.log(`[launcher] Starting harness ${msg.harnessConfigId}`);
+      try {
+        // Build env vars for docker compose
+        const env: Record<string, string> = { ...msg.envVars };
+        if (msg.appImage) env.APP_IMAGE = msg.appImage;
+        if (msg.appPort) env.APP_PORT = String(msg.appPort);
+        if (msg.appInternalPort) env.APP_INTERNAL_PORT = String(msg.appInternalPort);
+        if (msg.serverPort) env.SERVER_PORT = String(msg.serverPort);
+        if (msg.browserMcpPort) env.BROWSER_MCP_PORT = String(msg.browserMcpPort);
+        if (msg.targetAppUrl) env.TARGET_APP_URL = msg.targetAppUrl;
+        env.HARNESS_CONFIG_ID = msg.harnessConfigId;
+
+        const envStr = Object.entries(env).map(([k, v]) => `${k}=${v}`).join(' ');
+        const cwd = msg.composeDir || undefined;
+        execSync(`${envStr} docker compose up -d`, { stdio: 'pipe', timeout: 300_000, cwd });
+
+        const status: HarnessStatusUpdate = {
+          type: 'harness_status',
+          harnessConfigId: msg.harnessConfigId,
+          status: 'running',
+        };
+        sendToServer(status);
+      } catch (err: any) {
+        console.error(`[launcher] Failed to start harness:`, err.message);
+        const status: HarnessStatusUpdate = {
+          type: 'harness_status',
+          harnessConfigId: msg.harnessConfigId,
+          status: 'error',
+          errorMessage: err.message?.slice(0, 500),
+        };
+        sendToServer(status);
+      }
+      break;
+    }
+
+    case 'stop_harness': {
+      console.log(`[launcher] Stopping harness ${msg.harnessConfigId}`);
+      try {
+        const cwd = msg.composeDir || undefined;
+        execSync('docker compose down', { stdio: 'pipe', timeout: 60_000, cwd });
+        const status: HarnessStatusUpdate = {
+          type: 'harness_status',
+          harnessConfigId: msg.harnessConfigId,
+          status: 'stopped',
+        };
+        sendToServer(status);
+      } catch (err: any) {
+        console.error(`[launcher] Failed to stop harness:`, err.message);
+      }
+      break;
+    }
   }
 }
 
@@ -273,10 +329,14 @@ function connect(): void {
     reconnectDelay = 1000;
     console.log(`[launcher] Connected, registering as ${LAUNCHER_ID}`);
 
+    let hasDocker = false;
+    try { execSync('docker --version', { stdio: 'pipe' }); hasDocker = true; } catch {}
+
     const caps: LauncherCapabilities = {
       maxSessions: MAX_SESSIONS,
       hasTmux: isTmuxAvailable(),
       hasClaudeCli: true,
+      hasDocker,
     };
 
     const reg: LauncherRegister = {
@@ -286,6 +346,7 @@ function connect(): void {
       hostname: os.hostname(),
       authToken: LAUNCHER_AUTH_TOKEN,
       capabilities: caps,
+      machineId: MACHINE_ID,
     };
     sendToServer(reg);
 

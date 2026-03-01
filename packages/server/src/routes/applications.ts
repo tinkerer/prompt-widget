@@ -6,10 +6,10 @@ import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { applicationSchema, applicationUpdateSchema } from '@prompt-widget/shared';
-import type { ControlAction } from '@prompt-widget/shared';
+import type { ControlAction, RequestPanelConfig } from '@prompt-widget/shared';
 import { db, schema } from '../db/index.js';
-import { dispatchTerminalSession } from '../dispatch.js';
-import { inputSessionRemote } from '../session-service-client.js';
+import { dispatchTerminalSession, dispatchAgentSession } from '../dispatch.js';
+import { inputSessionRemote, getSessionStatus } from '../session-service-client.js';
 
 export const applicationRoutes = new Hono();
 
@@ -17,15 +17,18 @@ function generateApiKey(): string {
   return 'pw_' + randomBytes(32).toString('base64url').slice(0, 43);
 }
 
+function parseAppJson(app: typeof schema.applications.$inferSelect) {
+  return {
+    ...app,
+    hooks: JSON.parse(app.hooks),
+    controlActions: JSON.parse(app.controlActions || '[]'),
+    requestPanel: JSON.parse(app.requestPanel || '{}'),
+  };
+}
+
 applicationRoutes.get('/', async (c) => {
   const apps = db.select().from(schema.applications).all();
-  return c.json(
-    apps.map((app) => ({
-      ...app,
-      hooks: JSON.parse(app.hooks),
-      controlActions: JSON.parse(app.controlActions || '[]'),
-    }))
-  );
+  return c.json(apps.map(parseAppJson));
 });
 
 applicationRoutes.post('/scaffold', async (c) => {
@@ -147,7 +150,7 @@ applicationRoutes.get('/:id', async (c) => {
   if (!app) {
     return c.json({ error: 'Not found' }, 404);
   }
-  return c.json({ ...app, hooks: JSON.parse(app.hooks), controlActions: JSON.parse(app.controlActions || '[]') });
+  return c.json(parseAppJson(app));
 });
 
 applicationRoutes.post('/', async (c) => {
@@ -170,6 +173,7 @@ applicationRoutes.post('/', async (c) => {
     hooks: JSON.stringify(parsed.data.hooks),
     description: parsed.data.description,
     controlActions: JSON.stringify(parsed.data.controlActions || []),
+    requestPanel: JSON.stringify(parsed.data.requestPanel || {}),
     createdAt: now,
     updatedAt: now,
   });
@@ -208,6 +212,7 @@ applicationRoutes.patch('/:id', async (c) => {
   if (d.screenshotIncludeWidget !== undefined) updates.screenshotIncludeWidget = d.screenshotIncludeWidget;
   if (d.autoDispatch !== undefined) updates.autoDispatch = d.autoDispatch;
   if (d.controlActions !== undefined) updates.controlActions = JSON.stringify(d.controlActions);
+  if (d.requestPanel !== undefined) updates.requestPanel = JSON.stringify(d.requestPanel);
 
   await db.update(schema.applications).set(updates).where(eq(schema.applications.id, id));
 
@@ -263,15 +268,243 @@ applicationRoutes.post('/:id/run-action', async (c) => {
   try {
     const { sessionId } = await dispatchTerminalSession({ cwd: app.projectDir, appId: id });
 
-    setTimeout(async () => {
+    (async () => {
       try {
+        for (let i = 0; i < 30; i++) {
+          const status = await getSessionStatus(sessionId);
+          if (status?.active && status.totalBytes > 0) break;
+          await new Promise((r) => setTimeout(r, 200));
+        }
         await inputSessionRemote(sessionId, action.command + '\r');
       } catch (err) {
         console.error('[applications] Failed to send control action command:', err);
       }
-    }, 800);
+    })();
 
     return c.json({ sessionId, actionId });
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+    return c.json({ error: errorMsg }, 500);
+  }
+});
+
+applicationRoutes.post('/:id/request', async (c) => {
+  const id = c.req.param('id');
+  const body = await c.req.json();
+  const { request, preferences } = body as { request?: string; preferences?: string[] };
+
+  if (!request || !request.trim()) {
+    return c.json({ error: 'request text is required' }, 400);
+  }
+
+  const app = await db.query.applications.findFirst({
+    where: eq(schema.applications.id, id),
+  });
+  if (!app) return c.json({ error: 'App not found' }, 404);
+
+  const panelConfig: RequestPanelConfig = JSON.parse(app.requestPanel || '{}');
+
+  // Find agent endpoint
+  let agentEndpointId = panelConfig.defaultAgentId || null;
+  if (!agentEndpointId) {
+    // Fall back to app-specific agent, then any default agent
+    const appAgent = db.select().from(schema.agentEndpoints)
+      .where(eq(schema.agentEndpoints.appId, id)).get();
+    if (appAgent) {
+      agentEndpointId = appAgent.id;
+    } else {
+      const defaultAgent = db.select().from(schema.agentEndpoints)
+        .where(eq(schema.agentEndpoints.isDefault, true)).get();
+      if (defaultAgent) {
+        agentEndpointId = defaultAgent.id;
+      } else {
+        const anyAgent = db.select().from(schema.agentEndpoints).get();
+        if (anyAgent) agentEndpointId = anyAgent.id;
+      }
+    }
+  }
+
+  if (!agentEndpointId) {
+    return c.json({ error: 'No agent endpoint configured' }, 400);
+  }
+
+  const agent = db.select().from(schema.agentEndpoints)
+    .where(eq(schema.agentEndpoints.id, agentEndpointId)).get();
+  if (!agent) {
+    return c.json({ error: 'Agent endpoint not found' }, 404);
+  }
+
+  // Build prompt
+  const parts: string[] = [];
+  if (panelConfig.promptPrefix) parts.push(panelConfig.promptPrefix);
+  parts.push(`App: ${app.name}`);
+  parts.push(`Project dir: ${app.projectDir}`);
+  if (app.description) parts.push(app.description);
+  parts.push('');
+  parts.push(`Request: ${request.trim()}`);
+
+  if (preferences?.length && panelConfig.preferences?.length) {
+    const snippets = preferences
+      .map((prefId) => panelConfig.preferences.find((p) => p.id === prefId))
+      .filter(Boolean)
+      .map((p) => p!.promptSnippet);
+    if (snippets.length) {
+      parts.push('');
+      parts.push(snippets.join('\n'));
+    }
+  }
+
+  const prompt = parts.join('\n');
+
+  // Create feedback item
+  const feedbackId = ulid();
+  const now = new Date().toISOString();
+  db.insert(schema.feedbackItems).values({
+    id: feedbackId,
+    type: 'request',
+    status: 'dispatched',
+    title: request.trim().slice(0, 100),
+    description: request.trim(),
+    appId: id,
+    dispatchedTo: agent.name,
+    dispatchedAt: now,
+    dispatchStatus: 'dispatched',
+    createdAt: now,
+    updatedAt: now,
+  }).run();
+
+  try {
+    const { sessionId } = await dispatchAgentSession({
+      feedbackId,
+      agentEndpointId,
+      prompt,
+      cwd: app.projectDir,
+      permissionProfile: agent.permissionProfile as any,
+      allowedTools: agent.allowedTools,
+    });
+
+    return c.json({ sessionId, feedbackId });
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+    return c.json({ error: errorMsg }, 500);
+  }
+});
+
+applicationRoutes.post('/:id/design-assist', async (c) => {
+  const id = c.req.param('id');
+  const body = await c.req.json();
+  const { request, context, settingPath } = body as { request?: string; context?: string; settingPath?: string };
+
+  if (!request || !request.trim()) {
+    return c.json({ error: 'request text is required' }, 400);
+  }
+
+  const app = await db.query.applications.findFirst({
+    where: eq(schema.applications.id, id),
+  });
+  if (!app) return c.json({ error: 'App not found' }, 404);
+
+  const panelConfig: RequestPanelConfig = JSON.parse(app.requestPanel || '{}');
+
+  // Find agent endpoint (same fallback logic as /:id/request)
+  let agentEndpointId = panelConfig.defaultAgentId || null;
+  if (!agentEndpointId) {
+    const appAgent = db.select().from(schema.agentEndpoints)
+      .where(eq(schema.agentEndpoints.appId, id)).get();
+    if (appAgent) {
+      agentEndpointId = appAgent.id;
+    } else {
+      const defaultAgent = db.select().from(schema.agentEndpoints)
+        .where(eq(schema.agentEndpoints.isDefault, true)).get();
+      if (defaultAgent) {
+        agentEndpointId = defaultAgent.id;
+      } else {
+        const anyAgent = db.select().from(schema.agentEndpoints).get();
+        if (anyAgent) agentEndpointId = anyAgent.id;
+      }
+    }
+  }
+
+  if (!agentEndpointId) {
+    return c.json({ error: 'No agent endpoint configured' }, 400);
+  }
+
+  const agent = db.select().from(schema.agentEndpoints)
+    .where(eq(schema.agentEndpoints.id, agentEndpointId)).get();
+  if (!agent) {
+    return c.json({ error: 'Agent endpoint not found' }, 404);
+  }
+
+  // Build prompt with codebase architecture context
+  const parts: string[] = [];
+  parts.push(`# AI Assist — ${app.name}`);
+  parts.push('');
+  parts.push(`App: ${app.name}`);
+  parts.push(`Project dir: ${app.projectDir}`);
+  if (app.description) parts.push(`Description: ${app.description}`);
+  parts.push('');
+  parts.push('## Codebase Architecture');
+  parts.push('This is a monorepo with 4 packages:');
+  parts.push('- `packages/widget` — Embeddable JS feedback overlay (vanilla TS, bundled as IIFE)');
+  parts.push('- `packages/server` — Hono REST API + SQLite (Drizzle ORM), serves admin SPA');
+  parts.push('- `packages/admin` — Preact SPA dashboard (Vite build, served at /admin/)');
+  parts.push('- `packages/shared` — Shared types, Zod schemas, constants');
+  parts.push('');
+  parts.push('## Key Files');
+  parts.push('- `packages/server/src/db/schema.ts` — Database schema (SQLite/Drizzle)');
+  parts.push('- `packages/shared/src/types.ts` — Shared TypeScript types');
+  parts.push('- `packages/shared/src/schemas.ts` — Zod validation schemas');
+  parts.push('- `packages/admin/src/app.css` — All admin UI styles');
+  parts.push('- `packages/admin/src/lib/api.ts` — Frontend API client');
+  parts.push('- `packages/admin/src/pages/AppSettingsPage.tsx` — App settings page');
+  parts.push('- `packages/widget/src/widget.ts` — Widget overlay implementation');
+  parts.push('- `packages/widget/src/styles.ts` — Widget CSS-in-JS styles');
+  parts.push('');
+  if (context) {
+    parts.push(`## Setting Context`);
+    parts.push(context);
+    if (settingPath) parts.push(`Setting path: ${settingPath}`);
+    parts.push('');
+  }
+  parts.push(`## User Request`);
+  parts.push(request.trim());
+  parts.push('');
+  parts.push('## Instructions');
+  parts.push('- Ask clarifying questions before making changes if the request is ambiguous');
+  parts.push('- Read relevant files first to understand existing patterns');
+  parts.push('- Follow existing code style and conventions');
+  parts.push('- After making changes, rebuild: `cd packages/admin && npx vite build`');
+
+  const prompt = parts.join('\n');
+
+  // Create feedback item
+  const feedbackId = ulid();
+  const now = new Date().toISOString();
+  db.insert(schema.feedbackItems).values({
+    id: feedbackId,
+    type: 'request',
+    status: 'dispatched',
+    title: `[AI Assist] ${request.trim().slice(0, 80)}`,
+    description: request.trim(),
+    appId: id,
+    dispatchedTo: agent.name,
+    dispatchedAt: now,
+    dispatchStatus: 'dispatched',
+    createdAt: now,
+    updatedAt: now,
+  }).run();
+
+  try {
+    const { sessionId } = await dispatchAgentSession({
+      feedbackId,
+      agentEndpointId,
+      prompt,
+      cwd: app.projectDir,
+      permissionProfile: agent.permissionProfile as any,
+      allowedTools: agent.allowedTools,
+    });
+
+    return c.json({ sessionId, feedbackId });
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : 'Unknown error';
     return c.json({ error: errorMsg }, 500);

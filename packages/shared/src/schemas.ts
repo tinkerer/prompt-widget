@@ -57,6 +57,7 @@ export const feedbackSubmitSchema = z.object({
   userId: z.string().optional(),
   tags: z.array(z.string().max(50)).max(20).optional(),
   autoDispatch: z.boolean().optional(),
+  appId: z.string().optional(),
 });
 
 export type FeedbackSubmitInput = z.infer<typeof feedbackSubmitSchema>;
@@ -104,6 +105,25 @@ export const controlActionSchema = z.object({
   icon: z.string().max(10).optional(),
 });
 
+export const requestPanelSuggestionSchema = z.object({
+  label: z.string().min(1).max(200),
+  prompt: z.string().min(1).max(2000),
+});
+
+export const requestPanelPreferenceSchema = z.object({
+  id: z.string().min(1).max(50),
+  label: z.string().min(1).max(100),
+  promptSnippet: z.string().min(1).max(500),
+  default: z.boolean().optional(),
+});
+
+export const requestPanelConfigSchema = z.object({
+  suggestions: z.array(requestPanelSuggestionSchema).max(20).default([]),
+  preferences: z.array(requestPanelPreferenceSchema).max(10).default([]),
+  defaultAgentId: z.string().optional(),
+  promptPrefix: z.string().max(5000).optional(),
+});
+
 export const applicationSchema = z.object({
   name: z.string().min(1).max(100),
   projectDir: z.string().min(1).max(500),
@@ -117,6 +137,7 @@ export const applicationSchema = z.object({
   screenshotIncludeWidget: z.boolean().optional(),
   autoDispatch: z.boolean().optional(),
   controlActions: z.array(controlActionSchema).max(20).default([]),
+  requestPanel: requestPanelConfigSchema.default({ suggestions: [], preferences: [] }),
 });
 
 export const applicationUpdateSchema = applicationSchema.partial();

@@ -10,7 +10,7 @@ import { feedbackEvents } from '../events.js';
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR || 'uploads';
 
-function resolveAppId(apiKey: string | undefined, sessionId: string | undefined): string | null {
+function resolveAppId(apiKey: string | undefined, sessionId: string | undefined, appId?: string): string | null {
   if (sessionId) {
     const session = getSession(sessionId);
     if (session?.appId) return session.appId;
@@ -20,6 +20,14 @@ function resolveAppId(apiKey: string | undefined, sessionId: string | undefined)
       .select({ id: schema.applications.id })
       .from(schema.applications)
       .where(eq(schema.applications.apiKey, apiKey))
+      .get();
+    if (app) return app.id;
+  }
+  if (appId) {
+    const app = db
+      .select({ id: schema.applications.id })
+      .from(schema.applications)
+      .where(eq(schema.applications.id, appId))
       .get();
     if (app) return app.id;
   }
@@ -67,9 +75,9 @@ feedbackRoutes.post('/', async (c) => {
   const title = input.title || input.description.slice(0, 200) || 'Untitled';
 
   const apiKey = c.req.header('x-api-key');
-  const appId = resolveAppId(apiKey, input.sessionId);
+  const appId = resolveAppId(apiKey, input.sessionId, input.appId);
   if (!appId) {
-    return c.json({ error: 'Could not resolve application. Provide a valid X-API-Key header or sessionId.' }, 400);
+    return c.json({ error: 'Could not resolve application. Provide a valid X-API-Key header, sessionId, or appId.' }, 400);
   }
 
   await db.insert(schema.feedbackItems).values({
@@ -131,9 +139,9 @@ feedbackRoutes.post('/programmatic', async (c) => {
   const progTitle = input.title || input.description.slice(0, 200) || 'Untitled';
 
   const progApiKey = c.req.header('x-api-key');
-  const progAppId = resolveAppId(progApiKey, input.sessionId);
+  const progAppId = resolveAppId(progApiKey, input.sessionId, input.appId);
   if (!progAppId) {
-    return c.json({ error: 'Could not resolve application. Provide a valid X-API-Key header or sessionId.' }, 400);
+    return c.json({ error: 'Could not resolve application. Provide a valid X-API-Key header, sessionId, or appId.' }, 400);
   }
 
   await db.insert(schema.feedbackItems).values({

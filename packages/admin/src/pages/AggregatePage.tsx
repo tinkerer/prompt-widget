@@ -3,6 +3,7 @@ import { useState } from 'preact/hooks';
 import { api } from '../lib/api.js';
 import { navigate } from '../lib/state.js';
 import { openSession } from '../lib/sessions.js';
+import { DeletedItemsPanel, trackDeletion } from '../components/DeletedItemsPanel.js';
 
 interface ClusterItem {
   id: string;
@@ -127,8 +128,9 @@ function PlanEditor({ cluster, appId, onSaved }: {
   }
 
   async function remove() {
-    if (!existing || !confirm('Delete this plan?')) return;
+    if (!existing) return;
     await api.deletePlan(existing.id);
+    trackDeletion('plans', existing.id, existing.title);
     onSaved();
   }
 
@@ -489,6 +491,7 @@ export function AggregatePage({ appId }: { appId: string }) {
           <ClusterCard key={cluster.groupKey} cluster={cluster} appId={appId} />
         ))}
       </div>
+      <DeletedItemsPanel type="plans" />
     </div>
   );
 }

@@ -190,6 +190,8 @@ launcherWss.on('connection', (ws, req) => {
             activeSessions: new Set(),
             capabilities: msg.capabilities,
             harness: msg.harness,
+            machineId: msg.machineId,
+            harnessConfigId: msg.harnessConfigId,
           });
           const reply: LauncherRegistered = { type: 'launcher_registered', ok: true };
           ws.send(JSON.stringify(reply));
@@ -266,6 +268,28 @@ launcherWss.on('connection', (ws, req) => {
             exitCode: msg.exitCode,
             status: msg.status,
           }));
+          break;
+        }
+
+        case 'harness_status': {
+          const now = new Date().toISOString();
+          const updates: Record<string, unknown> = {
+            status: msg.status,
+            updatedAt: now,
+          };
+          if (msg.errorMessage) updates.errorMessage = msg.errorMessage;
+          if (msg.status === 'running') {
+            updates.launcherId = launcherId;
+            updates.errorMessage = null;
+          }
+          if (msg.status === 'stopped') {
+            updates.launcherId = null;
+            updates.lastStoppedAt = now;
+          }
+          db.update(schema.harnessConfigs)
+            .set(updates)
+            .where(eq(schema.harnessConfigs.id, msg.harnessConfigId))
+            .run();
           break;
         }
       }
