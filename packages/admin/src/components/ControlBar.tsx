@@ -7,23 +7,30 @@ import {
   controlBarMinimized,
   toggleControlBarMinimized,
   popoutPanels,
-  panelMruHistory,
+  paneMruHistory,
   bringToFront,
   activePanelId,
+  activeTabId,
   allSessions,
   getSessionLabel,
+  openSession,
 } from '../lib/sessions.js';
+import type { PaneMruEntry } from '../lib/sessions.js';
 
-function getMruLabel(panel: { id: string; sessionIds: string[]; activeSessionId: string; label?: string }, sessionMap: Map<string, any>): string {
+function getSessionMruLabel(sessionId: string, sessionMap: Map<string, any>): string {
+  const custom = getSessionLabel(sessionId);
+  if (custom) return custom;
+  const sess = sessionMap.get(sessionId);
+  if (sess?.feedbackTitle) return sess.feedbackTitle;
+  if (sess?.agentName) return sess.agentName;
+  return `Session ${sessionId.slice(-6)}`;
+}
+
+function getPanelMruLabel(panel: { id: string; sessionIds: string[]; activeSessionId: string; label?: string }, sessionMap: Map<string, any>): string {
   if (panel.label) return panel.label;
   const sid = panel.activeSessionId || panel.sessionIds[0];
   if (!sid) return panel.id.slice(-6);
-  const custom = getSessionLabel(sid);
-  if (custom) return custom;
-  const sess = sessionMap.get(sid);
-  if (sess?.feedbackTitle) return sess.feedbackTitle;
-  if (sess?.agentName) return sess.agentName;
-  return `Session ${sid.slice(-6)}`;
+  return getSessionMruLabel(sid, sessionMap);
 }
 
 export function ControlBar() {
@@ -55,16 +62,10 @@ export function ControlBar() {
   }, [appDropdown, mruDropdown]);
 
   const panels = popoutPanels.value;
-  const mruHistory = panelMruHistory.value;
+  const mruHistory = paneMruHistory.value;
   const sessions = allSessions.value;
   const sessionMap = useMemo(() => new Map(sessions.map((s: any) => [s.id, s])), [sessions]);
   const panelMap = useMemo(() => new Map(panels.map((p: any) => [p.id, p])), [panels]);
-
-  const mruPanels = useMemo(() => {
-    return mruHistory
-      .map((id) => panelMap.get(id))
-      .filter(Boolean);
-  }, [mruHistory, panelMap]);
 
   async function run(actionId: string) {
     if (!appId || running) return;
@@ -163,39 +164,58 @@ export function ControlBar() {
         Terminal
       </button>
 
-      {/* MRU panel dropdown */}
+      {/* MRU pane history dropdown */}
       <>
         <div class="control-bar-sep" />
         <div class="control-bar-dropdown" ref={mruDropdownRef}>
           <button
-            class={`control-bar-btn control-bar-mru-btn ${activePanelId.value ? 'control-bar-mru-active' : ''}`}
+            class="control-bar-btn control-bar-mru-btn control-bar-mru-active"
             onClick={() => setMruDropdown(!mruDropdown)}
           >
             {(() => {
-              const active = mruPanels.find((p: any) => p.id === activePanelId.value);
-              return active ? getMruLabel(active, sessionMap) : (mruPanels[0] ? getMruLabel(mruPanels[0], sessionMap) : 'Panels');
+              if (mruHistory.length === 0) return 'History';
+              const top = mruHistory[0];
+              if (top.type === 'tab') return getSessionMruLabel(top.sessionId, sessionMap);
+              const p = panelMap.get(top.panelId);
+              return p ? getPanelMruLabel(p, sessionMap) : top.panelId.slice(-6);
             })()}
             <span class="control-bar-caret">{'\u25BE'}</span>
           </button>
           {mruDropdown && (
             <div class="control-bar-menu">
-              {mruPanels.length === 0 && (
-                <div class="control-bar-menu-item" style="opacity:0.5;cursor:default">No panel history</div>
+              {mruHistory.length === 0 && (
+                <div class="control-bar-menu-item" style="opacity:0.5;cursor:default">No history</div>
               )}
-              {mruPanels.map((p: any) => (
-                <button
-                  key={p.id}
-                  class={`control-bar-menu-item ${activePanelId.value === p.id ? 'active' : ''}`}
-                  onClick={() => {
-                    bringToFront(p.id);
-                    activePanelId.value = p.id;
-                    setMruDropdown(false);
-                  }}
-                  style={!p.visible ? 'opacity:0.5' : ''}
-                >
-                  {getMruLabel(p, sessionMap)}
-                </button>
-              ))}
+              {mruHistory.map((entry: PaneMruEntry, i: number) => {
+                const key = entry.type === 'tab' ? `tab:${entry.sessionId}` : `panel:${entry.panelId}`;
+                const isActive = entry.type === 'tab'
+                  ? activeTabId.value === entry.sessionId
+                  : activePanelId.value === entry.panelId;
+                const label = entry.type === 'tab'
+                  ? getSessionMruLabel(entry.sessionId, sessionMap)
+                  : (() => { const p = panelMap.get(entry.panelId); return p ? getPanelMruLabel(p, sessionMap) : entry.panelId.slice(-6); })();
+                return (
+                  <button
+                    key={key}
+                    class={`control-bar-menu-item ${isActive ? 'active' : ''}`}
+                    onClick={() => {
+                      if (entry.type === 'tab') {
+                        openSession(entry.sessionId);
+                      } else {
+                        const p = panelMap.get(entry.panelId);
+                        if (p) {
+                          bringToFront(entry.panelId);
+                          activePanelId.value = entry.panelId;
+                        }
+                      }
+                      setMruDropdown(false);
+                    }}
+                  >
+                    <span style="opacity:0.5;margin-right:6px">{entry.type === 'tab' ? '\u{1F4CB}' : '\u{1F5D7}'}</span>
+                    {label}
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>

@@ -178,21 +178,31 @@ export function setFocusedPanel(panelId: string | null) {
 
 let panelZCounter = 0;
 export const panelZOrders = signal<Map<string, number>>(new Map());
-export const panelMruHistory = signal<string[]>(loadJson('pw-panel-mru', []));
+export type PaneMruEntry = { type: 'tab'; sessionId: string } | { type: 'panel'; panelId: string };
+export const paneMruHistory = signal<PaneMruEntry[]>(loadJson('pw-pane-mru', []));
 
-function pushPanelMru(panelId: string) {
-  const prev = panelMruHistory.value;
-  const next = [panelId, ...prev.filter((id) => id !== panelId)].slice(0, 20);
-  panelMruHistory.value = next;
-  localStorage.setItem('pw-panel-mru', JSON.stringify(next));
+export function pushPaneMru(entry: PaneMruEntry) {
+  const key = entry.type === 'tab' ? `tab:${entry.sessionId}` : `panel:${entry.panelId}`;
+  const prev = paneMruHistory.value;
+  const next = [entry, ...prev.filter((e) => {
+    const k = e.type === 'tab' ? `tab:${e.sessionId}` : `panel:${e.panelId}`;
+    return k !== key;
+  })].slice(0, 30);
+  paneMruHistory.value = next;
+  localStorage.setItem('pw-pane-mru', JSON.stringify(next));
 }
+
+effect(() => {
+  const id = activeTabId.value;
+  if (id) pushPaneMru({ type: 'tab', sessionId: id });
+});
 
 export function bringToFront(panelId: string) {
   panelZCounter++;
   const map = new Map(panelZOrders.value);
   map.set(panelId, panelZCounter);
   panelZOrders.value = map;
-  pushPanelMru(panelId);
+  pushPaneMru({ type: 'panel', panelId });
   requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
 }
 
