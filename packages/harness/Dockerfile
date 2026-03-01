@@ -47,6 +47,7 @@ COPY packages/server/package.json packages/server/
 RUN apt-get update && \
     apt-get install -y --no-install-recommends python3 make g++ && \
     pnpm install --frozen-lockfile --prod && \
+    npm install -g @anthropic-ai/claude-code && \
     apt-get purge -y python3 make g++ && \
     apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*

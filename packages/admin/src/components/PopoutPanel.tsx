@@ -45,6 +45,13 @@ import {
   panelZOrders,
   toggleAlwaysOnTop,
   switchAutoJumpActiveSession,
+  getTerminalCompanion,
+  setTerminalCompanion,
+  terminalCompanionMap,
+  spawnTerminal,
+  attachTmuxSession,
+  loadAllSessions,
+  focusSessionTerminal,
 } from '../lib/sessions.js';
 import { startTabDrag } from '../lib/tab-drag.js';
 import { ctrlShiftHeld } from '../lib/shortcuts.js';
@@ -57,6 +64,9 @@ import { IframeCompanionView } from './IframeCompanionView.js';
 import { TerminalCompanionView } from './TerminalCompanionView.js';
 
 export const popoutIdMenuOpen = signal<string | null>(null);
+const popoutTermPickerSessionId = signal<string | null>(null);
+const popoutTermPickerTmux = signal<{ name: string; windows: number; created: string; attached: boolean }[]>([]);
+const popoutTermPickerLoading = signal(false);
 const popoutStatusMenuOpen = signal<{ sessionId: string; panelId: string; x: number; y: number } | null>(null);
 const popoutHotkeyMenuOpen = signal<{ sessionId: string; panelId: string; x: number; y: number } | null>(null);
 export const popoutWindowMenuOpen = signal<string | null>(null);
@@ -124,6 +134,74 @@ function PanelTabBadge({ tabNum }: { tabNum: number }) {
   return <span class="tab-number-badge">{tabNum}</span>;
 }
 
+function PopoutTerminalCompanionPicker({ sessionId, panelId, sessionMap, onClose }: { sessionId: string; panelId: string; sessionMap: Map<string, any>; onClose: () => void }) {
+  const loading = popoutTermPickerLoading.value;
+  const tmuxSessions = popoutTermPickerTmux.value;
+  const sessions = allSessions.value;
+  const existingTerminals = sessions.filter((s: any) => s.permissionProfile === 'plain' && s.id !== sessionId && s.status !== 'failed');
+
+  async function pickExisting(termSessionId: string) {
+    setTerminalCompanion(sessionId, termSessionId);
+    togglePanelCompanion(panelId, sessionId, 'terminal');
+    onClose();
+  }
+
+  async function pickNew() {
+    const newId = await spawnTerminal(null);
+    if (newId) {
+      await loadAllSessions();
+      setTerminalCompanion(sessionId, newId);
+      togglePanelCompanion(panelId, sessionId, 'terminal');
+    }
+    onClose();
+  }
+
+  async function pickTmux(tmuxName: string) {
+    const newId = await attachTmuxSession(tmuxName);
+    if (newId) {
+      await loadAllSessions();
+      setTerminalCompanion(sessionId, newId);
+      togglePanelCompanion(panelId, sessionId, 'terminal');
+    }
+    onClose();
+  }
+
+  return (
+    <div class="id-dropdown-menu term-picker-menu" style="top:100%;left:0;min-width:200px" onClick={(e: any) => e.stopPropagation()}>
+      <button onClick={pickNew}>New terminal</button>
+      {existingTerminals.length > 0 && (
+        <>
+          <div class="id-dropdown-separator" />
+          <div style="font-size:10px;color:var(--pw-text-muted);padding:2px 8px">Open terminals</div>
+          {existingTerminals.map((s: any) => {
+            const label = s.paneCommand
+              ? `${s.paneCommand}:${s.panePath || ''}`
+              : (s.paneTitle || `pw-${s.id.slice(-6)}`);
+            return (
+              <button key={s.id} onClick={() => pickExisting(s.id)} title={s.id}>
+                {label}
+              </button>
+            );
+          })}
+        </>
+      )}
+      {(loading || tmuxSessions.length > 0) && <div class="id-dropdown-separator" />}
+      {loading && <div style="font-size:10px;color:var(--pw-text-muted);padding:2px 8px">Loading tmux sessions...</div>}
+      {!loading && tmuxSessions.length > 0 && (
+        <>
+          <div style="font-size:10px;color:var(--pw-text-muted);padding:2px 8px">Attach tmux session</div>
+          {tmuxSessions.map((s: any) => (
+            <button key={s.name} onClick={() => pickTmux(s.name)} title={`${s.windows} window${s.windows !== 1 ? 's' : ''}${s.attached ? ', attached' : ''}`}>
+              {s.name}
+              <span style="float:right;opacity:0.5;font-size:10px">{s.windows}w{s.attached ? ' \u2022' : ''}</span>
+            </button>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
 function renderPanelTabContent(
   sid: string,
   isVisible: boolean,
@@ -146,7 +224,10 @@ function renderPanelTabContent(
       ) : isIframe ? (
         sess?.url ? <IframeCompanionView url={sess.url} /> : <div class="companion-error">No URL available</div>
       ) : isTerminal ? (
-        sess?.companionSessionId ? <TerminalCompanionView companionSessionId={sess.companionSessionId} /> : <div class="companion-error">No companion terminal</div>
+        (() => {
+          const termSid = getTerminalCompanion(realSid);
+          return termSid ? <TerminalCompanionView companionSessionId={termSid} /> : <div class="companion-error">No companion terminal</div>;
+        })()
       ) : (
         <SessionViewToggle
           sessionId={sid}
@@ -384,7 +465,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
     if (isJsonl) return `JSONL: ${s?.feedbackTitle || s?.agentName || realSid.slice(-6)}`;
     if (isFeedback) return `FB: ${s?.feedbackTitle || realSid.slice(-6)}`;
     if (isIframe) return `Page: ${realSid.slice(-6)}`;
-    if (isTerminal) return `Term: ${realSid.slice(-6)}`;
+    if (isTerminal) { const ts = getTerminalCompanion(realSid); const tSess = ts ? sessionMap.get(ts) : null; return `Term: ${tSess?.paneTitle || ts?.slice(-6) || realSid.slice(-6)}`; }
     const isPlainSess = s?.permissionProfile === 'plain';
     const plainLabel = s?.paneCommand
       ? `${s.paneCommand}:${s.panePath || ''} \u2014 ${s?.paneTitle || sid.slice(-6)}`
@@ -420,7 +501,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
         class={`${docked ? `popout-docked${isLeftDocked ? ' docked-left' : ''}` : 'popout-floating'}${isMinimized ? ' minimized' : ''}${isFocused ? ' panel-focused' : ''}${isActive ? ' panel-active' : ''}${panel.alwaysOnTop ? ' always-on-top' : ''}`}
         style={panelStyle}
         data-panel-id={panel.id}
-        onMouseDown={() => { activePanelId.value = panel.id; bringToFront(panel.id); }}
+        onMouseDown={() => { activePanelId.value = panel.id; bringToFront(panel.id); if (panel.activeSessionId) focusSessionTerminal(panel.activeSessionId); }}
       >
       <div class="popout-tab-bar" onMouseDown={onHeaderDragStart} onDblClick={() => {
         if (!docked) {
@@ -629,11 +710,21 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
                     </button>
                   );
                 })()}
-                {session?.companionSessionId && (() => {
+                {(() => {
                   const panelRight = panel.rightPaneTabs || [];
                   const termActive = panelRight.includes(companionTabId(activeId, 'terminal')) && panel.splitEnabled;
                   return (
-                    <button onClick={() => { popoutIdMenuOpen.value = null; togglePanelCompanion(panel.id, activeId, 'terminal'); }}>
+                    <button onClick={(e: any) => {
+                      e.stopPropagation();
+                      if (termActive) {
+                        popoutIdMenuOpen.value = null;
+                        togglePanelCompanion(panel.id, activeId, 'terminal');
+                      } else {
+                        popoutTermPickerSessionId.value = activeId;
+                        popoutTermPickerLoading.value = true;
+                        api.listTmuxSessions().then((r: any) => { popoutTermPickerTmux.value = r.sessions; }).catch(() => { popoutTermPickerTmux.value = []; }).finally(() => { popoutTermPickerLoading.value = false; });
+                      }
+                    }}>
                       {termActive ? '\u2713 ' : ''}Terminal companion <kbd>M</kbd>
                     </button>
                   );
@@ -646,6 +737,14 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
                   <button onClick={() => { popoutIdMenuOpen.value = null; api.openSessionInTerminal(activeId).catch(() => {}); }}>Open in Terminal.app <kbd>A</kbd></button>
                 )}
               </div>
+            )}
+            {popoutTermPickerSessionId.value === activeId && (
+              <PopoutTerminalCompanionPicker
+                sessionId={activeId}
+                panelId={panel.id}
+                sessionMap={sessionMap}
+                onClose={() => { popoutTermPickerSessionId.value = null; popoutIdMenuOpen.value = null; }}
+              />
             )}
           </div>
         )}
@@ -1045,10 +1144,17 @@ export function PopoutPanel() {
           if (ownerPanel) togglePanelCompanion(ownerPanel.id, menuSessionId, 'iframe');
         }
       } else if (key === 'm') {
-        const s = sessionMap.get(menuSessionId);
-        if (s?.companionSessionId) {
-          const ownerPanel = panels.find((p) => p.sessionIds.includes(menuSessionId));
-          if (ownerPanel) togglePanelCompanion(ownerPanel.id, menuSessionId, 'terminal');
+        const ownerPanel = panels.find((p) => p.sessionIds.includes(menuSessionId));
+        if (ownerPanel) {
+          const panelRight = ownerPanel.rightPaneTabs || [];
+          const termActive = panelRight.includes(companionTabId(menuSessionId, 'terminal')) && ownerPanel.splitEnabled;
+          if (termActive) {
+            togglePanelCompanion(ownerPanel.id, menuSessionId, 'terminal');
+          } else {
+            popoutTermPickerSessionId.value = menuSessionId;
+            popoutTermPickerLoading.value = true;
+            api.listTmuxSessions().then((r: any) => { popoutTermPickerTmux.value = r.sessions; }).catch(() => { popoutTermPickerTmux.value = []; }).finally(() => { popoutTermPickerLoading.value = false; });
+          }
         }
       } else if (key === 'escape') {
         // just close

@@ -451,13 +451,12 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
     const rafId = requestAnimationFrame(() => {
       safeFitAndResizeRef.current(true);
       term.refresh(0, term.rows - 1);
+      term.focus();
     });
-    const focusTimer = setTimeout(() => term.focus(), 80);
     // No periodic resize — ResizeObserver, focus, and visibility handlers cover
     // all real scenarios. The old 5s setInterval caused visible flicker.
     return () => {
       cancelAnimationFrame(rafId);
-      clearTimeout(focusTimer);
     };
   }, [isActive]);
 

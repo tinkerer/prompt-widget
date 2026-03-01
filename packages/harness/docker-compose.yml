@@ -3,7 +3,7 @@ services:
     build:
       context: ../..
       dockerfile: packages/harness/Dockerfile
-    container_name: pw-server
+
     ports:
       - "${SERVER_PORT:-3001}:3001"
     volumes:
@@ -29,7 +29,7 @@ services:
 
   pw-browser:
     image: mcr.microsoft.com/playwright/mcp
-    container_name: pw-browser
+
     entrypoint: ["node", "cli.js"]
     command:
       - "--headless"
@@ -59,7 +59,7 @@ services:
 
   pw-app:
     image: ${APP_IMAGE:-nginx:alpine}
-    container_name: pw-app
+
     ports:
       - "${APP_PORT:-8080}:${APP_INTERNAL_PORT:-80}"
     networks:

@@ -383,6 +383,12 @@ export const api = {
   stopHarness: (id: string) =>
     request<{ ok: boolean; status: string }>(`/admin/harness-configs/${id}/stop`, { method: 'POST' }),
 
+  launchHarnessSession: (id: string, data?: { prompt?: string; permissionProfile?: string; serviceName?: string }) =>
+    request<{ ok: boolean; sessionId: string }>(`/admin/harness-configs/${id}/session`, {
+      method: 'POST',
+      body: JSON.stringify(data || {}),
+    }),
+
   getDefaultPromptTemplate: () =>
     request<{ template: string }>('/admin/default-prompt-template'),
 

@@ -3,7 +3,8 @@ import { eq } from 'drizzle-orm';
 import { ulid } from 'ulidx';
 import { db, schema } from '../db/index.js';
 import { listLaunchers, getLauncher } from '../launcher-registry.js';
-import type { StartHarness, StopHarness } from '@prompt-widget/shared';
+import { dispatchHarnessSession } from '../dispatch.js';
+import type { StartHarness, StopHarness, PermissionProfile } from '@prompt-widget/shared';
 
 const app = new Hono();
 
@@ -172,6 +173,48 @@ app.post('/:id/stop', (c) => {
     .run();
 
   return c.json({ ok: true, status: 'stopped' });
+});
+
+app.post('/:id/session', async (c) => {
+  const id = c.req.param('id');
+  const config = db.select().from(schema.harnessConfigs).where(eq(schema.harnessConfigs.id, id)).get();
+  if (!config) return c.json({ error: 'Harness config not found' }, 404);
+
+  if (config.status !== 'running') {
+    return c.json({ error: 'Harness is not running' }, 400);
+  }
+
+  // Find the launcher for this harness
+  let targetLauncher;
+  if (config.launcherId) {
+    targetLauncher = getLauncher(config.launcherId);
+  }
+  if (!targetLauncher && config.machineId) {
+    const launchers = listLaunchers();
+    targetLauncher = launchers.find(l => l.machineId === config.machineId && l.ws?.readyState === 1);
+  }
+
+  if (!targetLauncher || targetLauncher.ws?.readyState !== 1) {
+    return c.json({ error: 'No connected launcher for this harness' }, 400);
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  const prompt = body.prompt || 'You are running inside a harness container. Await instructions.';
+  const permissionProfile = (body.permissionProfile || 'yolo') as PermissionProfile;
+
+  try {
+    const { sessionId } = await dispatchHarnessSession({
+      harnessConfigId: id,
+      launcherId: targetLauncher.id,
+      prompt,
+      composeDir: config.composeDir || undefined,
+      serviceName: body.serviceName || 'pw-server',
+      permissionProfile,
+    });
+    return c.json({ ok: true, sessionId });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
 });
 
 export default app;

@@ -162,6 +162,25 @@ function statusColor(status: string): string {
   }
 }
 
+function getHarnessUrl(h: any): string | null {
+  if (h.status !== 'running') return null;
+  const machine = machines.value.find(m => m.id === h.machineId);
+  if (!machine?.address) return null;
+  const port = h.serverPort || 3001;
+  return `http://${machine.address}:${port}/admin/`;
+}
+
+async function handleLaunchSession(id: string) {
+  try {
+    const result = await api.launchHarnessSession(id, { permissionProfile: 'yolo' });
+    if (result.sessionId) {
+      window.location.hash = '#/sessions';
+    }
+  } catch (err: any) {
+    error.value = err.message;
+  }
+}
+
 function getAppName(appId: string | null): string {
   if (!appId) return '';
   const app = applications.value.find(a => a.id === appId);
@@ -331,7 +350,10 @@ export function HarnessesPage() {
                       Start
                     </button>
                   ) : (
-                    <button class="btn btn-sm" onClick={() => handleStop(h.id)}>Stop</button>
+                    <>
+                      <button class="btn btn-sm" onClick={() => handleLaunchSession(h.id)} title="Launch Claude session in container">Session</button>
+                      <button class="btn btn-sm" onClick={() => handleStop(h.id)}>Stop</button>
+                    </>
                   )}
                   <button class="btn btn-sm" onClick={() => openEdit(h)}>Edit</button>
                   <button class="btn btn-sm btn-danger" onClick={() => handleDelete(h.id, h.name)}>Delete</button>
@@ -343,16 +365,25 @@ export function HarnessesPage() {
                 {h.appImage && <span class="agent-meta-tag">{h.appImage}</span>}
               </div>
               <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:12px;font-size:12px;color:var(--pw-text-muted)">
-                {h.targetAppUrl && (
-                  <div>
-                    <span style="font-weight:500;color:var(--pw-text)">App URL: </span>
-                    {h.status === 'running' ? (
-                      <a href={h.targetAppUrl} target="_blank" rel="noopener" style="color:var(--pw-primary)">{h.targetAppUrl}</a>
-                    ) : (
-                      <span>{h.targetAppUrl}</span>
-                    )}
-                  </div>
-                )}
+                {(() => {
+                  const extUrl = getHarnessUrl(h);
+                  return (
+                    <>
+                      {extUrl && (
+                        <div>
+                          <span style="font-weight:500;color:var(--pw-text)">URL: </span>
+                          <a href={extUrl} target="_blank" rel="noopener" style="color:var(--pw-primary)">{extUrl}</a>
+                        </div>
+                      )}
+                      {h.targetAppUrl && (
+                        <div>
+                          <span style="font-weight:500;color:var(--pw-text)">{extUrl ? 'Internal: ' : 'App URL: '}</span>
+                          <span>{h.targetAppUrl}</span>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
                 {(h.appPort || h.serverPort || h.browserMcpPort) && (
                   <div>
                     <span style="font-weight:500;color:var(--pw-text)">Ports: </span>

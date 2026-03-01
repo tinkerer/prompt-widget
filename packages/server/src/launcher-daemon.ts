@@ -13,6 +13,7 @@ import type {
   LauncherCapabilities,
   SequencedOutput,
   SessionOutputData,
+  LaunchHarnessSession,
 } from '@prompt-widget/shared';
 import {
   isTmuxAvailable,
@@ -277,6 +278,7 @@ function handleServerMessage(msg: ServerToLauncherMessage): void {
         if (msg.targetAppUrl) env.TARGET_APP_URL = msg.targetAppUrl;
         env.HARNESS_CONFIG_ID = msg.harnessConfigId;
 
+        env.COMPOSE_PROJECT_NAME = `pw-${msg.harnessConfigId}`;
         const envStr = Object.entries(env).map(([k, v]) => `${k}=${v}`).join(' ');
         const cwd = msg.composeDir || undefined;
         execSync(`${envStr} docker compose up -d`, { stdio: 'pipe', timeout: 300_000, cwd });
@@ -304,7 +306,8 @@ function handleServerMessage(msg: ServerToLauncherMessage): void {
       console.log(`[launcher] Stopping harness ${msg.harnessConfigId}`);
       try {
         const cwd = msg.composeDir || undefined;
-        execSync('docker compose down', { stdio: 'pipe', timeout: 60_000, cwd });
+        const projectName = `pw-${msg.harnessConfigId}`;
+        execSync(`docker compose -p ${projectName} down`, { stdio: 'pipe', timeout: 60_000, cwd });
         const status: HarnessStatusUpdate = {
           type: 'harness_status',
           harnessConfigId: msg.harnessConfigId,
@@ -314,6 +317,75 @@ function handleServerMessage(msg: ServerToLauncherMessage): void {
       } catch (err: any) {
         console.error(`[launcher] Failed to stop harness:`, err.message);
       }
+      break;
+    }
+
+    case 'launch_harness_session': {
+      const { sessionId, harnessConfigId, prompt, composeDir, serviceName, permissionProfile, cols, rows } = msg;
+      const projectName = `pw-${harnessConfigId}`;
+      const svc = serviceName || 'pw-server';
+
+      console.log(`[launcher] Launching harness session ${sessionId} in ${projectName}/${svc}`);
+
+      if (sessions.has(sessionId)) {
+        console.log(`[launcher] Session ${sessionId} already running`);
+        break;
+      }
+
+      const { args: claudeArgs } = buildClaudeArgs(prompt, permissionProfile);
+      const dockerArgs = ['compose', '-p', projectName, 'exec', '-T', svc, 'claude', ...claudeArgs];
+      if (composeDir) {
+        dockerArgs.splice(1, 0, '--project-directory', composeDir);
+      }
+
+      const ptyProcess = pty.spawn('docker', dockerArgs, {
+        name: 'xterm-256color',
+        cols,
+        rows,
+        env: { ...process.env, TERM: 'xterm-256color' } as Record<string, string>,
+      });
+
+      const session: LocalSession = {
+        sessionId,
+        ptyProcess,
+        outputBuffer: '',
+        totalBytes: 0,
+        outputSeq: 0,
+        status: 'running',
+      };
+      sessions.set(sessionId, session);
+
+      const started: LauncherSessionStarted = {
+        type: 'launcher_session_started',
+        sessionId,
+        pid: ptyProcess.pid,
+      };
+      sendToServer(started);
+
+      ptyProcess.onData((data: string) => {
+        session.outputBuffer += data;
+        session.totalBytes += Buffer.byteLength(data);
+        if (session.outputBuffer.length > MAX_OUTPUT_LOG) {
+          session.outputBuffer = session.outputBuffer.slice(-MAX_OUTPUT_LOG);
+        }
+        sendSequenced(session, { kind: 'output', data });
+      });
+
+      ptyProcess.onExit(({ exitCode }) => {
+        session.status = exitCode === 0 ? 'completed' : 'failed';
+        sendSequenced(session, { kind: 'exit', exitCode, status: session.status });
+
+        const ended: LauncherSessionEnded = {
+          type: 'launcher_session_ended',
+          sessionId,
+          exitCode,
+          status: session.status,
+          outputLog: session.outputBuffer.slice(-MAX_OUTPUT_LOG),
+        };
+        sendToServer(ended);
+        sessions.delete(sessionId);
+      });
+
       break;
     }
   }

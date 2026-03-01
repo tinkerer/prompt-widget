@@ -49,6 +49,13 @@ import {
   bringToFront,
   getPanelZIndex,
   panelZOrders,
+  getTerminalCompanion,
+  setTerminalCompanionAndOpen,
+  terminalCompanionMap,
+  spawnTerminal,
+  attachTmuxSession,
+  loadAllSessions,
+  focusSessionTerminal,
 } from '../lib/sessions.js';
 import { FeedbackCompanionView } from './FeedbackCompanionView.js';
 import { IframeCompanionView } from './IframeCompanionView.js';
@@ -63,8 +70,85 @@ import { copyWithTooltip } from '../lib/clipboard.js';
 const statusMenuOpen = signal<{ sessionId: string; x: number; y: number } | null>(null);
 const renamingSessionId = signal<string | null>(null);
 const renameValue = signal('');
+const termPickerSessionId = signal<string | null>(null);
+const termPickerTmux = signal<{ name: string; windows: number; created: string; attached: boolean }[]>([]);
+const termPickerLoading = signal(false);
 export const idMenuOpen = signal<string | null>(null);
 const panelResizing = signal(false);
+
+function TerminalCompanionPicker({ sessionId, sessionMap, onClose }: { sessionId: string; sessionMap: Map<string, any>; onClose: () => void }) {
+  const loading = termPickerLoading.value;
+  const tmuxSessions = termPickerTmux.value;
+  const sessions = allSessions.value;
+  const existingTerminals = sessions.filter((s) => s.permissionProfile === 'plain' && s.id !== sessionId && s.status !== 'failed');
+
+  async function pickExisting(termSessionId: string) {
+    setTerminalCompanionAndOpen(sessionId, termSessionId);
+    onClose();
+  }
+
+  async function pickNew() {
+    const newId = await spawnTerminal(selectedAppId.value);
+    if (newId) {
+      await loadAllSessions();
+      setTerminalCompanionAndOpen(sessionId, newId);
+    }
+    onClose();
+  }
+
+  async function pickTmux(tmuxName: string) {
+    const newId = await attachTmuxSession(tmuxName, selectedAppId.value ?? undefined);
+    if (newId) {
+      await loadAllSessions();
+      setTerminalCompanionAndOpen(sessionId, newId);
+    }
+    onClose();
+  }
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      const target = e.target as HTMLElement;
+      if (!target.closest('.term-picker-menu')) onClose();
+    }
+    setTimeout(() => document.addEventListener('mousedown', handleClick), 0);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [onClose]);
+
+  return (
+    <div class="id-dropdown-menu term-picker-menu" style="top:100%;left:0;min-width:200px" onClick={(e) => e.stopPropagation()}>
+      <button onClick={pickNew}>New terminal</button>
+      {existingTerminals.length > 0 && (
+        <>
+          <div class="id-dropdown-separator" />
+          <div style="font-size:10px;color:var(--pw-text-muted);padding:2px 8px">Open terminals</div>
+          {existingTerminals.map((s) => {
+            const label = s.paneCommand
+              ? `${s.paneCommand}:${s.panePath || ''}`
+              : (s.paneTitle || `pw-${s.id.slice(-6)}`);
+            return (
+              <button key={s.id} onClick={() => pickExisting(s.id)} title={s.id}>
+                {label}
+              </button>
+            );
+          })}
+        </>
+      )}
+      {(loading || tmuxSessions.length > 0) && <div class="id-dropdown-separator" />}
+      {loading && <div style="font-size:10px;color:var(--pw-text-muted);padding:2px 8px">Loading tmux sessions...</div>}
+      {!loading && tmuxSessions.length > 0 && (
+        <>
+          <div style="font-size:10px;color:var(--pw-text-muted);padding:2px 8px">Attach tmux session</div>
+          {tmuxSessions.map((s) => (
+            <button key={s.name} onClick={() => pickTmux(s.name)} title={`${s.windows} window${s.windows !== 1 ? 's' : ''}${s.attached ? ', attached' : ''}`}>
+              {s.name}
+              <span style="float:right;opacity:0.5;font-size:10px">{s.windows}w{s.attached ? ' \u2022' : ''}</span>
+            </button>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
 
 function PaneHeader({
   sessionId,
@@ -105,7 +189,7 @@ function PaneHeader({
             {isJsonlTab && `JSONL: pw-${realSessionId!.slice(-6)}`}
             {isFeedbackTab && `Feedback: pw-${realSessionId!.slice(-6)}`}
             {isIframeTab && `Page: pw-${realSessionId!.slice(-6)}`}
-            {isTerminalTab && `Terminal: pw-${realSessionId!.slice(-6)}`}
+            {isTerminalTab && (() => { const ts = getTerminalCompanion(realSessionId!); return `Terminal: pw-${ts?.slice(-6) || realSessionId!.slice(-6)}`; })()}
           </span>
           {feedbackPath && (
             <a href={`#${feedbackPath}`} onClick={(e) => { e.preventDefault(); navigate(feedbackPath); }} class="feedback-title-link" title={sess?.feedbackTitle || 'View feedback'}>{sess?.feedbackTitle || 'View feedback'}</a>
@@ -161,11 +245,21 @@ function PaneHeader({
                     </button>
                   );
                 })()}
-                {sess?.companionSessionId && (() => {
+                {(() => {
                   const companions = getCompanions(sessionId);
                   const termActive = companions.includes('terminal');
                   return (
-                    <button onClick={() => { idMenuOpen.value = null; toggleCompanion(sessionId, 'terminal'); }}>
+                    <button onClick={(e) => {
+                      e.stopPropagation();
+                      if (termActive) {
+                        idMenuOpen.value = null;
+                        toggleCompanion(sessionId, 'terminal');
+                      } else {
+                        termPickerSessionId.value = sessionId;
+                        termPickerLoading.value = true;
+                        api.listTmuxSessions().then((r) => { termPickerTmux.value = r.sessions; }).catch(() => { termPickerTmux.value = []; }).finally(() => { termPickerLoading.value = false; });
+                      }
+                    }}>
                       {termActive ? '\u2713 ' : ''}Terminal companion <kbd>M</kbd>
                     </button>
                   );
@@ -184,6 +278,13 @@ function PaneHeader({
                   </>
                 )}
               </div>
+            )}
+            {termPickerSessionId.value === sessionId && (
+              <TerminalCompanionPicker
+                sessionId={sessionId}
+                sessionMap={sessionMap}
+                onClose={() => { termPickerSessionId.value = null; idMenuOpen.value = null; }}
+              />
             )}
           </div>
           {feedbackPath && (
@@ -314,7 +415,8 @@ function PaneTabBar({
         const companionLabel = isJsonl ? `JSONL: ${sess?.feedbackTitle || sess?.agentName || realSid.slice(-6)}`
           : isFeedback ? `FB: ${sess?.feedbackTitle || realSid.slice(-6)}`
           : isIframe ? `Page: ${realSid.slice(-6)}`
-          : isTerminal ? `Term: ${realSid.slice(-6)}`
+          : isTerminal ? (() => { const ts = getTerminalCompanion(realSid); const tSess = ts ? sessionMap.get(ts) : null; return `Term: ${tSess?.paneTitle || ts?.slice(-6) || realSid.slice(-6)}`; })()
+
           : '';
         const raw = customLabel || (isCompanion ? companionLabel : isPlain ? `\u{1F5A5}\uFE0F ${plainLabel}` : (sess?.feedbackTitle || sess?.agentName || `Session ${sid.slice(-6)}`));
         const tabLabel = raw;
@@ -401,7 +503,10 @@ function renderTabContent(
       ) : isIframe ? (
         sess?.url ? <IframeCompanionView url={sess.url} /> : <div class="companion-error">No URL available</div>
       ) : isTerminal ? (
-        sess?.companionSessionId ? <TerminalCompanionView companionSessionId={sess.companionSessionId} /> : <div class="companion-error">No companion terminal</div>
+        (() => {
+          const termSid = getTerminalCompanion(realSid);
+          return termSid ? <TerminalCompanionView companionSessionId={termSid} /> : <div class="companion-error">No companion terminal</div>;
+        })()
       ) : (
         <SessionViewToggle
           sessionId={sid}
@@ -489,8 +594,14 @@ export function GlobalTerminalPanel() {
         const s = sessionMap.get(menuSessionId);
         if (s?.url) toggleCompanion(menuSessionId, 'iframe');
       } else if (key === 'm') {
-        const s = sessionMap.get(menuSessionId);
-        if (s?.companionSessionId) toggleCompanion(menuSessionId, 'terminal');
+        const companions = getCompanions(menuSessionId);
+        if (companions.includes('terminal')) {
+          toggleCompanion(menuSessionId, 'terminal');
+        } else {
+          termPickerSessionId.value = menuSessionId;
+          termPickerLoading.value = true;
+          api.listTmuxSessions().then((r) => { termPickerTmux.value = r.sessions; }).catch(() => { termPickerTmux.value = []; }).finally(() => { termPickerLoading.value = false; });
+        }
       } else if (key === 's' && tabs.length >= 2 && !isSplit) {
         enableSplit();
       } else if (key === 'escape') {
@@ -618,7 +729,12 @@ export function GlobalTerminalPanel() {
     <div
       class={`global-terminal-panel${sidebarAnimating.value ? ' animating' : ''}${panelResizing.value ? ' dragging' : ''}${isFocused ? ' panel-focused' : ''}`}
       style={{ height: minimized ? (hasTabs ? '66px' : '32px') : maximized ? '100vh' : `${height}px`, left: `${sidebarWidth.value + (sidebarCollapsed.value ? 0 : 3)}px`, zIndex: globalZIdx }}
-      onMouseDown={() => { activePanelId.value = isSplit ? 'split-left' : 'global'; bringToFront('global-panel'); }}
+      onMouseDown={() => {
+        activePanelId.value = isSplit ? 'split-left' : 'global';
+        bringToFront('global-panel');
+        const sid = isSplit ? activeTabId.value : activeId;
+        if (sid) focusSessionTerminal(sid);
+      }}
     >
       <div class="terminal-resize-handle" onMouseDown={onResizeMouseDown} />
       {hasTabs && !isSplit && (
@@ -737,7 +853,7 @@ export function GlobalTerminalPanel() {
             class={`terminal-split-pane${activePanelId.value === 'split-left' ? ' split-focused' : ''}`}
             data-split-pane="split-left"
             style={{ flex: splitRatio.value }}
-            onMouseDown={() => { activePanelId.value = 'split-left'; }}
+            onMouseDown={() => { activePanelId.value = 'split-left'; if (activeId) focusSessionTerminal(activeId); }}
           >
             <div class="split-pane-tab-bar">
               <PaneTabBar
@@ -763,7 +879,7 @@ export function GlobalTerminalPanel() {
             class={`terminal-split-pane${activePanelId.value === 'split-right' ? ' split-focused' : ''}`}
             data-split-pane="split-right"
             style={{ flex: 1 - splitRatio.value }}
-            onMouseDown={() => { activePanelId.value = 'split-right'; }}
+            onMouseDown={() => { activePanelId.value = 'split-right'; if (rightActive) focusSessionTerminal(rightActive); }}
           >
             <div class="split-pane-tab-bar">
               <PaneTabBar

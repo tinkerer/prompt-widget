@@ -1,6 +1,6 @@
 import { ulid } from 'ulidx';
 import { eq, and, sql } from 'drizzle-orm';
-import type { FeedbackItem, PermissionProfile, LaunchSession } from '@prompt-widget/shared';
+import type { FeedbackItem, PermissionProfile, LaunchSession, LaunchHarnessSession } from '@prompt-widget/shared';
 import { db, schema } from './db/index.js';
 import { spawnAgentSession } from './agent-sessions.js';
 import { getLauncher, addSessionToLauncher } from './launcher-registry.js';
@@ -595,6 +595,63 @@ IMPORTANT: The previous session may have made partial progress. Check the curren
     permissionProfile,
     claudeSessionId,
   });
+
+  return { sessionId };
+}
+
+export async function dispatchHarnessSession(params: {
+  harnessConfigId: string;
+  launcherId: string;
+  prompt: string;
+  composeDir?: string;
+  serviceName?: string;
+  permissionProfile: PermissionProfile;
+}): Promise<{ sessionId: string }> {
+  const sessionId = ulid();
+  const now = new Date().toISOString();
+
+  const launcher = getLauncher(params.launcherId);
+  if (!launcher || launcher.ws.readyState !== 1) {
+    throw new Error('Launcher is not connected');
+  }
+
+  db.insert(schema.agentSessions)
+    .values({
+      id: sessionId,
+      feedbackId: null,
+      agentEndpointId: null,
+      permissionProfile: params.permissionProfile,
+      status: 'pending',
+      outputBytes: 0,
+      launcherId: params.launcherId,
+      createdAt: now,
+    })
+    .run();
+
+  const msg: LaunchHarnessSession = {
+    type: 'launch_harness_session',
+    sessionId,
+    harnessConfigId: params.harnessConfigId,
+    prompt: params.prompt,
+    composeDir: params.composeDir,
+    serviceName: params.serviceName,
+    permissionProfile: params.permissionProfile,
+    cols: 120,
+    rows: 40,
+  };
+
+  try {
+    launcher.ws.send(JSON.stringify(msg));
+    addSessionToLauncher(params.launcherId, sessionId);
+    console.log(`[dispatch] Sent harness session ${sessionId} to launcher ${params.launcherId}`);
+  } catch (err) {
+    console.error(`[dispatch] Failed to send harness session to launcher:`, err);
+    db.update(schema.agentSessions)
+      .set({ status: 'failed', completedAt: new Date().toISOString() })
+      .where(eq(schema.agentSessions.id, sessionId))
+      .run();
+    throw err;
+  }
 
   return { sessionId };
 }

@@ -1061,12 +1061,10 @@ export function openSession(sessionId: string) {
   panelMinimized.value = false;
   persistTabs();
 
-  // Auto-enable terminal companion if session has companionSessionId
+  // Auto-seed terminal companion from server's companionSessionId if not already mapped
   const sess = allSessions.value.find((s) => s.id === sessionId);
-  if (sess?.companionSessionId && !getCompanions(sessionId).includes('terminal')) {
-    const companions = getCompanions(sessionId);
-    sessionCompanions.value = { ...sessionCompanions.value, [sessionId]: [...companions, 'terminal'] };
-    persistCompanions();
+  if (sess?.companionSessionId && !getTerminalCompanion(sessionId)) {
+    setTerminalCompanion(sessionId, sess.companionSessionId);
   }
 
   // Sync companion pane when switching sessions
@@ -1721,6 +1719,46 @@ export function handleTabDigit0to9(digit: number) {
 
 export type CompanionType = 'jsonl' | 'feedback' | 'iframe' | 'terminal';
 
+// Terminal companion: maps parent session ID → terminal session ID
+export const terminalCompanionMap = signal<Record<string, string>>(
+  loadJson('pw-terminal-companion-map', {})
+);
+
+function persistTerminalCompanionMap() {
+  localStorage.setItem('pw-terminal-companion-map', JSON.stringify(terminalCompanionMap.value));
+}
+
+export function getTerminalCompanion(sessionId: string): string | undefined {
+  return terminalCompanionMap.value[sessionId];
+}
+
+export function setTerminalCompanion(parentSessionId: string, termSessionId: string) {
+  terminalCompanionMap.value = { ...terminalCompanionMap.value, [parentSessionId]: termSessionId };
+  persistTerminalCompanionMap();
+  // Ensure the terminal session is in the sidebar (openTabs)
+  if (!openTabs.value.includes(termSessionId)) {
+    openTabs.value = [...openTabs.value, termSessionId];
+    persistTabs();
+  }
+}
+
+/** Store mapping + open companion in the global (bottom) panel right pane */
+export function setTerminalCompanionAndOpen(parentSessionId: string, termSessionId: string) {
+  setTerminalCompanion(parentSessionId, termSessionId);
+  const current = getCompanions(parentSessionId);
+  if (!current.includes('terminal')) {
+    sessionCompanions.value = { ...sessionCompanions.value, [parentSessionId]: [...current, 'terminal'] };
+    persistCompanions();
+  }
+  openSessionInRightPane(companionTabId(parentSessionId, 'terminal'));
+}
+
+export function removeTerminalCompanion(sessionId: string) {
+  const { [sessionId]: _, ...rest } = terminalCompanionMap.value;
+  terminalCompanionMap.value = rest;
+  persistTerminalCompanionMap();
+}
+
 export const sessionCompanions = signal<Record<string, CompanionType[]>>(
   loadJson('pw-session-companions', {})
 );
@@ -1770,6 +1808,11 @@ export function toggleCompanion(sessionId: string, type: CompanionType) {
       sessionCompanions.value = { ...sessionCompanions.value, [sessionId]: next };
     }
     persistCompanions();
+
+    // Clean up terminal companion map when toggling off
+    if (type === 'terminal') {
+      removeTerminalCompanion(sessionId);
+    }
 
     // Close the tab from right pane
     const remaining = rightPaneTabs.value.filter((id) => id !== tabId);

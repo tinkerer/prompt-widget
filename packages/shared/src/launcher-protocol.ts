@@ -134,6 +134,18 @@ export interface StopHarness {
   composeDir?: string;
 }
 
+export interface LaunchHarnessSession {
+  type: 'launch_harness_session';
+  sessionId: string;
+  harnessConfigId: string;
+  prompt: string;
+  composeDir?: string;
+  serviceName?: string;
+  permissionProfile: PermissionProfile;
+  cols: number;
+  rows: number;
+}
+
 export type ServerToLauncherMessage =
   | LauncherRegistered
   | LaunchSession
@@ -141,7 +153,8 @@ export type ServerToLauncherMessage =
   | ResizeSessionRequest
   | InputToSession
   | StartHarness
-  | StopHarness;
+  | StopHarness
+  | LaunchHarnessSession;
 
 // --- Combined ---
 

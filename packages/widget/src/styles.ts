@@ -51,23 +51,18 @@ export const WIDGET_CSS = `
 
 .pw-trigger-stowed {
   pointer-events: none;
-  transition: right 0.3s, bottom 0.3s, width 0.3s, height 0.3s;
+  transition: right 0.3s ease-in, bottom 0.3s ease-in;
 }
 
 .pw-trigger-peek {
-  width: 100px;
-  height: 100px;
-  border-radius: 50%;
-  background: #94a3b8;
-  clip-path: circle(50% at 100% 100%);
   pointer-events: auto;
-  cursor: grab;
-  transition: right 0.6s ease-out, bottom 0.6s ease-out, width 0.6s ease-out, height 0.6s ease-out, opacity 0.6s ease-out;
+  cursor: pointer;
+  clip-path: circle(50% at 100% 100%);
+  transition: right 0.3s ease-out, bottom 0.3s ease-out;
 }
 
 .pw-trigger-peek:hover {
-  opacity: 1;
-  background: #64748b;
+  transform: scale(1.05);
 }
 
 .pw-panel {

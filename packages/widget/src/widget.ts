@@ -517,6 +517,7 @@ export class PromptWidgetElement {
   }
 
   private triggerStowed = false;
+  private triggerPeeking = false;
   private triggerDwellTimer: ReturnType<typeof setTimeout> | null = null;
 
   private renderTrigger() {
@@ -528,80 +529,78 @@ export class PromptWidgetElement {
     let dragged = false;
     let startX = 0;
     let startY = 0;
-    let btnX = 0;
-    let btnY = 0;
 
-    const DROP_ZONE = 30; // px from edge for drop-to-stow
     const HOVER_ZONE = 60; // px from corner for mouse hover reveal
 
-    const isInCorner = (x: number, y: number) => {
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
-      return x + 48 > vw - DROP_ZONE && y + 48 > vh - DROP_ZONE;
-    };
-
-    const positionFromEvent = (el: HTMLElement, x: number, y: number) => {
-      el.style.right = 'auto';
-      el.style.bottom = 'auto';
-      el.style.left = 'auto';
-      el.style.top = 'auto';
-      el.style.left = Math.max(0, Math.min(x, window.innerWidth - 48)) + 'px';
-      el.style.top = Math.max(0, Math.min(y, window.innerHeight - 48)) + 'px';
+    // Default position from CSS class (bottom-right)
+    const defaultPos = () => {
+      btn.style.left = 'auto';
+      btn.style.top = 'auto';
+      btn.style.right = '';
+      btn.style.bottom = '';
     };
 
     const stow = () => {
       this.triggerStowed = true;
+      this.triggerPeeking = false;
+      btn.classList.remove('pw-trigger-peek');
       btn.classList.add('pw-trigger-stowed');
-      // Push completely off-screen into the corner
       btn.style.left = 'auto';
       btn.style.top = 'auto';
       btn.style.right = '-48px';
       btn.style.bottom = '-48px';
-      // Start dwell timer immediately — mouse is already in corner from the drop
-      if (this.triggerDwellTimer) clearTimeout(this.triggerDwellTimer);
-      this.triggerDwellTimer = setTimeout(() => {
-        if (this.triggerStowed) peek();
-        this.triggerDwellTimer = null;
-      }, 1000);
     };
 
     const peek = () => {
+      if (!this.triggerStowed) return;
+      this.triggerPeeking = true;
       btn.classList.remove('pw-trigger-stowed');
       btn.classList.add('pw-trigger-peek');
-      // 100px circle with clip-path: circle(50% at 100% 100%) → radius 50px at element corner.
-      // Position so that circle extends ~22px into viewport at the corner.
-      // (At -20px offset, diagonal distance to corner ≈ 28px < 50px radius)
       btn.style.left = 'auto';
       btn.style.top = 'auto';
-      btn.style.right = '-20px';
-      btn.style.bottom = '-20px';
+      btn.style.right = '-10px';
+      btn.style.bottom = '-10px';
+    };
+
+    const unpeek = () => {
+      if (!this.triggerPeeking) return;
+      this.triggerPeeking = false;
+      btn.classList.remove('pw-trigger-peek');
+      btn.classList.add('pw-trigger-stowed');
+      btn.style.right = '-48px';
+      btn.style.bottom = '-48px';
     };
 
     const unstow = () => {
       this.triggerStowed = false;
+      this.triggerPeeking = false;
       if (this.triggerDwellTimer) {
         clearTimeout(this.triggerDwellTimer);
         this.triggerDwellTimer = null;
       }
-      btn.classList.remove('pw-trigger-stowed', 'pw-trigger-peek');
+      btn.classList.remove('pw-trigger-stowed', 'pw-trigger-peek', 'pw-trigger-dragging');
+      defaultPos();
     };
 
-    // Corner hover detection — reveal peek after 1s of hovering in corner
-    // Use capture phase so xterm.js scrollbar/viewport can't block the event
+    // Corner hover detection — reveal peek after 1s, hide when mouse leaves
     document.addEventListener('mousemove', (ev: MouseEvent) => {
       if (!this.triggerStowed) return;
       const inZone = ev.clientX >= window.innerWidth - HOVER_ZONE
         && ev.clientY >= window.innerHeight - HOVER_ZONE;
 
-      if (inZone && !this.triggerDwellTimer) {
-        this.triggerDwellTimer = setTimeout(() => {
-          if (this.triggerStowed) peek();
+      if (inZone) {
+        if (!this.triggerPeeking && !this.triggerDwellTimer) {
+          this.triggerDwellTimer = setTimeout(() => {
+            this.triggerDwellTimer = null;
+            peek();
+          }, 1000);
+        }
+      } else {
+        if (this.triggerDwellTimer) {
+          clearTimeout(this.triggerDwellTimer);
           this.triggerDwellTimer = null;
-        }, 1000);
-      } else if (!inZone && this.triggerDwellTimer) {
-        clearTimeout(this.triggerDwellTimer);
-        this.triggerDwellTimer = null;
-        // If already peeking and mouse left the zone, stay peeking
+        }
+        if (this.triggerPeeking) unpeek();
       }
     }, true);
 
@@ -612,18 +611,29 @@ export class PromptWidgetElement {
       startX = e.clientX;
       startY = e.clientY;
 
-      const rect = btn.getBoundingClientRect();
-      btnX = rect.left;
-      btnY = rect.top;
+      // If peeking, click to unstow — no drag
+      if (this.triggerPeeking) {
+        const onUp = () => {
+          document.removeEventListener('mouseup', onUp);
+          unstow();
+        };
+        document.addEventListener('mouseup', onUp);
+        return;
+      }
+
+      // If already stowed, ignore
+      if (this.triggerStowed) return;
 
       const onMove = (ev: MouseEvent) => {
-        const dx = ev.clientX - startX;
-        const dy = ev.clientY - startY;
-        if (!dragged && Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+        // Only allow dragging toward bottom-right (positive dx, positive dy)
+        const dx = Math.max(0, ev.clientX - startX);
+        const dy = Math.max(0, ev.clientY - startY);
+        if (!dragged && dx < 4 && dy < 4) return;
         dragged = true;
-        if (this.triggerStowed) unstow();
         btn.classList.add('pw-trigger-dragging');
-        positionFromEvent(btn, btnX + dx, btnY + dy);
+        // Position relative to default: shift right and down
+        btn.style.right = (20 - dx) + 'px';
+        btn.style.bottom = (20 - dy) + 'px';
       };
 
       const onUp = () => {
@@ -636,10 +646,15 @@ export class PromptWidgetElement {
           return;
         }
 
-        // Check if dropped in corner
-        const finalRect = btn.getBoundingClientRect();
-        if (isInCorner(finalRect.left, finalRect.top)) {
+        // Check if dragged close enough to corner to stow
+        const rect = btn.getBoundingClientRect();
+        const nearCorner = rect.right > window.innerWidth - 20
+          && rect.bottom > window.innerHeight - 20;
+        if (nearCorner) {
           stow();
+        } else {
+          // Snap back to default position
+          defaultPos();
         }
       };
 
