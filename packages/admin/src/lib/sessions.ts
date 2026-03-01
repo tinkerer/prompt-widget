@@ -178,12 +178,21 @@ export function setFocusedPanel(panelId: string | null) {
 
 let panelZCounter = 0;
 export const panelZOrders = signal<Map<string, number>>(new Map());
+export const panelMruHistory = signal<string[]>(loadJson('pw-panel-mru', []));
+
+function pushPanelMru(panelId: string) {
+  const prev = panelMruHistory.value;
+  const next = [panelId, ...prev.filter((id) => id !== panelId)].slice(0, 20);
+  panelMruHistory.value = next;
+  localStorage.setItem('pw-panel-mru', JSON.stringify(next));
+}
 
 export function bringToFront(panelId: string) {
   panelZCounter++;
   const map = new Map(panelZOrders.value);
   map.set(panelId, panelZCounter);
   panelZOrders.value = map;
+  pushPanelMru(panelId);
   requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
 }
 
@@ -1583,6 +1592,7 @@ export function syncAutoJumpPanel() {
       autoOpened: true,
     };
     popoutPanels.value = [panel, ...popoutPanels.value];
+    bringToFront(AUTOJUMP_PANEL_ID);
     persistPopoutState();
     return;
   }
@@ -1611,6 +1621,7 @@ export function syncAutoJumpPanel() {
       ...(shouldShow ? { visible: true, autoOpened: true } : {}),
     });
     if (activeChanged) applyAutoJumpDimsForSession(newActive);
+    if (shouldShow) bringToFront(AUTOJUMP_PANEL_ID);
     persistPopoutState();
   }
 }

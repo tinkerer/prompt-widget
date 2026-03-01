@@ -7,7 +7,7 @@ import {
   controlBarMinimized,
   toggleControlBarMinimized,
   popoutPanels,
-  panelZOrders,
+  panelMruHistory,
   bringToFront,
   activePanelId,
   allSessions,
@@ -55,16 +55,16 @@ export function ControlBar() {
   }, [appDropdown, mruDropdown]);
 
   const panels = popoutPanels.value;
-  const zOrders = panelZOrders.value;
+  const mruHistory = panelMruHistory.value;
   const sessions = allSessions.value;
   const sessionMap = useMemo(() => new Map(sessions.map((s: any) => [s.id, s])), [sessions]);
+  const panelMap = useMemo(() => new Map(panels.map((p: any) => [p.id, p])), [panels]);
 
   const mruPanels = useMemo(() => {
-    const visible = panels.filter((p: any) => p.visible);
-    return visible
-      .sort((a: any, b: any) => (zOrders.get(b.id) || 0) - (zOrders.get(a.id) || 0))
-      .slice(0, 5);
-  }, [panels, zOrders]);
+    return mruHistory
+      .map((id) => panelMap.get(id))
+      .filter(Boolean);
+  }, [mruHistory, panelMap]);
 
   async function run(actionId: string) {
     if (!appId || running) return;
@@ -164,40 +164,42 @@ export function ControlBar() {
       </button>
 
       {/* MRU panel dropdown */}
-      {mruPanels.length > 0 && (
-        <>
-          <div class="control-bar-sep" />
-          <div class="control-bar-dropdown" ref={mruDropdownRef}>
-            <button
-              class={`control-bar-btn control-bar-mru-btn ${activePanelId.value ? 'control-bar-mru-active' : ''}`}
-              onClick={() => setMruDropdown(!mruDropdown)}
-            >
-              {(() => {
-                const active = mruPanels.find((p: any) => p.id === activePanelId.value);
-                return active ? getMruLabel(active, sessionMap) : getMruLabel(mruPanels[0], sessionMap);
-              })()}
-              <span class="control-bar-caret">{'\u25BE'}</span>
-            </button>
-            {mruDropdown && (
-              <div class="control-bar-menu">
-                {mruPanels.map((p: any) => (
-                  <button
-                    key={p.id}
-                    class={`control-bar-menu-item ${activePanelId.value === p.id ? 'active' : ''}`}
-                    onClick={() => {
-                      bringToFront(p.id);
-                      activePanelId.value = p.id;
-                      setMruDropdown(false);
-                    }}
-                  >
-                    {getMruLabel(p, sessionMap)}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        </>
-      )}
+      <>
+        <div class="control-bar-sep" />
+        <div class="control-bar-dropdown" ref={mruDropdownRef}>
+          <button
+            class={`control-bar-btn control-bar-mru-btn ${activePanelId.value ? 'control-bar-mru-active' : ''}`}
+            onClick={() => setMruDropdown(!mruDropdown)}
+          >
+            {(() => {
+              const active = mruPanels.find((p: any) => p.id === activePanelId.value);
+              return active ? getMruLabel(active, sessionMap) : (mruPanels[0] ? getMruLabel(mruPanels[0], sessionMap) : 'Panels');
+            })()}
+            <span class="control-bar-caret">{'\u25BE'}</span>
+          </button>
+          {mruDropdown && (
+            <div class="control-bar-menu">
+              {mruPanels.length === 0 && (
+                <div class="control-bar-menu-item" style="opacity:0.5;cursor:default">No panel history</div>
+              )}
+              {mruPanels.map((p: any) => (
+                <button
+                  key={p.id}
+                  class={`control-bar-menu-item ${activePanelId.value === p.id ? 'active' : ''}`}
+                  onClick={() => {
+                    bringToFront(p.id);
+                    activePanelId.value = p.id;
+                    setMruDropdown(false);
+                  }}
+                  style={!p.visible ? 'opacity:0.5' : ''}
+                >
+                  {getMruLabel(p, sessionMap)}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </>
 
       <div style="flex:1" />
       <button
