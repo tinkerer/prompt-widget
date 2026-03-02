@@ -5,10 +5,14 @@ import { timed, bindRouteSignal } from './perf.js';
 // Embed mode detection
 const params = new URLSearchParams(window.location.search);
 export const isEmbedded = signal(params.get('embed') === 'true');
+export const isCompanion = signal(params.get('companion') === 'true');
 const embedAppId = params.get('appId');
 
 if (isEmbedded.value) {
   document.body.classList.add('pw-embed');
+}
+if (isCompanion.value) {
+  document.body.classList.add('pw-companion');
 }
 
 export const isAuthenticated = signal(!!localStorage.getItem('pw-admin-token'));

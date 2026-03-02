@@ -152,6 +152,7 @@ export function runMigrations() {
     `ALTER TABLE applications ADD COLUMN request_panel TEXT NOT NULL DEFAULT '{}'`,
     `ALTER TABLE agent_sessions ADD COLUMN companion_session_id TEXT`,
     `ALTER TABLE harness_configs ADD COLUMN compose_dir TEXT`,
+    `ALTER TABLE machines ADD COLUMN default_cwd TEXT`,
   ];
 
   for (const stmt of alterStatements) {

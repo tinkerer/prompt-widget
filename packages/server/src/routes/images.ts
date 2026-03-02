@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { eq } from 'drizzle-orm';
 import { ulid } from 'ulidx';
@@ -85,4 +85,24 @@ imageRoutes.post('/', async (c) => {
   });
 
   return c.json({ id: screenshotId, feedbackId, filename, size: buf.byteLength });
+});
+
+imageRoutes.delete('/:id', async (c) => {
+  const token = c.req.header('Authorization')?.replace('Bearer ', '');
+  if (!token || !(await verifyAdminToken(token))) return c.json({ error: 'Unauthorized' }, 401);
+
+  const id = c.req.param('id');
+  const screenshot = await db.query.feedbackScreenshots.findFirst({
+    where: eq(schema.feedbackScreenshots.id, id),
+  });
+  if (!screenshot) return c.json({ error: 'Image not found' }, 404);
+
+  try {
+    await unlink(join(UPLOAD_DIR, screenshot.filename));
+  } catch {
+    // file may already be gone
+  }
+
+  await db.delete(schema.feedbackScreenshots).where(eq(schema.feedbackScreenshots.id, id));
+  return c.json({ id, deleted: true });
 });

@@ -1,5 +1,5 @@
 import { useEffect } from 'preact/hooks';
-import { isAuthenticated, currentRoute, navigate, selectedAppId, applications, loadApplications, isEmbedded } from '../lib/state.js';
+import { isAuthenticated, currentRoute, navigate, selectedAppId, applications, loadApplications, isEmbedded, isCompanion } from '../lib/state.js';
 import { Layout } from './Layout.js';
 import { GlobalTerminalPanel } from './GlobalTerminalPanel.js';
 import { LoginPage } from '../pages/LoginPage.js';
@@ -109,6 +109,10 @@ export function App() {
       navigate('/settings/applications');
     }
     return null;
+  }
+
+  if (isCompanion.value) {
+    return <div class="pw-companion-root">{page}</div>;
   }
 
   if (embedded) {

@@ -91,17 +91,30 @@ export const api = {
   deleteAgent: (id: string) =>
     request(`/admin/agents/${id}`, { method: 'DELETE' }),
 
-  dispatch: (data: { feedbackId: string; agentEndpointId: string; instructions?: string }) =>
+  dispatch: (data: { feedbackId: string; agentEndpointId: string; instructions?: string; launcherId?: string }) =>
     request<{ dispatched: boolean; sessionId?: string; status: number; response: string }>('/admin/dispatch', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
 
-  spawnTerminal: (data?: { cwd?: string; appId?: string }) =>
+  spawnTerminal: (data?: { cwd?: string; appId?: string; launcherId?: string }) =>
     request<{ sessionId: string }>('/admin/terminal', {
       method: 'POST',
       body: JSON.stringify(data || {}),
     }),
+
+  getDispatchTargets: () =>
+    request<{ targets: Array<{
+      launcherId: string;
+      name: string;
+      hostname: string;
+      machineName: string | null;
+      machineId: string | null;
+      isHarness: boolean;
+      harnessConfigId: string | null;
+      activeSessions: number;
+      maxSessions: number;
+    }> }>('/admin/dispatch-targets'),
 
   listTmuxSessions: () =>
     request<{ sessions: { name: string; windows: number; created: string; attached: boolean }[] }>('/admin/tmux-sessions'),
@@ -409,6 +422,18 @@ export const api = {
     const qs = path ? `?path=${encodeURIComponent(path)}` : '';
     return request<{ path: string; parent: string | null; dirs: string[] }>(`/admin/browse-dirs${qs}`);
   },
+
+  deleteScreenshot: (id: string) =>
+    request<{ id: string; deleted: boolean }>(`/images/${id}`, { method: 'DELETE' }),
+
+  captureSessionScreenshot: (sessionId: string) =>
+    request<{ dataUrl: string }>(`/agent/sessions/${sessionId}/screenshot`, { method: 'POST' }),
+
+  getSessionConsole: (sessionId: string) =>
+    request<{ logs: any[] }>(`/agent/sessions/${sessionId}/console`),
+
+  getSessionNetwork: (sessionId: string) =>
+    request<{ errors: any[] }>(`/agent/sessions/${sessionId}/network`),
 
   replaceImage: (imageId: string, blob: Blob) => {
     const fd = new FormData();

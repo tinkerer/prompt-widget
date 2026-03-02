@@ -1,5 +1,6 @@
 import WebSocket from 'ws';
 import * as os from 'node:os';
+import { existsSync } from 'node:fs';
 import * as pty from 'node-pty';
 import { execSync } from 'node:child_process';
 import type {
@@ -85,6 +86,9 @@ function buildClaudeArgs(
       if (claudeSessionId) args.push('--session-id', claudeSessionId);
       return { command: 'claude', args };
     }
+    case 'plain': {
+      return { command: process.env.SHELL || '/bin/bash', args: [] };
+    }
     default: {
       const args: string[] = [];
       if (claudeSessionId) args.push('--session-id', claudeSessionId);
@@ -129,7 +133,13 @@ function spawnSession(params: {
   cols: number;
   rows: number;
 }): void {
-  const { sessionId, prompt, cwd, permissionProfile, allowedTools, claudeSessionId, resumeSessionId, cols, rows } = params;
+  const { sessionId, prompt, permissionProfile, allowedTools, claudeSessionId, resumeSessionId, cols, rows } = params;
+  // Resolve ~ to actual home directory, and fall back to home if cwd doesn't exist
+  let cwd = params.cwd;
+  if (cwd === '~' || cwd.startsWith('~/')) {
+    cwd = cwd === '~' ? os.homedir() : cwd.replace(/^~/, os.homedir());
+  }
+  if (!existsSync(cwd)) cwd = os.homedir();
 
   if (sessions.has(sessionId)) {
     console.log(`[launcher] Session ${sessionId} already running`);

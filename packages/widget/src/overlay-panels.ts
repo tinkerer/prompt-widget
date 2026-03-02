@@ -63,7 +63,7 @@ export class OverlayPanelManager {
     this.styleInjected = true;
   }
 
-  openPanel(type: PanelType, opts?: { param?: string; appId?: string }): string {
+  openPanel(type: PanelType, opts?: { param?: string; appId?: string; launcherId?: string }): string {
     this.injectStyles();
 
     const id = `pw-panel-${++panelCounter}`;
@@ -71,7 +71,8 @@ export class OverlayPanelManager {
     const appId = opts?.appId || this.appId;
     const hashRoute = config.path(appId, opts?.param);
     const autoTerminal = type === 'terminal' ? '&autoTerminal=1' : '';
-    const iframeUrl = `${this.adminBaseUrl}?embed=true&appId=${encodeURIComponent(appId)}${autoTerminal}#${hashRoute}`;
+    const launcherParam = opts?.launcherId ? `&launcherId=${encodeURIComponent(opts.launcherId)}` : '';
+    const iframeUrl = `${this.adminBaseUrl}?embed=true&appId=${encodeURIComponent(appId)}${autoTerminal}${launcherParam}#${hashRoute}`;
     console.log('[pw] openPanel', type, 'url:', iframeUrl, 'appId:', appId);
 
     const width = config.width;

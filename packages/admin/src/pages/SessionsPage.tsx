@@ -4,8 +4,10 @@ import { api } from '../lib/api.js';
 import { navigate, isEmbedded } from '../lib/state.js';
 import { allSessions, openSession, closeTab, deleteSession, permanentlyDeleteSession, spawnTerminal, sessionInputStates, includeDeletedInPolling } from '../lib/sessions.js';
 import { DeletedItemsPanel, trackDeletion } from '../components/DeletedItemsPanel.js';
+import { DispatchTargetSelect } from '../components/DispatchTargetSelect.js';
 
 const filterStatus = signal('');
+const terminalTarget = signal('');
 const feedbackMap = signal<Record<string, string>>({});
 const agentMap = signal<Record<string, string>>({});
 const agentAppMap = signal<Record<string, string | null>>({});
@@ -83,13 +85,15 @@ export function SessionsPage({ appId }: { appId?: string | null }) {
     return () => { includeDeletedInPolling.value = false; };
   }, []);
 
-  const isAutoTerminal = isEmbedded.value && new URLSearchParams(window.location.search).get('autoTerminal') === '1';
+  const searchParams = new URLSearchParams(window.location.search);
+  const isAutoTerminal = isEmbedded.value && searchParams.get('autoTerminal') === '1';
+  const autoLauncherId = searchParams.get('launcherId') || undefined;
 
   useEffect(() => {
     if (autoTerminalDone.current) return;
     if (isAutoTerminal) {
       autoTerminalDone.current = true;
-      spawnTerminal(appId ?? null);
+      spawnTerminal(appId ?? null, autoLauncherId);
     }
   }, [appId]);
 
@@ -136,9 +140,16 @@ export function SessionsPage({ appId }: { appId?: string | null }) {
     <div>
       <div class="page-header">
         <h2>Sessions ({appFiltered.length})</h2>
-        <button class="btn btn-sm" onClick={() => spawnTerminal(appId)}>
-          Open Terminal
-        </button>
+        <div style="display:flex;gap:6px;align-items:center">
+          <DispatchTargetSelect
+            value={terminalTarget.value}
+            onChange={(id) => { terminalTarget.value = id || ''; }}
+            className="btn-select"
+          />
+          <button class="btn btn-sm" onClick={() => spawnTerminal(appId, terminalTarget.value || undefined)}>
+            Open Terminal
+          </button>
+        </div>
       </div>
 
       <div class="sessions-page-filters">

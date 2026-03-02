@@ -530,9 +530,8 @@ export class PromptWidgetElement {
     let startX = 0;
     let startY = 0;
 
-    const HOVER_ZONE = 60; // px from corner for mouse hover reveal
+    const HOVER_ZONE = 60;
 
-    // Default position from CSS class (bottom-right)
     const defaultPos = () => {
       btn.style.left = 'auto';
       btn.style.top = 'auto';
@@ -543,7 +542,7 @@ export class PromptWidgetElement {
     const stow = () => {
       this.triggerStowed = true;
       this.triggerPeeking = false;
-      btn.classList.remove('pw-trigger-peek');
+      btn.classList.remove('pw-trigger-peek', 'pw-trigger-dragging');
       btn.classList.add('pw-trigger-stowed');
       btn.style.left = 'auto';
       btn.style.top = 'auto';
@@ -558,17 +557,25 @@ export class PromptWidgetElement {
       btn.classList.add('pw-trigger-peek');
       btn.style.left = 'auto';
       btn.style.top = 'auto';
-      btn.style.right = '-10px';
-      btn.style.bottom = '-10px';
+      btn.style.right = '5px';
+      btn.style.bottom = '5px';
     };
 
     const unpeek = () => {
       if (!this.triggerPeeking) return;
       this.triggerPeeking = false;
-      btn.classList.remove('pw-trigger-peek');
-      btn.classList.add('pw-trigger-stowed');
+      // Keep pw-trigger-peek class so the transition property applies during hide,
+      // then swap to pw-trigger-stowed after the transition ends.
       btn.style.right = '-48px';
       btn.style.bottom = '-48px';
+      const onEnd = () => {
+        btn.removeEventListener('transitionend', onEnd);
+        if (!this.triggerPeeking) {
+          btn.classList.remove('pw-trigger-peek');
+          btn.classList.add('pw-trigger-stowed');
+        }
+      };
+      btn.addEventListener('transitionend', onEnd);
     };
 
     const unstow = () => {
@@ -611,7 +618,7 @@ export class PromptWidgetElement {
       startX = e.clientX;
       startY = e.clientY;
 
-      // If peeking, click to unstow — no drag
+      // If peeking, click to unstow
       if (this.triggerPeeking) {
         const onUp = () => {
           document.removeEventListener('mouseup', onUp);
@@ -621,17 +628,14 @@ export class PromptWidgetElement {
         return;
       }
 
-      // If already stowed, ignore
       if (this.triggerStowed) return;
 
       const onMove = (ev: MouseEvent) => {
-        // Only allow dragging toward bottom-right (positive dx, positive dy)
         const dx = Math.max(0, ev.clientX - startX);
         const dy = Math.max(0, ev.clientY - startY);
         if (!dragged && dx < 4 && dy < 4) return;
         dragged = true;
         btn.classList.add('pw-trigger-dragging');
-        // Position relative to default: shift right and down
         btn.style.right = (20 - dx) + 'px';
         btn.style.bottom = (20 - dy) + 'px';
       };
@@ -646,14 +650,12 @@ export class PromptWidgetElement {
           return;
         }
 
-        // Check if dragged close enough to corner to stow
         const rect = btn.getBoundingClientRect();
         const nearCorner = rect.right > window.innerWidth - 20
           && rect.bottom > window.innerHeight - 20;
         if (nearCorner) {
           stow();
         } else {
-          // Snap back to default position
           defaultPos();
         }
       };
@@ -694,7 +696,12 @@ export class PromptWidgetElement {
         if (this.isOnAdminPage()) {
           this.navigateAdmin(item.type);
         } else {
-          this.overlayManager.openPanel(item.type);
+          const opts: { launcherId?: string } = {};
+          if (item.type === 'terminal') {
+            const stored = localStorage.getItem('pw-dispatch-target');
+            if (stored) opts.launcherId = stored;
+          }
+          this.overlayManager.openPanel(item.type, opts);
         }
       });
       options.appendChild(btn);
@@ -713,6 +720,33 @@ export class PromptWidgetElement {
       });
     });
     options.appendChild(sidRow);
+
+    // Dispatch target selector
+    const targetRow = document.createElement('div');
+    targetRow.className = 'pw-session-id-row';
+    targetRow.innerHTML = `<span class="pw-session-id-label">Target:</span><select class="pw-dispatch-target-select" style="flex:1;font-size:11px;padding:1px 2px;background:#333;color:#ccc;border:1px solid #555;border-radius:3px"><option value="">Local</option></select>`;
+    const sel = targetRow.querySelector('select') as HTMLSelectElement;
+    sel.value = localStorage.getItem('pw-dispatch-target') || '';
+    sel.addEventListener('change', () => {
+      if (sel.value) localStorage.setItem('pw-dispatch-target', sel.value);
+      else localStorage.removeItem('pw-dispatch-target');
+    });
+    // Populate from API
+    const origin = new URL(this.config.endpoint, window.location.origin).origin;
+    fetch(`${origin}/api/v1/admin/dispatch-targets`)
+      .then(r => r.json())
+      .then((data: any) => {
+        if (!data.targets?.length) { targetRow.style.display = 'none'; return; }
+        for (const t of data.targets) {
+          const opt = document.createElement('option');
+          opt.value = t.launcherId;
+          opt.textContent = t.machineName || t.name;
+          sel.appendChild(opt);
+        }
+        sel.value = localStorage.getItem('pw-dispatch-target') || '';
+      })
+      .catch(() => { targetRow.style.display = 'none'; });
+    options.appendChild(targetRow);
 
     // Insert before the error div at the bottom
     const errorEl = panel.querySelector('#pw-error');

@@ -214,6 +214,15 @@ html[data-theme="dark"] {
   background: var(--pw-scrollbar-thumb-hover);
 }
 
+/* Hide xterm.js scrollbar — tmux handles scrolling */
+.xterm .xterm-viewport {
+  scrollbar-width: none !important;
+  overflow-y: hidden !important;
+}
+.xterm .xterm-viewport::-webkit-scrollbar {
+  display: none !important;
+}
+
 /* ==================== Base Reset ==================== */
 * {
   box-sizing: border-box;
@@ -1610,6 +1619,33 @@ input:focus, select:focus, textarea:focus {
   border-color: var(--pw-primary);
 }
 
+.screenshot-delete-btn {
+  display: none;
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  border: none;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.screenshot-delete-btn:hover {
+  background: var(--pw-danger);
+}
+
+.screenshots-grid > div:hover .screenshot-delete-btn {
+  display: flex;
+}
+
 /* Modal */
 .modal-overlay {
   position: fixed;
@@ -2610,6 +2646,11 @@ input:focus, select:focus, textarea:focus {
   flex-shrink: 0;
 }
 
+.panel-focused > .terminal-tab-bar {
+  border-top: 2px solid #6366f1;
+  border-bottom: 2px solid #6366f1;
+}
+
 .terminal-tabs {
   display: flex;
   gap: 2px;
@@ -2650,6 +2691,14 @@ input:focus, select:focus, textarea:focus {
 .terminal-tab-label {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.terminal-tab:focus {
+  outline: none;
+  box-shadow: inset 0 0 0 2px #6366f1;
+}
+.terminal-tab.active:focus {
+  box-shadow: inset 0 -2px 0 #6366f1, inset 0 0 0 2px #818cf8;
 }
 
 .terminal-tab:hover {
@@ -3070,6 +3119,11 @@ input:focus, select:focus, textarea:focus {
 .popout-split-container.dragging {
   cursor: col-resize;
   user-select: none;
+}
+
+.popout-split-container.dragging iframe,
+.popout-dragging iframe {
+  pointer-events: none;
 }
 
 .popout-split-pane {
@@ -5349,6 +5403,22 @@ kbd {
   background: #334155;
   margin: 4px 0;
 }
+.terminal-tab-actions .id-dropdown-menu {
+  background: #1e293b;
+  border: 1px solid #475569;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.terminal-tab-actions .id-dropdown-menu button {
+  background: none;
+  border: none;
+  color: #cbd5e1;
+  padding: 6px 12px;
+}
+.terminal-tab-actions .id-dropdown-menu button:hover {
+  background: #334155;
+  color: #f1f5f9;
+}
 .id-dropdown-menu kbd {
   float: right;
   font-size: 10px;
@@ -5785,6 +5855,14 @@ kbd {
 .popout-tab .status-dot.waiting::before {
   display: none;
 }
+.popout-tab:focus {
+  outline: none;
+  box-shadow: inset 0 0 0 2px #6366f1;
+}
+.popout-tab.active:focus {
+  box-shadow: inset 0 -2px 0 #6366f1, inset 0 0 0 2px #818cf8;
+}
+
 .popout-tab:hover {
   background: #1e293b;
   color: #e2e8f0;
@@ -6146,6 +6224,19 @@ body.pw-embed .global-terminal-panel {
   bottom: 0 !important;
   height: 100vh !important;
   border-top: none;
+}
+
+/* Companion mode — page content only, no shell chrome */
+body.pw-companion {
+  margin: 0;
+  padding: 0;
+  background: var(--pw-bg-body);
+  overflow: auto;
+}
+
+body.pw-companion .pw-companion-root {
+  min-height: 100vh;
+  padding: 8px 12px;
 }
 
 /* Status pills */

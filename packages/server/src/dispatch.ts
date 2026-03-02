@@ -98,8 +98,9 @@ export async function dispatchFeedbackToAgent(params: {
   feedbackId: string;
   agentEndpointId: string;
   instructions?: string;
+  launcherId?: string;
 }): Promise<{ dispatched: boolean; sessionId?: string; status: number; response: string; existing?: boolean }> {
-  const { feedbackId, agentEndpointId, instructions } = params;
+  const { feedbackId, agentEndpointId, instructions, launcherId } = params;
 
   const [feedback, agent] = await Promise.all([
     db.query.feedbackItems.findFirst({
@@ -198,6 +199,7 @@ export async function dispatchFeedbackToAgent(params: {
       cwd,
       permissionProfile,
       allowedTools: agent.allowedTools || (app as any)?.defaultAllowedTools || null,
+      launcherId: launcherId || undefined,
     });
 
     const now = new Date().toISOString();
@@ -354,9 +356,12 @@ async function spawnLocal(sessionId: string, params: {
 export async function dispatchTerminalSession(params: {
   cwd: string;
   appId?: string | null;
+  launcherId?: string | null;
 }): Promise<{ sessionId: string }> {
   const sessionId = ulid();
   const now = new Date().toISOString();
+
+  const launcher = params.launcherId ? getLauncher(params.launcherId) : undefined;
 
   db.insert(schema.agentSessions)
     .values({
@@ -366,23 +371,51 @@ export async function dispatchTerminalSession(params: {
       permissionProfile: 'plain',
       status: 'pending',
       outputBytes: 0,
+      launcherId: launcher ? launcher.id : null,
       createdAt: now,
     })
     .run();
 
-  try {
-    await spawnAgentSession({
+  if (launcher && launcher.ws.readyState === 1) {
+    // Look up machine's defaultCwd for the remote launcher
+    let remoteCwd = '~';
+    if (launcher.machineId) {
+      const machine = db.select().from(schema.machines)
+        .where(eq(schema.machines.id, launcher.machineId)).get();
+      if (machine?.defaultCwd) remoteCwd = machine.defaultCwd;
+    }
+    const msg: LaunchSession = {
+      type: 'launch_session',
       sessionId,
-      cwd: params.cwd,
+      prompt: '',
+      cwd: remoteCwd,
       permissionProfile: 'plain',
-    });
-  } catch (err) {
-    console.error(`Failed to spawn terminal session ${sessionId}:`, err);
-    db.update(schema.agentSessions)
-      .set({ status: 'failed', completedAt: new Date().toISOString() })
-      .where(eq(schema.agentSessions.id, sessionId))
-      .run();
-    throw err;
+      cols: 120,
+      rows: 40,
+    };
+    try {
+      launcher.ws.send(JSON.stringify(msg));
+      addSessionToLauncher(launcher.id, sessionId);
+      console.log(`[dispatch] Sent terminal session ${sessionId} to launcher ${launcher.id}`);
+    } catch (err) {
+      console.error(`[dispatch] Failed to send terminal to launcher, falling back to local:`, err);
+      await spawnLocal(sessionId, { cwd: params.cwd, permissionProfile: 'plain' });
+    }
+  } else {
+    try {
+      await spawnAgentSession({
+        sessionId,
+        cwd: params.cwd,
+        permissionProfile: 'plain',
+      });
+    } catch (err) {
+      console.error(`Failed to spawn terminal session ${sessionId}:`, err);
+      db.update(schema.agentSessions)
+        .set({ status: 'failed', completedAt: new Date().toISOString() })
+        .where(eq(schema.agentSessions.id, sessionId))
+        .run();
+      throw err;
+    }
   }
 
   return { sessionId };

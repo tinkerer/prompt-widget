@@ -16,6 +16,7 @@ import { RequestPanel } from './RequestPanel.js';
 import { ControlBar } from './ControlBar.js';
 import { registerShortcut, ctrlShiftHeld } from '../lib/shortcuts.js';
 import { toggleTheme, showTabs, arrowTabSwitching, showHotkeyHints, autoJumpWaiting, autoJumpInterrupt, autoJumpDelay, autoJumpShowPopup, autoJumpLogs, autoCloseWaitingPanel } from '../lib/settings.js';
+import { cachedTargets, ensureTargetsLoaded } from './DispatchTargetSelect.js';
 import {
   openTabs,
   activeTabId,
@@ -84,6 +85,7 @@ import {
   toggleAutoJumpPanel,
   resolveSession,
   activePanelId,
+  bringToFront,
 } from '../lib/sessions.js';
 
 interface LiveConnection {
@@ -154,6 +156,7 @@ async function openTmuxMenu(e: MouseEvent, appId?: string | null) {
   const rect = btn.getBoundingClientRect();
   tmuxMenuOpen.value = { x: rect.left, y: rect.bottom + 4, btnTop: rect.top };
   tmuxMenuLoading.value = true;
+  ensureTargetsLoaded();
   try {
     const result = await api.listTmuxSessions();
     tmuxSessions.value = result.sessions;
@@ -758,8 +761,16 @@ export function Layout({ children }: { children: ComponentChildren }) {
             if (inputSt === 'waiting') {
               focusOrDockSession(s.id);
             } else {
-              openSession(s.id);
-              focusSessionTerminal(s.id);
+              const panel = findPanelForSession(s.id);
+              if (panel) {
+                updatePanel(panel.id, { activeSessionId: s.id, visible: true });
+                bringToFront(panel.id);
+                persistPopoutState();
+                focusSessionTerminal(s.id);
+              } else {
+                openSession(s.id);
+                focusSessionTerminal(s.id);
+              }
             }
           }}
           title={tooltip}
@@ -1272,7 +1283,10 @@ export function Layout({ children }: { children: ComponentChildren }) {
         const pos = tmuxMenuOpen.value!;
         const sessions = tmuxSessions.value;
         const loading = tmuxMenuLoading.value;
-        const menuHeight = 36 + (loading ? 28 : 0) + (sessions.length > 0 ? 20 : 0) + sessions.length * 30 + (sessions.length > 0 || loading ? 9 : 0);
+        const targets = cachedTargets.value;
+        const remoteMachines = targets.filter(t => !t.isHarness);
+        const remoteHarnesses = targets.filter(t => t.isHarness);
+        const menuHeight = 36 + (remoteMachines.length > 0 ? 20 + remoteMachines.length * 30 + 9 : 0) + (remoteHarnesses.length > 0 ? 20 + remoteHarnesses.length * 30 + 9 : 0) + (loading ? 28 : 0) + (sessions.length > 0 ? 20 : 0) + sessions.length * 30 + (sessions.length > 0 || loading ? 9 : 0);
         const flipUp = pos.y + menuHeight > window.innerHeight;
         const menuStyle = flipUp
           ? { left: `${pos.x}px`, bottom: `${window.innerHeight - pos.btnTop + 4}px` }
@@ -1284,8 +1298,32 @@ export function Layout({ children }: { children: ComponentChildren }) {
             onClick={(e) => e.stopPropagation()}
           >
             <button onClick={() => { tmuxMenuOpen.value = null; spawnTerminal(selAppId); }}>
-              New terminal
+              Local terminal
             </button>
+            {remoteMachines.length > 0 && (
+              <>
+                <div class="id-dropdown-separator" />
+                <div class="tmux-menu-label">Remote machines</div>
+                {remoteMachines.map(t => (
+                  <button key={t.launcherId} onClick={() => { tmuxMenuOpen.value = null; spawnTerminal(selAppId, t.launcherId); }}>
+                    {t.machineName || t.name}
+                    <span class="tmux-session-meta">{t.activeSessions}/{t.maxSessions}</span>
+                  </button>
+                ))}
+              </>
+            )}
+            {remoteHarnesses.length > 0 && (
+              <>
+                <div class="id-dropdown-separator" />
+                <div class="tmux-menu-label">Harnesses</div>
+                {remoteHarnesses.map(t => (
+                  <button key={t.launcherId} onClick={() => { tmuxMenuOpen.value = null; spawnTerminal(selAppId, t.launcherId); }}>
+                    {t.name}
+                    <span class="tmux-session-meta">{t.activeSessions}/{t.maxSessions}</span>
+                  </button>
+                ))}
+              </>
+            )}
             {(loading || sessions.length > 0) && <div class="id-dropdown-separator" />}
             {loading && <div class="tmux-menu-loading">Loading tmux sessions...</div>}
             {!loading && sessions.length > 0 && (

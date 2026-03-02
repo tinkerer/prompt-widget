@@ -8,9 +8,11 @@ declare global {
 
 const script = document.currentScript || document.querySelector('script[data-endpoint]');
 const noEmbed = script instanceof HTMLScriptElement && script.dataset.noEmbed === 'true';
-const inEmbedIframe = window !== window.top && new URLSearchParams(window.location.search).get('embed') === 'true';
+const params = new URLSearchParams(window.location.search);
+const inEmbedIframe = window !== window.top && params.get('embed') === 'true';
+const isCompanion = params.get('companion') === 'true';
 
-if (!noEmbed || !inEmbedIframe) {
+if ((!noEmbed || !inEmbedIframe) && !isCompanion) {
   const widget = new PromptWidgetElement();
   window.promptWidget = widget;
 }

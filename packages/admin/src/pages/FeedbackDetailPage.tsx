@@ -5,6 +5,7 @@ import { navigate } from '../lib/state.js';
 import { openSession, resumeSession } from '../lib/sessions.js';
 import { copyWithTooltip } from '../lib/clipboard.js';
 import { CropEditor } from '../components/CropEditor.js';
+import { DispatchTargetSelect } from '../components/DispatchTargetSelect.js';
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -15,6 +16,7 @@ const agents = signal<any[]>([]);
 const dispatchAgentId = signal('');
 const dispatchInstructions = signal('');
 const dispatchLoading = signal(false);
+const dispatchTarget = signal('');
 const newTag = signal('');
 const agentSessions = signal<any[]>([]);
 const lastLoadedId = signal<string | null>(null);
@@ -27,6 +29,8 @@ const editingTitle = signal(false);
 const editTitleValue = signal('');
 const editingDescription = signal(false);
 const editDescValue = signal('');
+const liveConnections = signal<any[]>([]);
+const enrichLoading = signal<string | null>(null);
 
 const STATUSES = ['new', 'reviewed', 'dispatched', 'resolved', 'archived'];
 
@@ -69,10 +73,20 @@ async function load(id: string, appId: string | null) {
     if (def) dispatchAgentId.value = def.id;
     else if (agentsList.length > 0) dispatchAgentId.value = agentsList[0].id;
     loadSessions(id);
+    loadLiveConnections(fb.appId);
   } catch (err: any) {
     error.value = err.message;
   } finally {
     loading.value = false;
+  }
+}
+
+async function loadLiveConnections(appId?: string) {
+  try {
+    const all = await api.getLiveConnections();
+    liveConnections.value = appId ? all.filter((s: any) => s.appId === appId) : all;
+  } catch {
+    liveConnections.value = [];
   }
 }
 
@@ -150,6 +164,7 @@ async function doDispatch() {
       feedbackId: fb.id,
       agentEndpointId: dispatchAgentId.value,
       instructions: dispatchInstructions.value || undefined,
+      launcherId: dispatchTarget.value || undefined,
     });
     dispatchInstructions.value = '';
 
@@ -190,6 +205,102 @@ function formatJson(data: any) {
   if (!data) return 'null';
   return JSON.stringify(data, null, 2);
 }
+
+async function deleteScreenshot(screenshotId: string) {
+  const fb = feedback.value;
+  if (!fb) return;
+  await api.deleteScreenshot(screenshotId);
+  fb.screenshots = (fb.screenshots || []).filter((s: any) => s.id !== screenshotId);
+  feedback.value = { ...fb };
+}
+
+async function handleFileUpload(e: Event) {
+  const fb = feedback.value;
+  if (!fb) return;
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  const result = await api.saveImageAsNew(fb.id, file);
+  fb.screenshots = [...(fb.screenshots || []), { id: result.id, filename: result.filename }];
+  feedback.value = { ...fb };
+  input.value = '';
+}
+
+async function captureFromSession(sessionId: string) {
+  const fb = feedback.value;
+  if (!fb) return;
+  enrichLoading.value = `screenshot-${sessionId}`;
+  try {
+    const result = await api.captureSessionScreenshot(sessionId);
+    if (result.dataUrl) {
+      const res = await fetch(result.dataUrl);
+      const blob = await res.blob();
+      const saved = await api.saveImageAsNew(fb.id, blob);
+      fb.screenshots = [...(fb.screenshots || []), { id: saved.id, filename: saved.filename }];
+      feedback.value = { ...fb };
+    }
+  } finally {
+    enrichLoading.value = null;
+  }
+}
+
+async function enrichConsole(sessionId: string) {
+  const fb = feedback.value;
+  if (!fb) return;
+  enrichLoading.value = `console-${sessionId}`;
+  try {
+    const result = await api.getSessionConsole(sessionId);
+    if (result.logs?.length) {
+      await api.updateFeedback(fb.id, { context: { consoleLogs: result.logs } });
+      const updated = await api.getFeedbackById(fb.id);
+      feedback.value = updated;
+    }
+  } finally {
+    enrichLoading.value = null;
+  }
+}
+
+async function enrichNetwork(sessionId: string) {
+  const fb = feedback.value;
+  if (!fb) return;
+  enrichLoading.value = `network-${sessionId}`;
+  try {
+    const result = await api.getSessionNetwork(sessionId);
+    if (result.errors?.length) {
+      await api.updateFeedback(fb.id, { context: { networkErrors: result.errors } });
+      const updated = await api.getFeedbackById(fb.id);
+      feedback.value = updated;
+    }
+  } finally {
+    enrichLoading.value = null;
+  }
+}
+
+// Paste handler: paste images from clipboard to add as screenshots
+effect(() => {
+  const fb = feedback.value;
+  if (!fb) return;
+  const handler = async (e: ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (!file) continue;
+        const result = await api.saveImageAsNew(fb.id, file);
+        const current = feedback.value;
+        if (current) {
+          current.screenshots = [...(current.screenshots || []), { id: result.id, filename: result.filename }];
+          feedback.value = { ...current };
+        }
+        break;
+      }
+    }
+  };
+  document.addEventListener('paste', handler as EventListener);
+  return () => document.removeEventListener('paste', handler as EventListener);
+});
 
 export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | null }) {
   if (lastLoadedId.value !== id) {
@@ -265,6 +376,10 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
               value={dispatchInstructions.value}
               onInput={(e) => (dispatchInstructions.value = (e.target as HTMLInputElement).value)}
               onKeyDown={(e) => { if (e.key === 'Enter') doDispatch(); }}
+            />
+            <DispatchTargetSelect
+              value={dispatchTarget.value}
+              onChange={(id) => { dispatchTarget.value = id || ''; }}
             />
             <button
               class="btn btn-primary dispatch-bar-btn"
@@ -508,27 +623,46 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
               );
             })()}
 
-            {fb.screenshots && fb.screenshots.length > 0 && (
-              <section class="detail-section">
-                <h4>Screenshots ({fb.screenshots.length})</h4>
+            <section class="detail-section">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+                <h4 style="margin:0">Screenshots ({(fb.screenshots || []).length})</h4>
+                <button class="btn btn-sm" onClick={() => {
+                  const input = document.createElement('input');
+                  input.type = 'file';
+                  input.accept = 'image/*';
+                  input.onchange = (e) => handleFileUpload(e);
+                  input.click();
+                }}>+ Upload</button>
+              </div>
+              {(fb.screenshots || []).length > 0 ? (
                 <div class="screenshots-grid">
                   {fb.screenshots.map((s: any) => (
-                    <img
-                      class="screenshot-img"
-                      src={`/api/v1/images/${s.id}${cacheBuster.value ? `?t=${cacheBuster.value}` : ''}`}
-                      alt={s.filename}
-                      key={s.id}
-                      onClick={() => {
-                        lightboxSrc.value = `/api/v1/images/${s.id}${cacheBuster.value ? `?t=${cacheBuster.value}` : ''}`;
-                        lightboxImageId.value = s.id;
-                        lightboxFeedbackId.value = fb.id;
-                        cropMode.value = false;
-                      }}
-                    />
+                    <div key={s.id} style="position:relative">
+                      <img
+                        class="screenshot-img"
+                        src={`/api/v1/images/${s.id}${cacheBuster.value ? `?t=${cacheBuster.value}` : ''}`}
+                        alt={s.filename}
+                        onClick={() => {
+                          lightboxSrc.value = `/api/v1/images/${s.id}${cacheBuster.value ? `?t=${cacheBuster.value}` : ''}`;
+                          lightboxImageId.value = s.id;
+                          lightboxFeedbackId.value = fb.id;
+                          cropMode.value = false;
+                        }}
+                      />
+                      <button
+                        class="screenshot-delete-btn"
+                        onClick={(e) => { e.stopPropagation(); deleteScreenshot(s.id); }}
+                        title="Delete screenshot"
+                      >&times;</button>
+                    </div>
                   ))}
                 </div>
-              </section>
-            )}
+              ) : (
+                <div style="color:var(--pw-text-faint);font-size:13px;padding:12px 0">
+                  No screenshots. Paste from clipboard, upload, or capture from a live session.
+                </div>
+              )}
+            </section>
 
             {fb.dispatchedTo && (
               <section class="detail-section">
@@ -596,6 +730,47 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
                     </div>
                   ))}
                 </div>
+              </section>
+            )}
+
+            {liveConnections.value.length > 0 && (
+              <section class="detail-section">
+                <h4>Live Session Enrichment</h4>
+                <div style="font-size:12px;color:var(--pw-text-muted);margin-bottom:8px">
+                  Capture data from active widget sessions
+                </div>
+                {liveConnections.value.map((conn: any) => (
+                  <div key={conn.sessionId} style="margin-bottom:8px;padding:8px;background:var(--pw-bg-sunken);border-radius:6px">
+                    <div style="font-size:12px;font-weight:600;margin-bottom:6px;display:flex;align-items:center;gap:6px">
+                      <span style="width:6px;height:6px;border-radius:50%;background:#22c55e;display:inline-block" />
+                      {conn.name || conn.sessionId.slice(-8)}
+                    </div>
+                    {conn.url && <div style="font-size:11px;color:var(--pw-text-faint);margin-bottom:6px;word-break:break-all">{conn.url}</div>}
+                    <div style="display:flex;gap:4px;flex-wrap:wrap">
+                      <button
+                        class="btn btn-sm"
+                        disabled={enrichLoading.value === `screenshot-${conn.sessionId}`}
+                        onClick={() => captureFromSession(conn.sessionId)}
+                      >
+                        {enrichLoading.value === `screenshot-${conn.sessionId}` ? 'Capturing...' : 'Screenshot'}
+                      </button>
+                      <button
+                        class="btn btn-sm"
+                        disabled={enrichLoading.value === `console-${conn.sessionId}`}
+                        onClick={() => enrichConsole(conn.sessionId)}
+                      >
+                        {enrichLoading.value === `console-${conn.sessionId}` ? 'Fetching...' : 'Console Logs'}
+                      </button>
+                      <button
+                        class="btn btn-sm"
+                        disabled={enrichLoading.value === `network-${conn.sessionId}`}
+                        onClick={() => enrichNetwork(conn.sessionId)}
+                      >
+                        {enrichLoading.value === `network-${conn.sessionId}` ? 'Fetching...' : 'Network Errors'}
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </section>
             )}
 

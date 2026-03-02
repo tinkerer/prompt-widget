@@ -27,6 +27,7 @@ import { inputSessionRemote, getSessionStatus, SessionServiceError } from '../se
 import { killSession } from '../agent-sessions.js';
 import { feedbackEvents } from '../events.js';
 import { verifyAdminToken } from '../auth.js';
+import { listLaunchers } from '../launcher-registry.js';
 
 const PW_TMUX_CONF = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'tmux-pw.conf');
 
@@ -379,6 +380,29 @@ adminRoutes.patch('/feedback/:id', async (c) => {
   if (parsed.data.title) updates.title = parsed.data.title;
   if (parsed.data.description !== undefined) updates.description = parsed.data.description;
 
+  if (parsed.data.data) {
+    const existingData = existing.data ? JSON.parse(existing.data as string) : {};
+    updates.data = JSON.stringify({ ...existingData, ...parsed.data.data });
+  }
+
+  if (parsed.data.context) {
+    const existingCtx = existing.context ? JSON.parse(existing.context as string) : {};
+    const merged = { ...existingCtx };
+    if (parsed.data.context.consoleLogs) {
+      merged.consoleLogs = [...(existingCtx.consoleLogs || []), ...parsed.data.context.consoleLogs];
+    }
+    if (parsed.data.context.networkErrors) {
+      merged.networkErrors = [...(existingCtx.networkErrors || []), ...parsed.data.context.networkErrors];
+    }
+    if (parsed.data.context.performanceTiming) {
+      merged.performanceTiming = parsed.data.context.performanceTiming;
+    }
+    if (parsed.data.context.environment) {
+      merged.environment = parsed.data.context.environment;
+    }
+    updates.context = JSON.stringify(merged);
+  }
+
   await db.update(schema.feedbackItems).set(updates).where(eq(schema.feedbackItems.id, id));
 
   if (parsed.data.tags) {
@@ -576,6 +600,69 @@ adminRoutes.delete('/agents/:id', async (c) => {
   return c.json({ id, deleted: true });
 });
 
+// Dispatch targets (connected remote launchers + running harness configs)
+adminRoutes.get('/dispatch-targets', (c) => {
+  const launchers = listLaunchers();
+  const launcherTargets = launchers
+    .filter(l => !l.isLocal && l.ws?.readyState === 1)
+    .map(l => {
+      let machineName: string | null = null;
+      let machineId: string | null = l.machineId || null;
+      let defaultCwd: string | null = null;
+      if (l.machineId) {
+        const machine = db.select().from(schema.machines).where(eq(schema.machines.id, l.machineId)).get();
+        if (machine) {
+          machineName = machine.name;
+          defaultCwd = machine.defaultCwd || null;
+        }
+      }
+      return {
+        launcherId: l.id,
+        name: l.name,
+        hostname: l.hostname,
+        machineName,
+        machineId,
+        defaultCwd,
+        isHarness: !!l.harness,
+        harnessConfigId: l.harnessConfigId || null,
+        activeSessions: l.activeSessions.size,
+        maxSessions: l.capabilities.maxSessions,
+      };
+    });
+
+  // Also include running harness configs whose launcher is connected but
+  // that don't appear as separate harness launchers
+  const launcherIds = new Set(launcherTargets.filter(t => t.isHarness).map(t => t.harnessConfigId));
+  const harnessConfigs = db.select().from(schema.harnessConfigs)
+    .where(eq(schema.harnessConfigs.status, 'running'))
+    .all();
+  for (const hc of harnessConfigs) {
+    if (launcherIds.has(hc.id)) continue;
+    if (!hc.launcherId) continue;
+    const launcher = launchers.find(l => l.id === hc.launcherId);
+    if (!launcher || launcher.ws?.readyState !== 1) continue;
+    let hcDefaultCwd: string | null = null;
+    if (launcher.machineId) {
+      const m = db.select().from(schema.machines).where(eq(schema.machines.id, launcher.machineId)).get();
+      if (m) hcDefaultCwd = m.defaultCwd || null;
+    }
+    launcherTargets.push({
+      launcherId: launcher.id,
+      name: hc.name || `harness-${hc.id.slice(-6)}`,
+      hostname: launcher.hostname,
+      machineName: null,
+      machineId: launcher.machineId || null,
+      defaultCwd: hcDefaultCwd,
+      isHarness: true,
+      harnessConfigId: hc.id,
+      activeSessions: launcher.activeSessions.size,
+      maxSessions: launcher.capabilities.maxSessions,
+    });
+  }
+
+  return c.json({ targets: launcherTargets });
+});
+
 // Dispatch
 adminRoutes.post('/dispatch', async (c) => {
   const body = await c.req.json();
@@ -584,7 +671,7 @@ adminRoutes.post('/dispatch', async (c) => {
     return c.json({ error: 'Validation failed', details: parsed.error.flatten() }, 400);
   }
 
-  const { feedbackId, agentEndpointId, instructions } = parsed.data;
+  const { feedbackId, agentEndpointId, instructions, launcherId } = parsed.data;
 
   try {
     // Admin-specific: detect and kill stuck sessions before dispatching
@@ -637,7 +724,7 @@ adminRoutes.post('/dispatch', async (c) => {
       }
     }
 
-    const result = await dispatchFeedbackToAgent({ feedbackId, agentEndpointId, instructions });
+    const result = await dispatchFeedbackToAgent({ feedbackId, agentEndpointId, instructions, launcherId });
     return c.json(result);
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : 'Unknown error';
@@ -1223,7 +1310,7 @@ function buildNewEntityPrompt(
 // Plain terminal session (no agent, no feedback)
 adminRoutes.post('/terminal', async (c) => {
   const body = await c.req.json().catch(() => ({}));
-  const { cwd, appId } = body as { cwd?: string; appId?: string };
+  const { cwd, appId, launcherId } = body as { cwd?: string; appId?: string; launcherId?: string };
 
   let resolvedCwd = cwd || process.cwd();
   if (!cwd && appId) {
@@ -1234,7 +1321,7 @@ adminRoutes.post('/terminal', async (c) => {
   }
 
   try {
-    const { sessionId } = await dispatchTerminalSession({ cwd: resolvedCwd, appId });
+    const { sessionId } = await dispatchTerminalSession({ cwd: resolvedCwd, appId, launcherId });
     return c.json({ sessionId });
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : 'Unknown error';

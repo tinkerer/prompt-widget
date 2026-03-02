@@ -3,6 +3,9 @@ import { useEffect } from 'preact/hooks';
 import { api } from '../lib/api.js';
 import { SetupAssistButton } from '../components/SetupAssistButton.js';
 import { DeletedItemsPanel, trackDeletion } from '../components/DeletedItemsPanel.js';
+import { cachedTargets, ensureTargetsLoaded } from '../components/DispatchTargetSelect.js';
+import { spawnTerminal } from '../lib/sessions.js';
+import { selectedAppId } from '../lib/state.js';
 
 const machines = signal<any[]>([]);
 const loading = signal(true);
@@ -98,6 +101,7 @@ async function handleDelete(id: string, name: string) {
 export function MachinesPage() {
   useEffect(() => {
     loadMachines();
+    ensureTargetsLoaded();
     const interval = setInterval(loadMachines, 10_000);
     return () => clearInterval(interval);
   }, []);

@@ -131,6 +131,7 @@ export const machines = sqliteTable('machines', {
   address: text('address'),
   type: text('type').notNull().default('local'),
   status: text('status').notNull().default('offline'),
+  defaultCwd: text('default_cwd'),
   lastSeenAt: text('last_seen_at'),
   capabilities: text('capabilities'),
   tags: text('tags'),

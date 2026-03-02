@@ -62,7 +62,7 @@ export const WIDGET_CSS = `
 }
 
 .pw-trigger-peek:hover {
-  transform: scale(1.05);
+  filter: brightness(1.2);
 }
 
 .pw-panel {

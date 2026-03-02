@@ -251,6 +251,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
   const isExited = activeId ? exitedSessions.value.has(activeId) : false;
   const viewMode = activeId ? getViewMode(activeId, session?.permissionProfile) : 'terminal';
   const docked = panel.docked;
+  const wrapperRef = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
   const dragMoved = useRef(false);
   const resizing = useRef<string | null>(null);
@@ -302,6 +303,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
     e.preventDefault();
     dragging.current = true;
     dragMoved.current = false;
+    wrapperRef.current?.classList.add('popout-dragging');
     const cp = popoutPanels.value.find((p) => p.id === panel.id);
     if (!cp) return;
     const fr = cp.floatingRect;
@@ -355,6 +357,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
     };
     const onUp = () => {
       dragging.current = false;
+      wrapperRef.current?.classList.remove('popout-dragging');
       snapGuides.value = [];
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
@@ -368,6 +371,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
     e.preventDefault();
     e.stopPropagation();
     resizing.current = edge;
+    wrapperRef.current?.classList.add('popout-dragging');
     const currentPanel = popoutPanels.value.find((p) => p.id === panel.id);
     if (!currentPanel) return;
     const fr = currentPanel.floatingRect;
@@ -418,6 +422,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
     };
     const onUp = () => {
       resizing.current = null;
+      wrapperRef.current?.classList.remove('popout-dragging');
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
       persistPopoutState();
@@ -498,6 +503,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
         </div>
       )}
       <div
+        ref={wrapperRef}
         class={`${docked ? `popout-docked${isLeftDocked ? ' docked-left' : ''}` : 'popout-floating'}${isMinimized ? ' minimized' : ''}${isFocused ? ' panel-focused' : ''}${isActive ? ' panel-active' : ''}${panel.alwaysOnTop ? ' always-on-top' : ''}`}
         style={panelStyle}
         data-panel-id={panel.id}
@@ -534,6 +540,15 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
                       }
                     },
                   });
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !renamingSessionId.value) {
+                    e.preventDefault();
+                    if (!switchAutoJumpActiveSession(panel.id, sid)) {
+                      updatePanel(panel.id, { activeSessionId: sid });
+                      persistPopoutState();
+                    }
+                  }
                 }}
                 title={tabSess?.feedbackTitle || sid}
                 onDblClick={(e) => {
@@ -720,6 +735,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
                         popoutIdMenuOpen.value = null;
                         togglePanelCompanion(panel.id, activeId, 'terminal');
                       } else {
+                        popoutIdMenuOpen.value = null;
                         popoutTermPickerSessionId.value = activeId;
                         popoutTermPickerLoading.value = true;
                         api.listTmuxSessions().then((r: any) => { popoutTermPickerTmux.value = r.sessions; }).catch(() => { popoutTermPickerTmux.value = []; }).finally(() => { popoutTermPickerLoading.value = false; });

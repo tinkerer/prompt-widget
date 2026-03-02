@@ -30,6 +30,7 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
     const term = new Terminal({
       cursorBlink: true,
       rightClickSelectsWord: false,
+      scrollback: 0,
       fontSize: 13,
       fontFamily: "'SF Mono', Monaco, 'Cascadia Code', monospace",
       theme: {

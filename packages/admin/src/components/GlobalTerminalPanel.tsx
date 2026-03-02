@@ -66,6 +66,7 @@ import { showTabs, showHotkeyHints, popoutMode, type PopoutMode } from '../lib/s
 import { ctrlShiftHeld } from '../lib/shortcuts.js';
 import { api } from '../lib/api.js';
 import { copyWithTooltip } from '../lib/clipboard.js';
+import { cachedTargets, refreshTargets, ensureTargetsLoaded } from './DispatchTargetSelect.js';
 
 const statusMenuOpen = signal<{ sessionId: string; x: number; y: number } | null>(null);
 const renamingSessionId = signal<string | null>(null);
@@ -73,6 +74,7 @@ const renameValue = signal('');
 const termPickerSessionId = signal<string | null>(null);
 const termPickerTmux = signal<{ name: string; windows: number; created: string; attached: boolean }[]>([]);
 const termPickerLoading = signal(false);
+const newTermPickerOpen = signal(false);
 export const idMenuOpen = signal<string | null>(null);
 const panelResizing = signal(false);
 
@@ -81,14 +83,19 @@ function TerminalCompanionPicker({ sessionId, sessionMap, onClose }: { sessionId
   const tmuxSessions = termPickerTmux.value;
   const sessions = allSessions.value;
   const existingTerminals = sessions.filter((s) => s.permissionProfile === 'plain' && s.id !== sessionId && s.status !== 'failed');
+  const targets = cachedTargets.value;
+  const machines = targets.filter(t => !t.isHarness);
+  const harnesses = targets.filter(t => t.isHarness);
+
+  useEffect(() => { ensureTargetsLoaded(); }, []);
 
   async function pickExisting(termSessionId: string) {
     setTerminalCompanionAndOpen(sessionId, termSessionId);
     onClose();
   }
 
-  async function pickNew() {
-    const newId = await spawnTerminal(selectedAppId.value);
+  async function pickNew(launcherId?: string) {
+    const newId = await spawnTerminal(selectedAppId.value, launcherId);
     if (newId) {
       await loadAllSessions();
       setTerminalCompanionAndOpen(sessionId, newId);
@@ -116,7 +123,31 @@ function TerminalCompanionPicker({ sessionId, sessionMap, onClose }: { sessionId
 
   return (
     <div class="id-dropdown-menu term-picker-menu" style="top:100%;left:0;min-width:200px" onClick={(e) => e.stopPropagation()}>
-      <button onClick={pickNew}>New terminal</button>
+      <button onClick={() => pickNew()}>New terminal</button>
+      {machines.length > 0 && (
+        <>
+          <div class="id-dropdown-separator" />
+          <div style="font-size:10px;color:var(--pw-text-muted);padding:2px 8px">Remote machines</div>
+          {machines.map(t => (
+            <button key={t.launcherId} onClick={() => pickNew(t.launcherId)}>
+              {t.machineName || t.name}
+              <span style="float:right;opacity:0.5;font-size:10px">{t.activeSessions}/{t.maxSessions}</span>
+            </button>
+          ))}
+        </>
+      )}
+      {harnesses.length > 0 && (
+        <>
+          <div class="id-dropdown-separator" />
+          <div style="font-size:10px;color:var(--pw-text-muted);padding:2px 8px">Harnesses</div>
+          {harnesses.map(t => (
+            <button key={t.launcherId} onClick={() => pickNew(t.launcherId)}>
+              {t.name}
+              <span style="float:right;opacity:0.5;font-size:10px">{t.activeSessions}/{t.maxSessions}</span>
+            </button>
+          ))}
+        </>
+      )}
       {existingTerminals.length > 0 && (
         <>
           <div class="id-dropdown-separator" />
@@ -138,6 +169,87 @@ function TerminalCompanionPicker({ sessionId, sessionMap, onClose }: { sessionId
       {!loading && tmuxSessions.length > 0 && (
         <>
           <div style="font-size:10px;color:var(--pw-text-muted);padding:2px 8px">Attach tmux session</div>
+          {tmuxSessions.map((s) => (
+            <button key={s.name} onClick={() => pickTmux(s.name)} title={`${s.windows} window${s.windows !== 1 ? 's' : ''}${s.attached ? ', attached' : ''}`}>
+              {s.name}
+              <span style="float:right;opacity:0.5;font-size:10px">{s.windows}w{s.attached ? ' \u2022' : ''}</span>
+            </button>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+function NewTerminalPicker({ onClose }: { onClose: () => void }) {
+  const targets = cachedTargets.value;
+  const machines = targets.filter(t => !t.isHarness);
+  const harnesses = targets.filter(t => t.isHarness);
+  const tmuxSessions = termPickerTmux.value;
+  const loading = termPickerLoading.value;
+
+  useEffect(() => {
+    ensureTargetsLoaded();
+    termPickerLoading.value = true;
+    api.listTmuxSessions().then((r) => { termPickerTmux.value = r.sessions; }).catch(() => { termPickerTmux.value = []; }).finally(() => { termPickerLoading.value = false; });
+  }, []);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      const target = e.target as HTMLElement;
+      if (!target.closest('.term-picker-menu')) onClose();
+    }
+    setTimeout(() => document.addEventListener('mousedown', handleClick), 0);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [onClose]);
+
+  async function pickLocal() {
+    await spawnTerminal(selectedAppId.value);
+    onClose();
+  }
+
+  async function pickRemote(launcherId: string) {
+    await spawnTerminal(selectedAppId.value, launcherId);
+    onClose();
+  }
+
+  async function pickTmux(tmuxName: string) {
+    await attachTmuxSession(tmuxName, selectedAppId.value ?? undefined);
+    onClose();
+  }
+
+  return (
+    <div class="id-dropdown-menu term-picker-menu" style="top:auto;bottom:100%;right:0;left:auto;min-width:200px" onClick={(e) => e.stopPropagation()}>
+      <button onClick={pickLocal}>Local terminal</button>
+      {machines.length > 0 && (
+        <>
+          <div class="id-dropdown-separator" />
+          <div style="font-size:10px;color:var(--pw-text-muted);padding:2px 8px">Remote machines</div>
+          {machines.map(t => (
+            <button key={t.launcherId} onClick={() => pickRemote(t.launcherId)}>
+              {t.machineName || t.name}
+              <span style="float:right;opacity:0.5;font-size:10px">{t.activeSessions}/{t.maxSessions}</span>
+            </button>
+          ))}
+        </>
+      )}
+      {harnesses.length > 0 && (
+        <>
+          <div class="id-dropdown-separator" />
+          <div style="font-size:10px;color:var(--pw-text-muted);padding:2px 8px">Harnesses</div>
+          {harnesses.map(t => (
+            <button key={t.launcherId} onClick={() => pickRemote(t.launcherId)}>
+              {t.name}
+              <span style="float:right;opacity:0.5;font-size:10px">{t.activeSessions}/{t.maxSessions}</span>
+            </button>
+          ))}
+        </>
+      )}
+      {(loading || tmuxSessions.length > 0) && <div class="id-dropdown-separator" />}
+      {loading && <div style="font-size:10px;color:var(--pw-text-muted);padding:2px 8px">Loading tmux...</div>}
+      {!loading && tmuxSessions.length > 0 && (
+        <>
+          <div style="font-size:10px;color:var(--pw-text-muted);padding:2px 8px">Attach tmux</div>
           {tmuxSessions.map((s) => (
             <button key={s.name} onClick={() => pickTmux(s.name)} title={`${s.windows} window${s.windows !== 1 ? 's' : ''}${s.attached ? ', attached' : ''}`}>
               {s.name}
@@ -185,7 +297,15 @@ function PaneHeader({
     <div class="terminal-active-header">
       {sessionId && isCompanionTab && (
         <>
-          <span class="tmux-id-label" style="cursor:default">
+          <span
+            class="tmux-id-label"
+            style="cursor:pointer"
+            title="Click to copy ID"
+            onClick={(e) => {
+              const id = isTerminalTab ? (getTerminalCompanion(realSessionId!) || realSessionId!) : realSessionId!;
+              copyWithTooltip(id, e as any);
+            }}
+          >
             {isJsonlTab && `JSONL: pw-${realSessionId!.slice(-6)}`}
             {isFeedbackTab && `Feedback: pw-${realSessionId!.slice(-6)}`}
             {isIframeTab && `Page: pw-${realSessionId!.slice(-6)}`}
@@ -255,6 +375,7 @@ function PaneHeader({
                         idMenuOpen.value = null;
                         toggleCompanion(sessionId, 'terminal');
                       } else {
+                        idMenuOpen.value = null;
                         termPickerSessionId.value = sessionId;
                         termPickerLoading.value = true;
                         api.listTmuxSessions().then((r) => { termPickerTmux.value = r.sessions; }).catch(() => { termPickerTmux.value = []; }).finally(() => { termPickerLoading.value = false; });
@@ -434,6 +555,12 @@ function PaneTabBar({
                 label: tabLabel,
                 onClickFallback: () => onActivate(sid),
               });
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !renamingSessionId.value) {
+                e.preventDefault();
+                onActivate(sid);
+              }
             }}
             title={raw}
             onDblClick={(e) => {
@@ -711,6 +838,19 @@ export function GlobalTerminalPanel() {
 
   const panelButtons = (
     <>
+      <div style="position:relative;display:inline-block">
+        <button
+          class="terminal-collapse-btn"
+          title="New terminal"
+          onClick={(e) => {
+            e.stopPropagation();
+            newTermPickerOpen.value = !newTermPickerOpen.value;
+          }}
+        >+</button>
+        {newTermPickerOpen.value && (
+          <NewTerminalPicker onClose={() => { newTermPickerOpen.value = false; }} />
+        )}
+      </div>
       <button class="terminal-collapse-btn" onClick={toggleMaximized} title={maximized ? 'Restore' : 'Maximize'}>
         {maximized ? '\u25A3' : '\u25B2'}
       </button>
@@ -730,10 +870,11 @@ export function GlobalTerminalPanel() {
       class={`global-terminal-panel${sidebarAnimating.value ? ' animating' : ''}${panelResizing.value ? ' dragging' : ''}${isFocused ? ' panel-focused' : ''}`}
       style={{ height: minimized ? (hasTabs ? '66px' : '32px') : maximized ? '100vh' : `${height}px`, left: `${sidebarWidth.value + (sidebarCollapsed.value ? 0 : 3)}px`, zIndex: globalZIdx }}
       onMouseDown={() => {
-        activePanelId.value = isSplit ? 'split-left' : 'global';
         bringToFront('global-panel');
-        const sid = isSplit ? activeTabId.value : activeId;
-        if (sid) focusSessionTerminal(sid);
+        if (!isSplit) {
+          activePanelId.value = 'global';
+          if (activeId) focusSessionTerminal(activeId);
+        }
       }}
     >
       <div class="terminal-resize-handle" onMouseDown={onResizeMouseDown} />

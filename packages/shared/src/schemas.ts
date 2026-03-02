@@ -67,6 +67,51 @@ export const feedbackUpdateSchema = z.object({
   title: z.string().min(1).max(500).optional(),
   description: z.string().max(10000).optional(),
   tags: z.array(z.string().max(50)).max(20).optional(),
+  data: z.record(z.unknown()).optional(),
+  context: z
+    .object({
+      consoleLogs: z
+        .array(
+          z.object({
+            level: z.enum(['log', 'warn', 'error', 'info', 'debug']),
+            message: z.string(),
+            timestamp: z.number(),
+          })
+        )
+        .optional(),
+      networkErrors: z
+        .array(
+          z.object({
+            url: z.string(),
+            method: z.string(),
+            status: z.number(),
+            statusText: z.string(),
+            timestamp: z.number(),
+          })
+        )
+        .optional(),
+      performanceTiming: z
+        .object({
+          loadTime: z.number().optional(),
+          domContentLoaded: z.number().optional(),
+          firstContentfulPaint: z.number().optional(),
+          largestContentfulPaint: z.number().optional(),
+        })
+        .optional(),
+      environment: z
+        .object({
+          userAgent: z.string(),
+          language: z.string(),
+          platform: z.string(),
+          screenResolution: z.string(),
+          viewport: z.string(),
+          url: z.string(),
+          referrer: z.string(),
+          timestamp: z.number(),
+        })
+        .optional(),
+    })
+    .optional(),
 });
 
 export const adminFeedbackCreateSchema = z.object({
@@ -159,6 +204,7 @@ export const dispatchSchema = z.object({
   feedbackId: z.string(),
   agentEndpointId: z.string(),
   instructions: z.string().max(5000).optional(),
+  launcherId: z.string().optional(),
 });
 
 export const PLAN_STATUSES = ['draft', 'active', 'completed'] as const;
