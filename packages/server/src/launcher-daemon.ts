@@ -460,12 +460,15 @@ function handleServerMessage(msg: ServerToLauncherMessage): void {
       }
 
       const { command: innerCmd, args: innerArgs } = buildClaudeArgs(prompt, permissionProfile);
-      // Use -T (no TTY from docker) when tmux provides the TTY; omit when spawning directly via pty
+      // Interactive profiles (plain, interactive) need a TTY from docker for stdin;
+      // non-interactive profiles (auto, yolo) use -T since they pipe input
       const useTmux = isTmuxAvailable();
-      const execFlags = useTmux ? ['-T'] : [];
+      const needsDockerTty = permissionProfile === 'plain' || permissionProfile === 'interactive';
+      const execFlags = (useTmux && !needsDockerTty) ? ['-T'] : [];
+      const projectName = `pw-${harnessConfigId}`.toLowerCase();
       const dockerArgs = composeDir
-        ? ['compose', '--project-directory', composeDir, 'exec', ...execFlags, svc, innerCmd, ...innerArgs]
-        : ['compose', '-p', `pw-${harnessConfigId}`.toLowerCase(), 'exec', ...execFlags, svc, innerCmd, ...innerArgs];
+        ? ['compose', '--project-directory', composeDir, '-p', projectName, 'exec', ...execFlags, svc, innerCmd, ...innerArgs]
+        : ['compose', '-p', projectName, 'exec', ...execFlags, svc, innerCmd, ...innerArgs];
 
       let ptyProcess: pty.IPty;
       let tmuxSessionName: string | undefined;

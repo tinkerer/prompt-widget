@@ -434,6 +434,13 @@ export function Layout({ children }: { children: ComponentChildren }) {
         category: 'Panels',
         action: () => spawnTerminal(selectedAppId.value),
       }),
+      registerShortcut({
+        sequence: 'g c',
+        key: 'c',
+        label: 'New Claude session',
+        category: 'Panels',
+        action: () => spawnTerminal(selectedAppId.value, undefined, undefined, 'interactive'),
+      }),
       // Ctrl+Shift+0-9: tab switching (0 = toggle pop-out, 1-9 = tab by index)
       ...Array.from({ length: 10 }, (_, i) => registerShortcut({
         key: String(i),
@@ -1082,8 +1089,8 @@ export function Layout({ children }: { children: ComponentChildren }) {
                   </div>
                 <button
                   class="sidebar-new-terminal-btn"
-                  onClick={() => { termPickerOpen.value = { kind: 'new' }; }}
-                  title="New terminal (g t)"
+                  onClick={() => { termPickerOpen.value = { kind: 'claude' }; }}
+                  title="New Claude session (g c)"
                 >+</button>
               </div>
               {sessionsDrawerOpen.value && (

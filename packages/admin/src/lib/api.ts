@@ -97,7 +97,7 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  spawnTerminal: (data?: { cwd?: string; appId?: string; launcherId?: string; harnessConfigId?: string }) =>
+  spawnTerminal: (data?: { cwd?: string; appId?: string; launcherId?: string; harnessConfigId?: string; permissionProfile?: string }) =>
     request<{ sessionId: string }>('/admin/terminal', {
       method: 'POST',
       body: JSON.stringify(data || {}),

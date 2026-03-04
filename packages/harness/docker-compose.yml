@@ -8,6 +8,7 @@ services:
       - "${SERVER_PORT:-3001}:3001"
     volumes:
       - pw-data:/data
+      - pw-claude-config:/root/.claude
     environment:
       - PORT=3001
       - DB_PATH=/data/prompt-widget.db
@@ -73,3 +74,4 @@ networks:
 
 volumes:
   pw-data:
+  pw-claude-config:

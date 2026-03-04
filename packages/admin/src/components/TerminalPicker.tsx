@@ -8,6 +8,7 @@ import { api } from '../lib/api.js';
 export type TerminalPickerMode =
   | { kind: 'companion'; sessionId: string }
   | { kind: 'new' }
+  | { kind: 'claude' }
   | { kind: 'url' };
 
 interface Props {
@@ -55,8 +56,10 @@ export function TerminalPicker({ mode, onClose }: Props) {
   const parentSessionId = mode.kind === 'companion' ? mode.sessionId : null;
   const appId = selectedAppId.value;
 
+  const isClaudeMode = mode.kind === 'claude';
+
   async function pickNew(launcherId?: string, harnessConfigId?: string) {
-    const newId = await spawnTerminal(appId, launcherId, harnessConfigId);
+    const newId = await spawnTerminal(appId, launcherId, harnessConfigId, isClaudeMode ? 'interactive' : undefined);
     if (newId && parentSessionId) {
       await loadAllSessions();
       setTerminalCompanionAndOpen(parentSessionId, newId);
@@ -141,12 +144,12 @@ export function TerminalPicker({ mode, onClose }: Props) {
     (s) => s.permissionProfile === 'plain' && s.id !== parentSessionId && s.status !== 'failed'
   );
 
-  // 1. New terminal (always first)
+  // 1. New session (always first)
   items.push({
     id: '__new_local__',
     category: 'New',
-    icon: '\u{1F4BB}',
-    title: 'New terminal',
+    icon: isClaudeMode ? '\u{1F916}' : '\u{1F4BB}',
+    title: isClaudeMode ? 'New Claude session' : 'New terminal',
     subtitle: 'Local',
     action: () => pickNew(),
   });
@@ -324,7 +327,7 @@ export function TerminalPicker({ mode, onClose }: Props) {
             ref={inputRef}
             type="text"
             class="spotlight-input"
-            placeholder={mode.kind === 'companion' ? 'Pick a terminal companion...' : 'Open a terminal or paste a URL...'}
+            placeholder={mode.kind === 'companion' ? 'Pick a terminal companion...' : isClaudeMode ? 'Start a Claude session...' : 'Open a terminal or paste a URL...'}
             value={query}
             onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
             onKeyDown={handleKeyDown}

@@ -370,9 +370,11 @@ export async function dispatchTerminalSession(params: {
   cwd: string;
   appId?: string | null;
   launcherId?: string | null;
+  permissionProfile?: PermissionProfile;
 }): Promise<{ sessionId: string }> {
   const sessionId = ulid();
   const now = new Date().toISOString();
+  const profile: PermissionProfile = params.permissionProfile || 'plain';
 
   const launcher = params.launcherId ? getLauncher(params.launcherId) : undefined;
 
@@ -381,7 +383,7 @@ export async function dispatchTerminalSession(params: {
       id: sessionId,
       feedbackId: null,
       agentEndpointId: null,
-      permissionProfile: 'plain',
+      permissionProfile: profile,
       status: 'pending',
       outputBytes: 0,
       launcherId: launcher ? launcher.id : null,
@@ -402,24 +404,24 @@ export async function dispatchTerminalSession(params: {
       sessionId,
       prompt: '',
       cwd: remoteCwd,
-      permissionProfile: 'plain',
+      permissionProfile: profile,
       cols: 120,
       rows: 40,
     };
     try {
       launcher.ws.send(JSON.stringify(msg));
       addSessionToLauncher(launcher.id, sessionId);
-      console.log(`[dispatch] Sent terminal session ${sessionId} to launcher ${launcher.id}`);
+      console.log(`[dispatch] Sent terminal session ${sessionId} to launcher ${launcher.id} (profile=${profile})`);
     } catch (err) {
       console.error(`[dispatch] Failed to send terminal to launcher, falling back to local:`, err);
-      await spawnLocal(sessionId, { cwd: params.cwd, permissionProfile: 'plain' });
+      await spawnLocal(sessionId, { cwd: params.cwd, permissionProfile: profile });
     }
   } else {
     try {
       await spawnAgentSession({
         sessionId,
         cwd: params.cwd,
-        permissionProfile: 'plain',
+        permissionProfile: profile,
       });
     } catch (err) {
       console.error(`Failed to spawn terminal session ${sessionId}:`, err);

@@ -1311,7 +1311,7 @@ function buildNewEntityPrompt(
 // Plain terminal session (no agent, no feedback)
 adminRoutes.post('/terminal', async (c) => {
   const body = await c.req.json().catch(() => ({}));
-  const { cwd, appId, launcherId, harnessConfigId } = body as { cwd?: string; appId?: string; launcherId?: string; harnessConfigId?: string };
+  const { cwd, appId, launcherId, harnessConfigId, permissionProfile } = body as { cwd?: string; appId?: string; launcherId?: string; harnessConfigId?: string; permissionProfile?: string };
   // Harness terminal: exec into the container
   if (harnessConfigId && launcherId) {
     try {
@@ -1340,7 +1340,7 @@ adminRoutes.post('/terminal', async (c) => {
   }
 
   try {
-    const { sessionId } = await dispatchTerminalSession({ cwd: resolvedCwd, appId, launcherId });
+    const { sessionId } = await dispatchTerminalSession({ cwd: resolvedCwd, appId, launcherId, permissionProfile: (permissionProfile || 'plain') as any });
     return c.json({ sessionId });
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : 'Unknown error';

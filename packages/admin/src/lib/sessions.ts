@@ -1339,12 +1339,13 @@ export async function resumeSession(sessionId: string): Promise<string | null> {
   }
 }
 
-export async function spawnTerminal(appId?: string | null, launcherId?: string, harnessConfigId?: string) {
+export async function spawnTerminal(appId?: string | null, launcherId?: string, harnessConfigId?: string, permissionProfile?: string) {
   try {
-    const data: { appId?: string; launcherId?: string; harnessConfigId?: string } = {};
+    const data: { appId?: string; launcherId?: string; harnessConfigId?: string; permissionProfile?: string } = {};
     if (appId && appId !== '__unlinked__') data.appId = appId;
     if (launcherId) data.launcherId = launcherId;
     if (harnessConfigId) data.harnessConfigId = harnessConfigId;
+    if (permissionProfile) data.permissionProfile = permissionProfile;
     const { sessionId } = await api.spawnTerminal(data);
     openSession(sessionId);
     loadAllSessions();

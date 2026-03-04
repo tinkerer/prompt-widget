@@ -726,7 +726,7 @@ app.post('/spawn', async (c) => {
   if (!sessionId || !cwd || !permissionProfile) {
     return c.json({ error: 'Missing required fields' }, 400);
   }
-  if (permissionProfile !== 'plain' && !prompt && !resumeSessionId && !tmuxTarget) {
+  if (permissionProfile !== 'plain' && permissionProfile !== 'interactive' && !prompt && !resumeSessionId && !tmuxTarget) {
     return c.json({ error: 'Prompt required for non-plain sessions' }, 400);
   }
 
