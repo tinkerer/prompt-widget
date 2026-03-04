@@ -11,6 +11,7 @@ import {
 import { getLauncher, listLaunchers } from './launcher-registry.js';
 import { tmuxSessionExists, isTmuxAvailable } from './tmux-pty.js';
 import { updateFeedbackOnSessionEnd } from './feedback-status.js';
+import { detectAndStoreJsonlContinuations } from './jsonl-utils.js';
 
 // Maps admin WS → upstream target (either session-service WS or launcher info)
 interface LocalBridge {
@@ -217,6 +218,21 @@ export async function killSession(sessionId: string): Promise<boolean> {
     .run();
 
   updateFeedbackOnSessionEnd(sessionId, 'killed');
+
+  // Detect and cache JSONL continuation chains (fire-and-forget)
+  try {
+    if (session.claudeSessionId) {
+      const app = db.select({ projectDir: schema.applications.projectDir })
+        .from(schema.feedbackItems)
+        .leftJoin(schema.applications, eq(schema.feedbackItems.appId, schema.applications.id))
+        .where(eq(schema.feedbackItems.id, session.feedbackId!))
+        .get();
+      if (app?.projectDir) {
+        detectAndStoreJsonlContinuations(session.claudeSessionId, app.projectDir);
+      }
+    }
+  } catch { /* non-critical */ }
+
   return true;
 }
 

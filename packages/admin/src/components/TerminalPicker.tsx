@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'preact/hooks';
-import { allSessions, paneMruHistory, spawnTerminal, attachTmuxSession, setTerminalCompanionAndOpen, loadAllSessions, openSession, openIsolateCompanion } from '../lib/sessions.js';
+import { allSessions, paneMruHistory, spawnTerminal, attachTmuxSession, setTerminalCompanionAndOpen, loadAllSessions, openSession, openIsolateCompanion, openUrlCompanion } from '../lib/sessions.js';
 import { selectedAppId } from '../lib/state.js';
 import { getIsolateNames, getIsolateEntry } from '../lib/isolate.js';
 import { cachedTargets, ensureTargetsLoaded } from './DispatchTargetSelect.js';
@@ -7,7 +7,8 @@ import { api } from '../lib/api.js';
 
 export type TerminalPickerMode =
   | { kind: 'companion'; sessionId: string }
-  | { kind: 'new' };
+  | { kind: 'new' }
+  | { kind: 'url' };
 
 interface Props {
   mode: TerminalPickerMode;
@@ -23,19 +24,26 @@ interface PickerItem {
   action: () => Promise<void> | void;
 }
 
+function looksLikeUrl(s: string): boolean {
+  return /^https?:\/\//i.test(s.trim());
+}
+
 export function TerminalPicker({ mode, onClose }: Props) {
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [tmuxSessions, setTmuxSessions] = useState<{ name: string; windows: number; created: string; attached: boolean }[]>([]);
   const [tmuxLoading, setTmuxLoading] = useState(true);
+  const [internalUrlMode, setInternalUrlMode] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const isUrlMode = mode.kind === 'url' || internalUrlMode;
 
   useEffect(() => {
     inputRef.current?.focus();
-  }, []);
+  }, [internalUrlMode]);
 
   useEffect(() => {
+    if (isUrlMode) return;
     ensureTargetsLoaded();
     setTmuxLoading(true);
     api.listTmuxSessions()
@@ -72,6 +80,55 @@ export function TerminalPicker({ mode, onClose }: Props) {
       setTerminalCompanionAndOpen(parentSessionId, newId);
     }
     onClose();
+  }
+
+  function submitUrl(url: string) {
+    const trimmed = url.trim();
+    if (trimmed) {
+      openUrlCompanion(trimmed);
+      onClose();
+    }
+  }
+
+  // URL mode: simple input for entering a URL
+  if (isUrlMode) {
+    return (
+      <div class="spotlight-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+        <div class="spotlight-container">
+          <div class="spotlight-input-row">
+            <span class="spotlight-search-icon">{'\u{1F310}'}</span>
+            <input
+              ref={inputRef}
+              type="text"
+              class="spotlight-input"
+              placeholder="Enter URL to open in iframe..."
+              value={query}
+              onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') { e.preventDefault(); onClose(); }
+                else if (e.key === 'Enter') { e.preventDefault(); submitUrl(query); }
+              }}
+            />
+            <kbd class="spotlight-esc">esc</kbd>
+          </div>
+          {query.trim() && (
+            <div class="spotlight-results" ref={listRef}>
+              <div class="spotlight-category">Open</div>
+              <div
+                class="spotlight-result selected"
+                onClick={() => submitUrl(query)}
+              >
+                <span class="spotlight-result-icon">{'\u{1F310}'}</span>
+                <div class="spotlight-result-text">
+                  <span class="spotlight-result-title">Open in iframe</span>
+                  <span class="spotlight-result-subtitle">{query.trim()}</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
   }
 
   // Build items
@@ -189,16 +246,39 @@ export function TerminalPicker({ mode, onClose }: Props) {
     });
   }
 
+  // 8. Open URL iframe
+  items.push({
+    id: '__open_url__',
+    category: 'Iframe',
+    icon: '\u{1F310}',
+    title: 'Open URL...',
+    subtitle: 'Load any URL in an iframe tab',
+    action: () => { setQuery(''); setInternalUrlMode(true); },
+  });
+
   // Filter by query
   const lower = query.toLowerCase();
   const filtered = lower
     ? items.filter(i => i.title.toLowerCase().includes(lower) || (i.subtitle?.toLowerCase().includes(lower)))
     : items;
 
+  // If query looks like a URL, prepend an "Open in iframe" result
+  const queryIsUrl = looksLikeUrl(query);
+  const urlItem: PickerItem | null = queryIsUrl ? {
+    id: '__url_query__',
+    category: 'Iframe',
+    icon: '\u{1F310}',
+    title: 'Open in iframe',
+    subtitle: query.trim(),
+    action: () => submitUrl(query),
+  } : null;
+
   // Group by category
   const grouped: [string, PickerItem[]][] = [];
-  const categoryOrder = ['New', 'Recent', 'Remote Machines', 'Harnesses', 'Open Terminals', 'Tmux Sessions', 'Isolated Components'];
+  if (urlItem) grouped.push(['Iframe', [urlItem]]);
+  const categoryOrder = ['New', 'Recent', 'Remote Machines', 'Harnesses', 'Open Terminals', 'Tmux Sessions', 'Isolated Components', 'Iframe'];
   for (const cat of categoryOrder) {
+    if (cat === 'Iframe' && urlItem) continue;
     const catItems = filtered.filter(i => i.category === cat);
     if (catItems.length > 0) grouped.push([cat, catItems]);
   }
@@ -244,7 +324,7 @@ export function TerminalPicker({ mode, onClose }: Props) {
             ref={inputRef}
             type="text"
             class="spotlight-input"
-            placeholder={mode.kind === 'companion' ? 'Pick a terminal companion...' : 'Open a terminal...'}
+            placeholder={mode.kind === 'companion' ? 'Pick a terminal companion...' : 'Open a terminal or paste a URL...'}
             value={query}
             onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
             onKeyDown={handleKeyDown}

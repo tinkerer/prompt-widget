@@ -223,14 +223,29 @@ export const api = {
       method: 'POST',
     }),
 
-  getJsonl: async (id: string): Promise<string> => {
+  getJsonl: async (id: string, fileFilter?: string): Promise<string> => {
     const token = getToken();
     const headers: Record<string, string> = {};
     if (token) headers['Authorization'] = `Bearer ${token}`;
-    const res = await fetch(`${BASE}/admin/agent-sessions/${id}/jsonl`, { headers });
+    const qs = fileFilter ? `?file=${encodeURIComponent(fileFilter)}` : '';
+    const res = await fetch(`${BASE}/admin/agent-sessions/${id}/jsonl${qs}`, { headers });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.text();
   },
+
+  getJsonlFiles: (id: string) =>
+    request<{
+      claudeSessionId: string;
+      files: Array<{
+        id: string;
+        claudeSessionId: string;
+        type: 'main' | 'continuation' | 'subagent';
+        label: string;
+        parentSessionId: string | null;
+        agentId: string | null;
+        order: number;
+      }>;
+    }>(`/admin/agent-sessions/${id}/jsonl-files`),
 
   tailJsonl: (id: string) =>
     request<{ sessionId: string; jsonlPath: string }>(`/admin/agent-sessions/${id}/tail-jsonl`, {

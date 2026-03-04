@@ -8,6 +8,14 @@ import type { TerminalPickerMode } from '../components/TerminalPicker.js';
 
 export const termPickerOpen = signal<TerminalPickerMode | null>(null);
 
+export function buildTmuxAttachCmd(sessionId: string, session?: { isRemote?: boolean; launcherHostname?: string }): string {
+  const base = `TMUX= tmux -L prompt-widget attach-session -t pw-${sessionId}`;
+  if (session?.isRemote && session?.launcherHostname) {
+    return `ssh ${session.launcherHostname} '${base}'`;
+  }
+  return base;
+}
+
 function loadJson<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(key);
@@ -251,8 +259,9 @@ export function getPanelZIndex(panelOrId: PopoutPanelState | string): number {
   const id = typeof panelOrId === 'string' ? panelOrId : panelOrId.id;
   const order = panelZOrders.value.get(id) || 0;
   const alwaysOnTop = typeof panelOrId === 'string' ? false : !!panelOrId.alwaysOnTop;
-  const base = alwaysOnTop ? 1000 : 950;
-  return base + order;
+  // order*2 ensures most-recently-focused panel always wins;
+  // alwaysOnTop adds +1 so it stays above same-age unfocused panels
+  return 950 + order * 2 + (alwaysOnTop ? 1 : 0);
 }
 
 export function toggleAlwaysOnTop(panelId: string) {
@@ -1811,7 +1820,7 @@ export function handleTabDigit0to9(digit: number) {
 
 // --- Companion Pane System ---
 
-export type CompanionType = 'jsonl' | 'feedback' | 'iframe' | 'terminal' | 'isolate';
+export type CompanionType = 'jsonl' | 'feedback' | 'iframe' | 'terminal' | 'isolate' | 'url';
 
 // Terminal companion: maps parent session ID → terminal session ID
 export const terminalCompanionMap = signal<Record<string, string>>(
@@ -1874,7 +1883,7 @@ function extractCompanionType(tabId: string): CompanionType | null {
   const idx = tabId.indexOf(':');
   if (idx < 0) return null;
   const prefix = tabId.slice(0, idx);
-  if (prefix === 'jsonl' || prefix === 'feedback' || prefix === 'iframe' || prefix === 'terminal' || prefix === 'isolate') return prefix;
+  if (prefix === 'jsonl' || prefix === 'feedback' || prefix === 'iframe' || prefix === 'terminal' || prefix === 'isolate' || prefix === 'url') return prefix;
   return null;
 }
 
@@ -1936,6 +1945,14 @@ export function toggleCompanion(sessionId: string, type: CompanionType) {
 
 export function openIsolateCompanion(componentName: string) {
   const tabId = `isolate:${componentName}`;
+  if (!openTabs.value.includes(tabId)) {
+    openTabs.value = [...openTabs.value, tabId];
+  }
+  openSessionInRightPane(tabId);
+}
+
+export function openUrlCompanion(url: string) {
+  const tabId = `url:${url}`;
   if (!openTabs.value.includes(tabId)) {
     openTabs.value = [...openTabs.value, tabId];
   }
@@ -2013,4 +2030,51 @@ export function syncCompanionsToRightPane(newSessionId: string, oldSessionId?: s
       persistTabs();
     }
   }
+}
+
+// --- JSONL File Selection ---
+
+export interface JsonlFileInfo {
+  id: string;
+  claudeSessionId: string;
+  type: 'main' | 'continuation' | 'subagent';
+  label: string;
+  parentSessionId: string | null;
+  agentId: string | null;
+  order: number;
+}
+
+// Cache of JSONL file lists per agent session ID
+export const jsonlFilesCache = signal<Map<string, { files: JsonlFileInfo[]; claudeSessionId: string }>>(new Map());
+
+// Selected JSONL file per session (null = all merged)
+export const jsonlSelectedFile = signal<Map<string, string | null>>(new Map());
+
+// Whether the JSONL file dropdown is open, keyed by session ID
+export const jsonlDropdownOpen = signal<string | null>(null);
+
+export async function fetchJsonlFiles(sessionId: string, force = false): Promise<{ files: JsonlFileInfo[]; claudeSessionId: string }> {
+  if (!force) {
+    const cached = jsonlFilesCache.value.get(sessionId);
+    if (cached) return cached;
+  }
+
+  const result = await api.getJsonlFiles(sessionId);
+  const entry = { files: result.files, claudeSessionId: result.claudeSessionId };
+  jsonlFilesCache.value = new Map([...jsonlFilesCache.value, [sessionId, entry]]);
+  return entry;
+}
+
+export function getJsonlSelectedFile(sessionId: string): string | null {
+  return jsonlSelectedFile.value.get(sessionId) ?? null;
+}
+
+export function setJsonlSelectedFile(sessionId: string, fileId: string | null) {
+  const next = new Map(jsonlSelectedFile.value);
+  if (fileId === null) {
+    next.delete(sessionId);
+  } else {
+    next.set(sessionId, fileId);
+  }
+  jsonlSelectedFile.value = next;
 }

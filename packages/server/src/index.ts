@@ -25,6 +25,7 @@ import {
 import type { LauncherToServerMessage, LauncherRegistered } from '@prompt-widget/shared';
 import { registerAutoDispatch } from './auto-dispatch.js';
 import { updateFeedbackOnSessionEnd, fixStaleDispatchStatuses } from './feedback-status.js';
+import { detectAndStoreJsonlContinuations } from './jsonl-utils.js';
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
 const LAUNCHER_AUTH_TOKEN = process.env.LAUNCHER_AUTH_TOKEN || '';
@@ -42,6 +43,32 @@ setTimeout(() => {
     console.error('Failed to cleanup orphaned sessions:', err);
   });
 }, 10_000);
+
+// Backfill JSONL continuation cache for completed sessions
+setTimeout(() => {
+  try {
+    const rows = db.select({
+      claudeSessionId: schema.agentSessions.claudeSessionId,
+      appProjectDir: schema.applications.projectDir,
+    })
+      .from(schema.agentSessions)
+      .leftJoin(schema.feedbackItems, eq(schema.agentSessions.feedbackId, schema.feedbackItems.id))
+      .leftJoin(schema.applications, eq(schema.feedbackItems.appId, schema.applications.id))
+      .all();
+
+    let backfilled = 0;
+    for (const row of rows) {
+      if (!row.claudeSessionId || !row.appProjectDir) continue;
+      try {
+        detectAndStoreJsonlContinuations(row.claudeSessionId, row.appProjectDir);
+        backfilled++;
+      } catch { /* skip individual failures */ }
+    }
+    if (backfilled > 0) console.log(`[startup] Backfilled JSONL continuations for ${backfilled} sessions`);
+  } catch (err) {
+    console.error('[startup] Failed to backfill JSONL continuations:', err);
+  }
+}, 5_000);
 
 import { hostname } from 'node:os';
 import type { HarnessMetadata } from '@prompt-widget/shared';
@@ -262,6 +289,24 @@ launcherWss.on('connection', (ws, req) => {
             .run();
 
           updateFeedbackOnSessionEnd(msg.sessionId, msg.status);
+
+          // Detect and cache JSONL continuation chains (fire-and-forget)
+          try {
+            const endedSession = db.select({
+              claudeSessionId: schema.agentSessions.claudeSessionId,
+              appProjectDir: schema.applications.projectDir,
+            })
+              .from(schema.agentSessions)
+              .leftJoin(schema.feedbackItems, eq(schema.agentSessions.feedbackId, schema.feedbackItems.id))
+              .leftJoin(schema.applications, eq(schema.feedbackItems.appId, schema.applications.id))
+              .where(eq(schema.agentSessions.id, msg.sessionId))
+              .get();
+            if (endedSession?.claudeSessionId && endedSession?.appProjectDir) {
+              detectAndStoreJsonlContinuations(endedSession.claudeSessionId, endedSession.appProjectDir);
+            }
+          } catch (err) {
+            console.error('[jsonl-continuations] Failed to detect continuations on session end:', err);
+          }
 
           if (launcherId) {
             removeSessionFromLauncher(launcherId, msg.sessionId);

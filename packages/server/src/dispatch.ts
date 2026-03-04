@@ -1,7 +1,7 @@
 import { ulid } from 'ulidx';
 import { eq, and, sql } from 'drizzle-orm';
 import { homedir } from 'node:os';
-import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import type {
   FeedbackItem,
@@ -17,7 +17,7 @@ import { db, schema } from './db/index.js';
 import { spawnAgentSession } from './agent-sessions.js';
 import { getLauncher, addSessionToLauncher, sendAndWait } from './launcher-registry.js';
 import { feedbackEvents } from './events.js';
-import { extractArtifactPaths } from './routes/agent-sessions.js';
+import { extractArtifactPaths, exportSessionFiles } from './jsonl-utils.js';
 
 export function hydrateFeedback(row: typeof schema.feedbackItems.$inferSelect, tags: string[], screenshots: (typeof schema.feedbackScreenshots.$inferSelect)[]): FeedbackItem {
   return {
@@ -788,11 +788,6 @@ export function getTransfer(transferId: string): TransferState | undefined {
   return activeTransfers.get(transferId);
 }
 
-function computeLocalJsonlPath(projectDir: string, claudeSessionId: string): string {
-  const sanitized = projectDir.replaceAll('/', '-').replaceAll('.', '-');
-  return `${homedir()}/.claude/projects/${sanitized}/${claudeSessionId}.jsonl`;
-}
-
 export async function transferSession(
   parentSessionId: string,
   targetLauncherId: string | null,
@@ -905,54 +900,10 @@ async function doTransfer(transfer: TransferState, targetCwd?: string): Promise<
       }
     }
   } else {
-    // Source is local — read from disk
-    const jsonlPath = computeLocalJsonlPath(projectDir, claudeSessionId);
-    jsonlFiles = [];
-
-    if (existsSync(jsonlPath)) {
-      jsonlFiles.push({
-        relativePath: `${claudeSessionId}.jsonl`,
-        content: readFileSync(jsonlPath, 'utf-8'),
-      });
-    }
-
-    // Subagent files
-    const subagentDir = jsonlPath.replace(/\.jsonl$/, '') + '/subagents';
-    if (existsSync(subagentDir)) {
-      for (const file of readdirSync(subagentDir).filter(f => f.endsWith('.jsonl'))) {
-        jsonlFiles.push({
-          relativePath: `${claudeSessionId}/subagents/${file}`,
-          content: readFileSync(`${subagentDir}/${file}`, 'utf-8'),
-        });
-      }
-    }
-
-    // Continuations — other .jsonl files in same dir
-    const sanitized = projectDir.replaceAll('/', '-').replaceAll('.', '-');
-    const jsonlDir = `${homedir()}/.claude/projects/${sanitized}`;
-    if (existsSync(jsonlDir)) {
-      for (const file of readdirSync(jsonlDir)) {
-        if (!file.endsWith('.jsonl') || file === `${claudeSessionId}.jsonl`) continue;
-        jsonlFiles.push({
-          relativePath: file,
-          content: readFileSync(`${jsonlDir}/${file}`, 'utf-8'),
-        });
-      }
-    }
-
-    // Extract artifact paths from JSONL
-    const allContent = jsonlFiles.map(f => f.content).join('\n');
-    const paths = extractArtifactPaths(allContent, projectDir);
-    artifactFiles = [];
-    for (const relPath of paths) {
-      const full = resolve(projectDir, relPath);
-      if (!full.startsWith(projectDir)) continue;
-      if (existsSync(full)) {
-        try {
-          artifactFiles.push({ path: relPath, content: readFileSync(full, 'utf-8') });
-        } catch { /* skip */ }
-      }
-    }
+    // Source is local — use shared export utility
+    const pkg = exportSessionFiles(projectDir, claudeSessionId);
+    jsonlFiles = pkg.jsonlFiles;
+    artifactFiles = pkg.artifactFiles;
   }
 
   if (jsonlFiles.length === 0) {

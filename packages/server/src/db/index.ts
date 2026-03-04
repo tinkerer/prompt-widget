@@ -300,6 +300,21 @@ export function runMigrations() {
     CREATE INDEX IF NOT EXISTS idx_harness_configs_machine ON harness_configs(machine_id);
   `);
 
+  // JSONL continuation tracking
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS jsonl_continuations (
+      child_session_id TEXT PRIMARY KEY,
+      parent_session_id TEXT NOT NULL,
+      project_dir TEXT NOT NULL,
+      discovered_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_jsonl_cont_parent
+      ON jsonl_continuations(parent_session_id);
+    CREATE INDEX IF NOT EXISTS idx_jsonl_cont_project
+      ON jsonl_continuations(project_dir);
+  `);
+
   // Seed default tmux config from tmux-pw.conf if table is empty or default has empty content
   function readTmuxPwConf(): string {
     // Try multiple relative paths since compiled JS runs from dist/db/

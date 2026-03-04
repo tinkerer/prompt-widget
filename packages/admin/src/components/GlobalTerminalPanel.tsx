@@ -1,4 +1,4 @@
-import { useRef, useCallback, useEffect } from 'preact/hooks';
+import { useRef, useCallback, useEffect, useState } from 'preact/hooks';
 import { signal } from '@preact/signals';
 import { SessionViewToggle, type ViewMode } from './SessionViewToggle.js';
 
@@ -54,6 +54,15 @@ import {
   terminalCompanionMap,
   focusSessionTerminal,
   termPickerOpen,
+  openUrlCompanion,
+  jsonlFilesCache,
+  jsonlSelectedFile,
+  jsonlDropdownOpen,
+  fetchJsonlFiles,
+  getJsonlSelectedFile,
+  setJsonlSelectedFile,
+  type JsonlFileInfo,
+  buildTmuxAttachCmd,
 } from '../lib/sessions.js';
 import { FeedbackCompanionView } from './FeedbackCompanionView.js';
 import { IframeCompanionView } from './IframeCompanionView.js';
@@ -72,6 +81,94 @@ const renamingSessionId = signal<string | null>(null);
 const renameValue = signal('');
 export const idMenuOpen = signal<string | null>(null);
 const panelResizing = signal(false);
+
+function JsonlFileDropdown({ sessionId, sess }: { sessionId: string; sess: any }) {
+  const [files, setFiles] = useState<JsonlFileInfo[]>([]);
+  const [claudeUuid, setClaudeUuid] = useState<string | null>(null);
+  const isOpen = jsonlDropdownOpen.value === sessionId;
+  const selectedFile = getJsonlSelectedFile(sessionId);
+
+  useEffect(() => {
+    const cached = jsonlFilesCache.value.get(sessionId);
+    if (cached) {
+      setFiles(cached.files);
+      setClaudeUuid(cached.claudeSessionId);
+    }
+    const refresh = (force = false) => {
+      fetchJsonlFiles(sessionId, force).then((result) => {
+        setFiles(result.files);
+        setClaudeUuid(result.claudeSessionId);
+      }).catch(() => {});
+    };
+    refresh();
+    // Poll for new files every 10s (new continuations/subagents appear mid-session)
+    const interval = setInterval(() => refresh(true), 10_000);
+    return () => clearInterval(interval);
+  }, [sessionId]);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    if (!isOpen) return;
+    const close = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('.jsonl-file-dropdown')) {
+        jsonlDropdownOpen.value = null;
+      }
+    };
+    document.addEventListener('click', close);
+    return () => document.removeEventListener('click', close);
+  }, [isOpen]);
+
+  const selectedLabel = selectedFile
+    ? files.find(f => f.id === selectedFile)?.label || selectedFile
+    : 'All (merged)';
+
+  const shortUuid = claudeUuid ? claudeUuid.slice(0, 8) : sessionId.slice(-6);
+
+  return (
+    <div class="id-dropdown-wrapper jsonl-file-dropdown">
+      <span
+        class="tmux-id-label"
+        onClick={() => {
+          jsonlDropdownOpen.value = isOpen ? null : sessionId;
+        }}
+        title={claudeUuid ? `Claude Session: ${claudeUuid}` : undefined}
+      >
+        JSONL: {shortUuid} {files.length > 1 && <span class="id-dropdown-caret">{'\u25BE'}</span>}
+      </span>
+      {selectedFile && (
+        <span class="jsonl-file-badge" title={selectedLabel}>
+          {files.find(f => f.id === selectedFile)?.type === 'subagent' ? 'sub' : 'file'}
+        </span>
+      )}
+      {isOpen && files.length > 0 && (
+        <div class="id-dropdown-menu jsonl-file-menu" onClick={() => { jsonlDropdownOpen.value = null; }}>
+          <button
+            class={!selectedFile ? 'active' : ''}
+            onClick={() => setJsonlSelectedFile(sessionId, null)}
+          >
+            {!selectedFile ? '\u2713 ' : ''}All (merged) — {files.length} file{files.length !== 1 ? 's' : ''}
+          </button>
+          <div class="jsonl-file-divider" />
+          {files.map(f => (
+            <button
+              key={f.id}
+              class={selectedFile === f.id ? 'active' : ''}
+              onClick={() => setJsonlSelectedFile(sessionId, f.id)}
+              title={`${f.type}: ${f.claudeSessionId}`}
+            >
+              {selectedFile === f.id ? '\u2713 ' : ''}
+              {f.type === 'main' && '\u{1F4C4} '}
+              {f.type === 'continuation' && '\u{1F517} '}
+              {f.type === 'subagent' && '\u{1F916} '}
+              {f.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function PaneHeader({
   sessionId,
@@ -95,7 +192,8 @@ function PaneHeader({
   const isIframeTab = sessionId?.startsWith('iframe:') || false;
   const isTerminalTab = sessionId?.startsWith('terminal:') || false;
   const isIsolateTab = sessionId?.startsWith('isolate:') || false;
-  const isCompanionTab = isJsonlTab || isFeedbackTab || isIframeTab || isTerminalTab || isIsolateTab;
+  const isUrlTab = sessionId?.startsWith('url:') || false;
+  const isCompanionTab = isJsonlTab || isFeedbackTab || isIframeTab || isTerminalTab || isIsolateTab || isUrlTab;
   const realSessionId = isCompanionTab && sessionId ? sessionId.slice(sessionId.indexOf(':') + 1) : sessionId;
   const sess = realSessionId ? sessionMap.get(realSessionId) : null;
   const appId = selectedAppId.value;
@@ -109,21 +207,25 @@ function PaneHeader({
     <div class="terminal-active-header">
       {sessionId && isCompanionTab && (
         <>
-          <span
-            class="tmux-id-label"
-            style="cursor:pointer"
-            title="Click to copy ID"
-            onClick={(e) => {
-              const id = isTerminalTab ? (getTerminalCompanion(realSessionId!) || realSessionId!) : realSessionId!;
-              copyWithTooltip(id, e as any);
-            }}
-          >
-            {isJsonlTab && `JSONL: pw-${realSessionId!.slice(-6)}`}
-            {isFeedbackTab && `Feedback: pw-${realSessionId!.slice(-6)}`}
-            {isIframeTab && `Page: pw-${realSessionId!.slice(-6)}`}
-            {isTerminalTab && (() => { const ts = getTerminalCompanion(realSessionId!); return `Terminal: pw-${ts?.slice(-6) || realSessionId!.slice(-6)}`; })()}
-            {isIsolateTab && `Isolate: ${realSessionId}`}
-          </span>
+          {isJsonlTab ? (
+            <JsonlFileDropdown sessionId={realSessionId!} sess={sess} />
+          ) : (
+            <span
+              class="tmux-id-label"
+              style="cursor:pointer"
+              title="Click to copy ID"
+              onClick={(e) => {
+                const id = isTerminalTab ? (getTerminalCompanion(realSessionId!) || realSessionId!) : realSessionId!;
+                copyWithTooltip(id, e as any);
+              }}
+            >
+              {isFeedbackTab && `Feedback: pw-${realSessionId!.slice(-6)}`}
+              {isIframeTab && `Page: pw-${realSessionId!.slice(-6)}`}
+              {isTerminalTab && (() => { const ts = getTerminalCompanion(realSessionId!); return `Terminal: pw-${ts?.slice(-6) || realSessionId!.slice(-6)}`; })()}
+              {isIsolateTab && `Isolate: ${realSessionId}`}
+              {isUrlTab && (() => { try { return `Iframe: ${new URL(realSessionId!).hostname}`; } catch { return `Iframe: ${realSessionId!.slice(0, 30)}`; } })()}
+            </span>
+          )}
           {feedbackPath && (
             <a href={`#${feedbackPath}`} onClick={(e) => { e.preventDefault(); navigate(feedbackPath); }} class="feedback-title-link" title={sess?.feedbackTitle || 'View feedback'}>{sess?.feedbackTitle || 'View feedback'}</a>
           )}
@@ -146,7 +248,7 @@ function PaneHeader({
                     <button onClick={(e) => { idMenuOpen.value = null; copyWithTooltip(sessionId, e as any); }}>
                       Session ID <kbd>C</kbd>
                     </button>
-                    <button onClick={(e) => { idMenuOpen.value = null; copyWithTooltip(`TMUX= tmux -L prompt-widget attach-session -t pw-${sessionId}`, e as any); }}>
+                    <button onClick={(e) => { idMenuOpen.value = null; copyWithTooltip(buildTmuxAttachCmd(sessionId, sessionMap.get(sessionId)), e as any); }}>
                       Tmux command <kbd>T</kbd>
                     </button>
                     {sess?.jsonlPath && (
@@ -208,6 +310,12 @@ function PaneHeader({
                         </button>
                       );
                     })()}
+                    <button onClick={() => {
+                      idMenuOpen.value = null;
+                      termPickerOpen.value = { kind: 'url' };
+                    }}>
+                      Iframe... <kbd>U</kbd>
+                    </button>
                   </div>
                 </div>
                 <div class="id-submenu-group" onClick={(e: any) => e.stopPropagation()}>
@@ -342,12 +450,13 @@ function PaneTabBar({
         const isIframe = sid.startsWith('iframe:');
         const isTerminal = sid.startsWith('terminal:');
         const isIsolate = sid.startsWith('isolate:');
-        const isCompanion = isJsonl || isFeedback || isIframe || isTerminal || isIsolate;
+        const isUrl = sid.startsWith('url:');
+        const isCompanion = isJsonl || isFeedback || isIframe || isTerminal || isIsolate || isUrl;
         const realSid = isCompanion ? sid.slice(sid.indexOf(':') + 1) : sid;
         const isExited = exited.has(realSid);
         const inputState = !isExited && !isCompanion ? (sessionInputStates.value.get(sid) || null) : null;
         const isActive = sid === activeId;
-        const sess = isIsolate ? null : sessionMap.get(realSid);
+        const sess = (isIsolate || isUrl) ? null : sessionMap.get(realSid);
         const isPlain = !isCompanion && sess?.permissionProfile === 'plain';
         const plainLabel = sess?.paneCommand
           ? `${sess.paneCommand}:${sess.panePath || ''} \u2014 ${sess?.paneTitle || realSid.slice(-6)}`
@@ -358,6 +467,7 @@ function PaneTabBar({
           : isIframe ? `Page: ${realSid.slice(-6)}`
           : isTerminal ? (() => { const ts = getTerminalCompanion(realSid); const tSess = ts ? sessionMap.get(ts) : null; return `Term: ${tSess?.paneTitle || ts?.slice(-6) || realSid.slice(-6)}`; })()
           : isIsolate ? `Isolate: ${realSid}`
+          : isUrl ? (() => { try { return `Iframe: ${new URL(realSid).hostname}`; } catch { return `Iframe: ${realSid.slice(0, 30)}`; } })()
           : '';
         const locationPrefix = !isCompanion && sess?.isHarness ? '\u{1F4E6}' : !isCompanion && sess?.isRemote ? '\u{1F310}' : '';
         const raw = customLabel || (isCompanion ? companionLabel : isPlain ? `${locationPrefix || '\u{1F5A5}\uFE0F'} ${plainLabel}` : `${locationPrefix ? locationPrefix + ' ' : ''}${sess?.feedbackTitle || sess?.agentName || `Session ${sid.slice(-6)}`}`);
@@ -446,13 +556,16 @@ function renderTabContent(
   const isIframe = sid.startsWith('iframe:');
   const isTerminal = sid.startsWith('terminal:');
   const isIsolate = sid.startsWith('isolate:');
-  const isCompanion = isJsonl || isFeedback || isIframe || isTerminal || isIsolate;
+  const isUrl = sid.startsWith('url:');
+  const isCompanion = isJsonl || isFeedback || isIframe || isTerminal || isIsolate || isUrl;
   const realSid = isCompanion ? sid.slice(sid.indexOf(':') + 1) : sid;
-  const sess = isIsolate ? null : sessionMap.get(realSid);
+  const sess = (isIsolate || isUrl) ? null : sessionMap.get(realSid);
 
   return (
     <div key={sid} style={{ display: isVisible ? 'flex' : 'none', width: '100%', flex: 1, minHeight: 0 }}>
-      {isIsolate ? (
+      {isUrl ? (
+        <IframeCompanionView url={realSid} />
+      ) : isIsolate ? (
         <IsolateCompanionView componentName={realSid} />
       ) : isJsonl ? (
         <JsonlView sessionId={realSid} />
@@ -541,7 +654,7 @@ export function GlobalTerminalPanel() {
       if (key === 'c') {
         navigator.clipboard.writeText(menuSessionId);
       } else if (key === 't') {
-        navigator.clipboard.writeText(`TMUX= tmux -L prompt-widget attach-session -t pw-${menuSessionId}`);
+        navigator.clipboard.writeText(buildTmuxAttachCmd(menuSessionId, sessionMap.get(menuSessionId)));
       } else if (key === 'p') {
         executePopout(menuSessionId, 'panel');
       } else if (key === 'w') {
@@ -572,6 +685,8 @@ export function GlobalTerminalPanel() {
         } else {
           termPickerOpen.value = { kind: 'companion', sessionId: menuSessionId };
         }
+      } else if (key === 'u') {
+        termPickerOpen.value = { kind: 'url' };
       } else if (key === 's' && tabs.length >= 2 && !isSplit) {
         enableSplit();
       } else if (key === 'escape') {

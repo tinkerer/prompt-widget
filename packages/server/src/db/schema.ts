@@ -170,6 +170,13 @@ export const perfMetrics = sqliteTable('perf_metrics', {
   createdAt: text('created_at').notNull(),
 });
 
+export const jsonlContinuations = sqliteTable('jsonl_continuations', {
+  childSessionId: text('child_session_id').primaryKey(),
+  parentSessionId: text('parent_session_id').notNull(),
+  projectDir: text('project_dir').notNull(),
+  discoveredAt: text('discovered_at').notNull(),
+});
+
 export const pendingMessages = sqliteTable('pending_messages', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   sessionId: text('session_id').notNull(),

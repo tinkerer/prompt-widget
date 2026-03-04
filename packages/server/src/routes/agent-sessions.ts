@@ -1,170 +1,24 @@
 import { Hono } from 'hono';
 import { eq, desc, ne, and } from 'drizzle-orm';
-import { homedir } from 'node:os';
-import { resolve, dirname, normalize, isAbsolute } from 'node:path';
-import { existsSync, readFileSync, readdirSync, openSync, readSync, closeSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { db, schema } from '../db/index.js';
 import { killSession } from '../agent-sessions.js';
 import { resumeAgentSession, dispatchTerminalSession, transferSession, getTransfer } from '../dispatch.js';
 import { getSessionLiveStates } from '../session-service-client.js';
 import { getLauncher } from '../launcher-registry.js';
+import {
+  computeJsonlPath as computeJsonlPathFull,
+  findContinuationJsonlsCached,
+  readJsonlWithSubagents,
+  filterJsonlLines,
+  extractArtifactPaths,
+  exportSessionFiles,
+  listJsonlFiles,
+} from '../jsonl-utils.js';
 
 function computeJsonlPath(projectDir: string | null, claudeSessionId: string | null): string | null {
   if (!projectDir || !claudeSessionId) return null;
-  const sanitized = projectDir.replaceAll('/', '-').replaceAll('.', '-');
-  return `${homedir()}/.claude/projects/${sanitized}/${claudeSessionId}.jsonl`;
-}
-
-// Find continuation JSONL files when Claude Code rotates sessionId mid-conversation.
-// Returns ordered list of JSONL paths: [original, continuation1, continuation2, ...]
-function findContinuationJsonls(mainJsonlPath: string): string[] {
-  const dir = mainJsonlPath.replace(/\/[^/]+$/, '');
-  if (!existsSync(dir)) return [];
-
-  // Get the last timestamp from the main file
-  const mainContent = readFileSync(mainJsonlPath, 'utf-8');
-  const mainLines = mainContent.trimEnd().split('\n');
-  let lastTimestamp = '';
-  for (let i = mainLines.length - 1; i >= 0; i--) {
-    try {
-      const obj = JSON.parse(mainLines[i]);
-      if (obj.timestamp) { lastTimestamp = obj.timestamp; break; }
-    } catch { /* skip */ }
-  }
-  if (!lastTimestamp) return [];
-
-  const mainBasename = mainJsonlPath.split('/').pop()!;
-  const candidates: { path: string; firstTimestamp: string }[] = [];
-
-  for (const file of readdirSync(dir)) {
-    if (!file.endsWith('.jsonl') || file === mainBasename) continue;
-    const fullPath = `${dir}/${file}`;
-    try {
-      // Read just the first few KB to find the first timestamp
-      const fd = openSync(fullPath, 'r');
-      const buf = Buffer.alloc(4096);
-      const bytesRead = readSync(fd, buf, 0, 4096, 0);
-      closeSync(fd);
-      const head = buf.toString('utf-8', 0, bytesRead);
-      for (const line of head.split('\n')) {
-        if (!line.trim()) continue;
-        try {
-          const obj = JSON.parse(line);
-          if (obj.timestamp && obj.type !== 'file-history-snapshot') {
-            // Only include if its first timestamp matches the main file's last timestamp (within 1s)
-            const mainTime = new Date(lastTimestamp).getTime();
-            const candidateTime = new Date(obj.timestamp).getTime();
-            if (Math.abs(candidateTime - mainTime) < 2000) {
-              candidates.push({ path: fullPath, firstTimestamp: obj.timestamp });
-            }
-            break;
-          }
-        } catch { /* skip */ }
-      }
-    } catch { /* skip unreadable files */ }
-  }
-
-  // Sort by first timestamp
-  candidates.sort((a, b) => a.firstTimestamp.localeCompare(b.firstTimestamp));
-  return candidates.map(c => c.path);
-}
-
-function filterJsonlLines(text: string): string[] {
-  return text.split('\n').filter(line => {
-    if (!line.trim()) return false;
-    try {
-      const obj = JSON.parse(line);
-      return obj.type !== 'progress' && obj.type !== 'file-history-snapshot';
-    } catch {
-      return true;
-    }
-  });
-}
-
-function readJsonlWithSubagents(filePath: string, out: string[]): void {
-  if (!existsSync(filePath)) return;
-  const raw = readFileSync(filePath, 'utf-8');
-  out.push(...filterJsonlLines(raw));
-
-  // Include subagent JSONL files
-  const subagentDir = filePath.replace(/\.jsonl$/, '') + '/subagents';
-  if (existsSync(subagentDir)) {
-    try {
-      const files = readdirSync(subagentDir).filter(f => f.endsWith('.jsonl')).sort();
-      for (const file of files) {
-        const content = readFileSync(`${subagentDir}/${file}`, 'utf-8');
-        const agentId = file.replace(/^agent-/, '').replace(/\.jsonl$/, '');
-        for (const line of filterJsonlLines(content)) {
-          try {
-            const obj = JSON.parse(line);
-            obj._subagentId = agentId;
-            out.push(JSON.stringify(obj));
-          } catch {
-            out.push(line);
-          }
-        }
-      }
-    } catch { /* ignore */ }
-  }
-}
-
-export function extractArtifactPaths(jsonlContent: string, projectDir: string): string[] {
-  const paths = new Set<string>();
-
-  for (const line of jsonlContent.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const obj = JSON.parse(line);
-
-      // Look for tool_use blocks in assistant messages
-      let toolUses: any[] = [];
-      if (obj.type === 'assistant' && Array.isArray(obj.message?.content)) {
-        toolUses = obj.message.content.filter((b: any) => b.type === 'tool_use');
-      }
-
-      for (const tu of toolUses) {
-        const toolName = tu.name;
-        const input = tu.input;
-        if (!input) continue;
-
-        let filePath: string | undefined;
-        if (toolName === 'Write' || toolName === 'Edit') {
-          filePath = input.file_path;
-        } else if (toolName === 'NotebookEdit') {
-          filePath = input.notebook_path;
-        }
-
-        if (!filePath || typeof filePath !== 'string') continue;
-
-        // Convert absolute path to relative
-        let rel: string;
-        if (isAbsolute(filePath)) {
-          if (!filePath.startsWith(projectDir)) continue;
-          rel = filePath.slice(projectDir.length).replace(/^\//, '');
-        } else {
-          rel = filePath;
-        }
-
-        const normalized = normalize(rel);
-        if (normalized.startsWith('..')) continue;
-        paths.add(normalized);
-      }
-    } catch { /* skip unparseable */ }
-  }
-
-  // Also include .claude/plans files
-  const plansDir = resolve(projectDir, '.claude', 'plans');
-  if (existsSync(plansDir)) {
-    try {
-      for (const f of readdirSync(plansDir)) {
-        if (f.endsWith('.md')) {
-          paths.add(`.claude/plans/${f}`);
-        }
-      }
-    } catch { /* ignore */ }
-  }
-
-  return Array.from(paths);
+  return computeJsonlPathFull(projectDir, claudeSessionId);
 }
 
 export const agentSessionRoutes = new Hono();
@@ -355,6 +209,36 @@ agentSessionRoutes.post('/:id/open-terminal', async (c) => {
   const { execFileSync } = await import('node:child_process');
   const { resolve, dirname } = await import('node:path');
   const { fileURLToPath } = await import('node:url');
+  const { writeFileSync, chmodSync, mkdtempSync } = await import('node:fs');
+
+  // Check if session is remote
+  const session = db.select().from(schema.agentSessions).where(eq(schema.agentSessions.id, id)).get();
+  let isRemote = false;
+  let hostname: string | null = null;
+  if (session?.launcherId) {
+    const launcher = getLauncher(session.launcherId);
+    if (launcher && !launcher.isLocal) {
+      isRemote = true;
+      hostname = launcher.hostname;
+    }
+  }
+
+  if (isRemote && hostname) {
+    // Remote session — generate .command file with SSH
+    try {
+      const tmpDir = mkdtempSync('/tmp/pw-open-');
+      const tmpFile = resolve(tmpDir, 'open.command');
+      const cmd = `ssh ${hostname} 'TMUX= tmux -L prompt-widget attach-session -t ${tmuxName}'\nrm -rf "${tmpDir}"\n`;
+      writeFileSync(tmpFile, cmd);
+      chmodSync(tmpFile, 0o755);
+      execFileSync('open', ['-a', 'Terminal', '-e', tmpFile], { stdio: 'pipe' });
+      return c.json({ ok: true, tmuxName, remote: true, hostname });
+    } catch (err: any) {
+      return c.json({ error: err.message }, 500);
+    }
+  }
+
+  // Local session — check tmux and use existing script
   try {
     execFileSync('tmux', ['-L', 'prompt-widget', 'has-session', '-t', tmuxName], { stdio: 'pipe' });
   } catch {
@@ -369,8 +253,46 @@ agentSessionRoutes.post('/:id/open-terminal', async (c) => {
   }
 });
 
+agentSessionRoutes.get('/:id/jsonl-files', async (c) => {
+  const id = c.req.param('id');
+  const row = db
+    .select({
+      claudeSessionId: schema.agentSessions.claudeSessionId,
+      appProjectDir: schema.applications.projectDir,
+    })
+    .from(schema.agentSessions)
+    .leftJoin(schema.feedbackItems, eq(schema.agentSessions.feedbackId, schema.feedbackItems.id))
+    .leftJoin(schema.applications, eq(schema.feedbackItems.appId, schema.applications.id))
+    .where(eq(schema.agentSessions.id, id))
+    .get();
+
+  if (!row) {
+    return c.json({ error: 'Session not found' }, 404);
+  }
+
+  const jsonlPath = computeJsonlPath(row.appProjectDir || null, row.claudeSessionId);
+  if (!jsonlPath) {
+    return c.json({ error: 'No JSONL path available' }, 400);
+  }
+
+  const files = existsSync(jsonlPath) ? listJsonlFiles(jsonlPath) : [];
+  return c.json({
+    claudeSessionId: row.claudeSessionId,
+    files: files.map(f => ({
+      id: f.id,
+      claudeSessionId: f.claudeSessionId,
+      type: f.type,
+      label: f.label,
+      parentSessionId: f.parentSessionId || null,
+      agentId: f.agentId || null,
+      order: f.order,
+    })),
+  });
+});
+
 agentSessionRoutes.get('/:id/jsonl', async (c) => {
   const id = c.req.param('id');
+  const fileFilter = c.req.query('file'); // optional: specific file id like "main:uuid", "cont:uuid", "sub:uuid:agentId"
   const row = db
     .select({
       claudeSessionId: schema.agentSessions.claudeSessionId,
@@ -394,9 +316,24 @@ agentSessionRoutes.get('/:id/jsonl', async (c) => {
     return c.json({ error: `JSONL file not found: ${jsonlPath}` }, 404);
   }
 
+  // If a specific file is requested, load just that one
+  if (fileFilter) {
+    const allFiles = listJsonlFiles(jsonlPath);
+    const target = allFiles.find(f => f.id === fileFilter);
+    if (!target) {
+      return c.json({ error: `File not found: ${fileFilter}` }, 404);
+    }
+    if (!existsSync(target.filePath)) {
+      return c.json({ error: `File missing on disk: ${target.filePath}` }, 404);
+    }
+    const raw = readFileSync(target.filePath, 'utf-8');
+    const lines = filterJsonlLines(raw);
+    return c.text(lines.join('\n'));
+  }
+
+  // Default: merged view (all files)
   const allLines: string[] = [];
-  // Read main file + continuations
-  const continuations = findContinuationJsonls(jsonlPath);
+  const continuations = findContinuationJsonlsCached(jsonlPath);
   console.log(`[jsonl] ${id}: main=${jsonlPath}, continuations=${continuations.length}`, continuations);
   const jsonlFiles = [jsonlPath, ...continuations];
   for (const filePath of jsonlFiles) {
@@ -502,66 +439,15 @@ agentSessionRoutes.get('/:id/export-context', async (c) => {
     return c.json({ error: 'JSONL file not found' }, 404);
   }
 
-  // Collect all JSONL content
-  const allLines: string[] = [];
-  const continuations = findContinuationJsonls(jsonlPath);
-  const jsonlPaths = [jsonlPath, ...continuations];
-
-  const jsonlFiles: Array<{ relativePath: string; content: string }> = [];
+  const pkg = exportSessionFiles(projectDir, claudeSessionId);
   const sanitized = projectDir.replaceAll('/', '-').replaceAll('.', '-');
-  const jsonlDir = `${homedir()}/.claude/projects/${sanitized}`;
-
-  // Main JSONL
-  jsonlFiles.push({
-    relativePath: `${claudeSessionId}.jsonl`,
-    content: readFileSync(jsonlPath, 'utf-8'),
-  });
-
-  // Continuations
-  for (const cont of continuations) {
-    const relPath = cont.startsWith(jsonlDir) ? cont.slice(jsonlDir.length + 1) : cont.split('/').pop()!;
-    jsonlFiles.push({
-      relativePath: relPath,
-      content: readFileSync(cont, 'utf-8'),
-    });
-  }
-
-  // Subagent files
-  const subagentDir = jsonlPath.replace(/\.jsonl$/, '') + '/subagents';
-  if (existsSync(subagentDir)) {
-    try {
-      for (const file of readdirSync(subagentDir).filter(f => f.endsWith('.jsonl'))) {
-        jsonlFiles.push({
-          relativePath: `${claudeSessionId}/subagents/${file}`,
-          content: readFileSync(`${subagentDir}/${file}`, 'utf-8'),
-        });
-      }
-    } catch { /* ignore */ }
-  }
-
-  // Extract artifact paths from all JSONL content
-  const allJsonlContent = jsonlFiles.map(f => f.content).join('\n');
-  readJsonlWithSubagents(jsonlPath, allLines);
-  const artifactPaths = extractArtifactPaths(allJsonlContent, projectDir);
-
-  // Read artifact files from disk
-  const artifactFiles: Array<{ path: string; content: string }> = [];
-  for (const relPath of artifactPaths) {
-    const full = resolve(projectDir, relPath);
-    if (!full.startsWith(projectDir)) continue;
-    if (existsSync(full)) {
-      try {
-        artifactFiles.push({ path: relPath, content: readFileSync(full, 'utf-8') });
-      } catch { /* skip binary/unreadable */ }
-    }
-  }
 
   return c.json({
     claudeSessionId,
     projectDir,
     sanitizedProjectDir: sanitized,
-    jsonlFiles,
-    artifactFiles,
+    jsonlFiles: pkg.jsonlFiles,
+    artifactFiles: pkg.artifactFiles,
     sessionMetadata: {
       id: row.session.id,
       status: row.session.status,

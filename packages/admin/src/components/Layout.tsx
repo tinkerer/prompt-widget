@@ -997,8 +997,16 @@ export function Layout({ children }: { children: ComponentChildren }) {
               class="sidebar-resize-handle"
               onMouseDown={(e) => {
                 const startY = e.clientY;
-                const startH = sessionsHeight.value;
-                startDrag(e, 'ns-resize', (ev) => setSessionsHeight(startH - (ev.clientY - startY)), e.currentTarget as HTMLElement);
+                const startSH = sessionsHeight.value;
+                const startTH = terminalsHeight.value;
+                const total = startSH + startTH;
+                const sRatio = total > 0 ? startSH / total : 0.5;
+                const tRatio = total > 0 ? startTH / total : 0.5;
+                startDrag(e, 'ns-resize', (ev) => {
+                  const delta = -(ev.clientY - startY);
+                  setSessionsHeight(startSH + delta * sRatio);
+                  setTerminalsHeight(startTH + delta * tRatio);
+                }, e.currentTarget as HTMLElement);
               }}
             />
             <div
@@ -1144,8 +1152,13 @@ export function Layout({ children }: { children: ComponentChildren }) {
                 class="sidebar-terminals-resize-handle"
                 onMouseDown={(e) => {
                   const startY = e.clientY;
-                  const startH = terminalsHeight.value;
-                  startDrag(e, 'ns-resize', (ev) => setTerminalsHeight(startH - (ev.clientY - startY)), e.currentTarget as HTMLElement);
+                  const startSH = sessionsHeight.value;
+                  const startTH = terminalsHeight.value;
+                  startDrag(e, 'ns-resize', (ev) => {
+                    const delta = ev.clientY - startY;
+                    setSessionsHeight(startSH + delta);
+                    setTerminalsHeight(startTH - delta);
+                  }, e.currentTarget as HTMLElement);
                 }}
               />
             )}

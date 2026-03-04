@@ -3,6 +3,7 @@ import { MessageRenderer } from './MessageRenderer.js';
 import { groupMessages, AssistantGroupHeader } from './StructuredView.js';
 import { JsonOutputParser, type ParsedMessage } from '../lib/output-parser.js';
 import { api } from '../lib/api.js';
+import { getJsonlSelectedFile, jsonlSelectedFile } from '../lib/sessions.js';
 
 interface Props {
   sessionId: string;
@@ -15,10 +16,23 @@ export function JsonlView({ sessionId }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const autoScroll = useRef(true);
   const lastLength = useRef(0);
+  const lastFileFilter = useRef<string | null>(null);
+
+  // Read the selected file from signal
+  const selectedFile = getJsonlSelectedFile(sessionId);
+  // Access the signal to trigger re-renders
+  const _sel = jsonlSelectedFile.value;
 
   const fetchJsonl = async () => {
+    const fileFilter = getJsonlSelectedFile(sessionId);
+    // If file filter changed, reset
+    if (fileFilter !== lastFileFilter.current) {
+      lastFileFilter.current = fileFilter;
+      lastLength.current = 0;
+    }
+
     try {
-      const text = await api.getJsonl(sessionId);
+      const text = await api.getJsonl(sessionId, fileFilter || undefined);
       if (text.length === lastLength.current) return;
       lastLength.current = text.length;
 
@@ -36,13 +50,14 @@ export function JsonlView({ sessionId }: Props) {
 
   useEffect(() => {
     lastLength.current = 0;
+    lastFileFilter.current = selectedFile;
     setMessages([]);
     setLoading(true);
     setError(null);
     fetchJsonl();
     const interval = setInterval(fetchJsonl, 3000);
     return () => clearInterval(interval);
-  }, [sessionId]);
+  }, [sessionId, selectedFile]);
 
   useEffect(() => {
     if (autoScroll.current && containerRef.current) {

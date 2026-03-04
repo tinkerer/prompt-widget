@@ -5474,6 +5474,35 @@ kbd {
   line-height: 1.6;
 }
 
+/* JSONL file dropdown */
+.jsonl-file-dropdown {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.jsonl-file-badge {
+  font-size: 9px;
+  color: #94a3b8;
+  background: #334155;
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-family: monospace;
+}
+.jsonl-file-menu {
+  min-width: 240px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+.jsonl-file-menu button.active {
+  background: #1e3a5f;
+  color: #93c5fd;
+}
+.jsonl-file-divider {
+  height: 1px;
+  background: #334155;
+  margin: 4px 0;
+}
+
 /* Submenu groups */
 .id-submenu-group {
   position: relative;

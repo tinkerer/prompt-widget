@@ -52,6 +52,7 @@ import {
   attachTmuxSession,
   loadAllSessions,
   focusSessionTerminal,
+  buildTmuxAttachCmd,
 } from '../lib/sessions.js';
 import { startTabDrag } from '../lib/tab-drag.js';
 import { ctrlShiftHeld } from '../lib/shortcuts.js';
@@ -213,13 +214,16 @@ function renderPanelTabContent(
   const isIframe = sid.startsWith('iframe:');
   const isTerminal = sid.startsWith('terminal:');
   const isIsolate = sid.startsWith('isolate:');
-  const isCompanion = isJsonl || isFeedback || isIframe || isTerminal || isIsolate;
+  const isUrl = sid.startsWith('url:');
+  const isCompanion = isJsonl || isFeedback || isIframe || isTerminal || isIsolate || isUrl;
   const realSid = isCompanion ? sid.slice(sid.indexOf(':') + 1) : sid;
-  const sess = isIsolate ? null : sessionMap.get(realSid);
+  const sess = (isIsolate || isUrl) ? null : sessionMap.get(realSid);
 
   return (
     <div key={sid} style={{ display: isVisible ? 'flex' : 'none', width: '100%', flex: 1, minHeight: 0 }}>
-      {isIsolate ? (
+      {isUrl ? (
+        <IframeCompanionView url={realSid} />
+      ) : isIsolate ? (
         <IsolateCompanionView componentName={realSid} />
       ) : isJsonl ? (
         <JsonlView sessionId={realSid} />
@@ -467,16 +471,18 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
     const isIframe = sid.startsWith('iframe:');
     const isTerminal = sid.startsWith('terminal:');
     const isIsolate = sid.startsWith('isolate:');
-    const isCompanion = isJsonl || isFeedback || isIframe || isTerminal || isIsolate;
+    const isUrl = sid.startsWith('url:');
+    const isCompanion = isJsonl || isFeedback || isIframe || isTerminal || isIsolate || isUrl;
     const realSid = isCompanion ? sid.slice(sid.indexOf(':') + 1) : sid;
     const custom = getSessionLabel(sid);
     if (custom) return custom;
-    const s = isIsolate ? null : sessionMap.get(realSid);
+    const s = (isIsolate || isUrl) ? null : sessionMap.get(realSid);
     if (isJsonl) return `JSONL: ${s?.feedbackTitle || s?.agentName || realSid.slice(-6)}`;
     if (isFeedback) return `FB: ${s?.feedbackTitle || realSid.slice(-6)}`;
     if (isIframe) return `Page: ${realSid.slice(-6)}`;
     if (isTerminal) { const ts = getTerminalCompanion(realSid); const tSess = ts ? sessionMap.get(ts) : null; return `Term: ${tSess?.paneTitle || ts?.slice(-6) || realSid.slice(-6)}`; }
     if (isIsolate) return `Isolate: ${realSid}`;
+    if (isUrl) { try { return `Iframe: ${new URL(realSid).hostname}`; } catch { return `Iframe: ${realSid.slice(0, 30)}`; } }
     const isPlainSess = s?.permissionProfile === 'plain';
     const plainLabel = s?.paneCommand
       ? `${s.paneCommand}:${s.panePath || ''} \u2014 ${s?.paneTitle || sid.slice(-6)}`
@@ -697,7 +703,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
                 <button onClick={(e) => { e.stopPropagation(); popoutIdMenuOpen.value = null; copyWithTooltip(activeId, e as any); }}>
                   Copy {activeId} <kbd>C</kbd>
                 </button>
-                <button onClick={(e) => { e.stopPropagation(); popoutIdMenuOpen.value = null; copyWithTooltip(`TMUX= tmux -L prompt-widget attach-session -t pw-${activeId}`, e as any); }}>
+                <button onClick={(e) => { e.stopPropagation(); popoutIdMenuOpen.value = null; copyWithTooltip(buildTmuxAttachCmd(activeId, sessionMap.get(activeId)), e as any); }}>
                   Copy tmux command <kbd>T</kbd>
                 </button>
                 {session?.jsonlPath && (
@@ -1136,7 +1142,7 @@ export function PopoutPanel() {
       if (key === 'c') {
         navigator.clipboard.writeText(menuSessionId);
       } else if (key === 't') {
-        navigator.clipboard.writeText(`TMUX= tmux -L prompt-widget attach-session -t pw-${menuSessionId}`);
+        navigator.clipboard.writeText(buildTmuxAttachCmd(menuSessionId, sessionMap.get(menuSessionId)));
       } else if (key === 'p') {
         popBackIn(menuSessionId);
       } else if (key === 'w') {

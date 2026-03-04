@@ -173,6 +173,34 @@ cd packages/admin && npm run dev
 npm run build --workspaces
 ```
 
+## UI Conventions
+
+- **Never use `window.prompt()`, `window.alert()`, or `window.confirm()`** in the admin UI. These are ugly, block the thread, and break the UX. Instead, build proper in-app UI (modals, spotlight pickers, inline inputs).
+- For URL input, use the `TerminalPicker` in `{ kind: 'url' }` mode via `termPickerOpen.value = { kind: 'url' }`.
+- For terminal/companion selection, use the `TerminalPicker` in `{ kind: 'companion', sessionId }` or `{ kind: 'new' }` mode.
+- The `TerminalPicker` is a spotlight/command-palette component (`packages/admin/src/components/TerminalPicker.tsx`) that handles all picker interactions with keyboard navigation and categories.
+
+## Companion Tabs
+
+The admin panel supports companion tabs that render alongside agent sessions. Tab IDs use a `type:identifier` format:
+
+| Type | Tab ID format | What it shows |
+|------|--------------|---------------|
+| `jsonl:` | `jsonl:<sessionId>` | JSONL conversation viewer |
+| `feedback:` | `feedback:<sessionId>` | Feedback detail view |
+| `iframe:` | `iframe:<sessionId>` | Page iframe (session's URL) |
+| `terminal:` | `terminal:<sessionId>` | Terminal companion |
+| `isolate:` | `isolate:<componentName>` | Isolated component in iframe |
+| `url:` | `url:<fullUrl>` | Arbitrary URL in iframe |
+
+To open companions programmatically from admin code:
+- `toggleCompanion(sessionId, 'jsonl')` — toggle JSONL/feedback/iframe/terminal companions
+- `openUrlCompanion(url)` — open a URL iframe tab
+- `openIsolateCompanion(componentName)` — open an isolated component tab
+- `termPickerOpen.value = { kind: 'url' }` — open URL picker UI
+
+Companion types are defined in `CompanionType` union in `packages/admin/src/lib/sessions.ts`. When adding a new companion type, update: `CompanionType`, `extractCompanionType()`, `renderTabContent()` in GlobalTerminalPanel, `PaneHeader`, `PaneTabBar`, `PopoutPanel.renderPanelTabContent()`, and `PopoutPanel.tabLabel()`.
+
 ## Key Directories
 
 - `packages/server/src/routes/` — API route handlers (feedback, admin, aggregate, agent-sessions)

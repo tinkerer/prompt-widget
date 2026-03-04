@@ -1,6 +1,6 @@
 import WebSocket from 'ws';
 import * as os from 'node:os';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import * as path from 'node:path';
 import * as pty from 'node-pty';
 import { execSync } from 'node:child_process';
@@ -31,6 +31,11 @@ import {
   listPwTmuxSessions,
   detachTmuxClients,
 } from './tmux-pty.js';
+import {
+  computeJsonlDir,
+  exportSessionFiles as exportSessionFilesLocal,
+  extractArtifactPaths,
+} from './jsonl-utils.js';
 
 const SERVER_WS_URL = process.env.SERVER_WS_URL || 'ws://localhost:3001/ws/launcher';
 const LAUNCHER_ID = process.env.LAUNCHER_ID || `launcher-${os.hostname()}`;
@@ -217,11 +222,6 @@ function spawnSession(params: {
 
 }
 
-function computeJsonlDir(projectDir: string): string {
-  const sanitized = projectDir.replaceAll('/', '-').replaceAll('.', '-');
-  return path.join(os.homedir(), '.claude', 'projects', sanitized);
-}
-
 function handleImportSessionFiles(msg: ImportSessionFiles): void {
   const { sessionId, claudeSessionId, projectDir, jsonlFiles, artifactFiles } = msg;
   try {
@@ -275,58 +275,30 @@ function handleImportSessionFiles(msg: ImportSessionFiles): void {
 function handleExportSessionFiles(msg: ExportSessionFiles): void {
   const { sessionId, claudeSessionId, projectDir, artifactPaths } = msg;
   try {
-    const jsonlDir = computeJsonlDir(projectDir);
-    const mainJsonl = path.join(jsonlDir, `${claudeSessionId}.jsonl`);
-
-    const jsonlFiles: Array<{ relativePath: string; content: string }> = [];
-
-    // Read main JSONL
-    if (existsSync(mainJsonl)) {
-      jsonlFiles.push({
-        relativePath: `${claudeSessionId}.jsonl`,
-        content: readFileSync(mainJsonl, 'utf-8'),
-      });
+    // Resolve ~ in projectDir
+    let resolvedDir = projectDir;
+    if (resolvedDir === '~' || resolvedDir.startsWith('~/')) {
+      resolvedDir = resolvedDir === '~' ? os.homedir() : resolvedDir.replace(/^~/, os.homedir());
     }
 
-    // Read continuation files (same directory, other .jsonl files with matching timestamps)
-    // Simple approach: include all .jsonl files in the directory since they may be continuations
-    if (existsSync(jsonlDir)) {
-      for (const file of readdirSync(jsonlDir)) {
-        if (!file.endsWith('.jsonl') || file === `${claudeSessionId}.jsonl`) continue;
-        jsonlFiles.push({
-          relativePath: file,
-          content: readFileSync(path.join(jsonlDir, file), 'utf-8'),
-        });
-      }
-    }
+    const pkg = exportSessionFilesLocal(resolvedDir, claudeSessionId);
 
-    // Read subagent files
-    const subagentDir = path.join(jsonlDir, claudeSessionId, 'subagents');
-    if (existsSync(subagentDir)) {
-      for (const file of readdirSync(subagentDir)) {
-        if (!file.endsWith('.jsonl')) continue;
-        jsonlFiles.push({
-          relativePath: path.join(claudeSessionId, 'subagents', file),
-          content: readFileSync(path.join(subagentDir, file), 'utf-8'),
-        });
-      }
-    }
-
-    // Read artifact files
-    let cwd = projectDir;
-    if (cwd === '~' || cwd.startsWith('~/')) {
-      cwd = cwd === '~' ? os.homedir() : cwd.replace(/^~/, os.homedir());
-    }
-    const artifactFilesOut: Array<{ path: string; content: string }> = [];
-    for (const relPath of artifactPaths) {
-      const normalized = path.normalize(relPath);
-      if (normalized.startsWith('..') || path.isAbsolute(normalized)) continue;
-      const full = path.join(cwd, normalized);
-      if (!full.startsWith(cwd)) continue;
-      if (existsSync(full)) {
-        try {
-          artifactFilesOut.push({ path: relPath, content: readFileSync(full, 'utf-8') });
-        } catch { /* skip binary/unreadable */ }
+    // If caller also requested specific artifact paths (beyond what JSONL parsing found),
+    // add those too
+    if (artifactPaths.length > 0) {
+      const extraPaths = extractArtifactPaths('', resolvedDir); // plans dir only
+      const existingPaths = new Set(pkg.artifactFiles.map(f => f.path));
+      for (const relPath of artifactPaths) {
+        if (existingPaths.has(relPath)) continue;
+        const normalized = path.normalize(relPath);
+        if (normalized.startsWith('..') || path.isAbsolute(normalized)) continue;
+        const full = path.join(resolvedDir, normalized);
+        if (!full.startsWith(resolvedDir)) continue;
+        if (existsSync(full)) {
+          try {
+            pkg.artifactFiles.push({ path: relPath, content: readFileSync(full, 'utf-8') });
+          } catch { /* skip */ }
+        }
       }
     }
 
@@ -334,11 +306,11 @@ function handleExportSessionFiles(msg: ExportSessionFiles): void {
       type: 'export_session_files_result',
       sessionId,
       ok: true,
-      jsonlFiles,
-      artifactFiles: artifactFilesOut,
+      jsonlFiles: pkg.jsonlFiles,
+      artifactFiles: pkg.artifactFiles,
     };
     sendToServer(result);
-    console.log(`[launcher] Exported ${jsonlFiles.length} JSONL + ${artifactFilesOut.length} artifact files for session ${sessionId}`);
+    console.log(`[launcher] Exported ${pkg.jsonlFiles.length} JSONL + ${pkg.artifactFiles.length} artifact files for session ${sessionId}`);
   } catch (err: any) {
     const result: ExportSessionFilesResult = {
       type: 'export_session_files_result',
