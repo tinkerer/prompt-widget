@@ -22,6 +22,8 @@ import type {
   ExportSessionFilesResult,
   SyncCodebase,
   SyncCodebaseResult,
+  SyncCodebaseToContainer,
+  SyncCodebaseToContainerResult,
   ListTmuxSessionsResult,
   CheckClaudeAuthResult,
   CheckContainerClaudeResult,
@@ -415,6 +417,66 @@ function handleSyncCodebase(msg: SyncCodebase): void {
   }
 }
 
+function handleSyncCodebaseToContainer(msg: SyncCodebaseToContainer): void {
+  const { sessionId, harnessConfigId, branch, gitRemoteUrl, containerPath, composeDir, serviceName } = msg;
+  const svc = serviceName || 'pw-server';
+  const projectName = `pw-${harnessConfigId}`.toLowerCase();
+
+  try {
+    // Clone to a temp directory on the host
+    const tmpDir = execSync('mktemp -d', { stdio: 'pipe' }).toString().trim();
+    try {
+      console.log(`[launcher] Cloning ${branch} from ${gitRemoteUrl} to ${tmpDir}/project...`);
+      execSync(`git clone --branch "${branch}" --depth 1 "${gitRemoteUrl}" "${tmpDir}/project"`, {
+        stdio: 'pipe',
+        timeout: 120_000,
+      });
+
+      // Get the container ID for the service
+      const containerId = execSync(
+        `docker compose -p ${projectName} ps -q ${svc}`,
+        { stdio: 'pipe', timeout: 10_000, cwd: composeDir || undefined },
+      ).toString().trim();
+
+      if (!containerId) {
+        throw new Error(`No running container found for service ${svc} in project ${projectName}`);
+      }
+
+      // Ensure target directory exists in container
+      execSync(`docker exec "${containerId}" mkdir -p "${containerPath}"`, {
+        stdio: 'pipe',
+        timeout: 10_000,
+      });
+
+      // Copy project files into container
+      console.log(`[launcher] Copying project files to container ${containerId}:${containerPath}...`);
+      execSync(`docker cp "${tmpDir}/project/." "${containerId}:${containerPath}"`, {
+        stdio: 'pipe',
+        timeout: 120_000,
+      });
+
+      const result: SyncCodebaseToContainerResult = {
+        type: 'sync_codebase_to_container_result',
+        sessionId,
+        ok: true,
+      };
+      sendToServer(result);
+      console.log(`[launcher] Synced codebase to container for session ${sessionId}`);
+    } finally {
+      try { execSync(`rm -rf "${tmpDir}"`, { stdio: 'pipe' }); } catch {}
+    }
+  } catch (err: any) {
+    const result: SyncCodebaseToContainerResult = {
+      type: 'sync_codebase_to_container_result',
+      sessionId,
+      ok: false,
+      error: err.message?.slice(0, 500),
+    };
+    sendToServer(result);
+    console.error(`[launcher] Failed to sync codebase to container for session ${sessionId}:`, err.message);
+  }
+}
+
 function handleServerMessage(msg: ServerToLauncherMessage): void {
   switch (msg.type) {
     case 'launcher_registered':
@@ -568,6 +630,10 @@ function handleServerMessage(msg: ServerToLauncherMessage): void {
       handleSyncCodebase(msg);
       break;
 
+    case 'sync_codebase_to_container':
+      handleSyncCodebaseToContainer(msg);
+      break;
+
     case 'list_tmux_sessions': {
       const tmuxSessions = listDefaultTmuxSessions();
       const result: ListTmuxSessionsResult = {
@@ -697,22 +763,23 @@ function handleServerMessage(msg: ServerToLauncherMessage): void {
     }
 
     case 'launch_harness_session': {
-      const { sessionId, harnessConfigId, prompt, composeDir, serviceName, permissionProfile, cols, rows } = msg;
+      const { sessionId, harnessConfigId, prompt, composeDir, serviceName, permissionProfile, containerCwd, claudeSessionId, cols, rows } = msg;
       const svc = serviceName || 'pw-server';
 
-      console.log(`[launcher] Launching harness session ${sessionId} in ${composeDir || harnessConfigId}/${svc}`);
+      console.log(`[launcher] Launching harness session ${sessionId} in ${composeDir || harnessConfigId}/${svc}${containerCwd ? ` (cwd=${containerCwd})` : ''}`);
 
       if (sessions.has(sessionId)) {
         console.log(`[launcher] Session ${sessionId} already running`);
         break;
       }
 
-      const { command: innerCmd, args: innerArgs } = buildClaudeArgs(prompt, permissionProfile);
+      const { command: innerCmd, args: innerArgs } = buildClaudeArgs(prompt, permissionProfile, undefined, claudeSessionId);
       // Interactive profiles (plain, interactive) need a TTY from docker for stdin;
       // non-interactive profiles (auto, yolo) use -T since they pipe input
       const useTmux = isTmuxAvailable();
       const needsDockerTty = permissionProfile === 'plain' || permissionProfile === 'interactive';
       const execFlags = (useTmux && !needsDockerTty) ? ['-T'] : [];
+      if (containerCwd) execFlags.push('-w', containerCwd);
       const projectName = `pw-${harnessConfigId}`.toLowerCase();
       const dockerArgs = composeDir
         ? ['compose', '--project-directory', composeDir, '-p', projectName, 'exec', ...execFlags, svc, innerCmd, ...innerArgs]

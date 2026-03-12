@@ -139,6 +139,7 @@ export const machines = sqliteTable('machines', {
   capabilities: text('capabilities'),
   tags: text('tags'),
   authToken: text('auth_token'),
+  adminUrl: text('admin_url'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });

@@ -1187,6 +1187,7 @@ export function focusSessionTerminal(sessionId: string) {
 
 export function openSession(sessionId: string) {
   autoJumpLogs.value && console.log(`[auto-jump] openSession: ${sessionId.slice(-6)}, currentActive=${activeTabId.value?.slice(-6) ?? 'null'}, alreadyOpen=${openTabs.value.includes(sessionId)}`);
+  import('./autofix.js').then(({ trackSessionOpen }) => trackSessionOpen(sessionId));
   if (!openTabs.value.includes(sessionId)) {
     openTabs.value = [...openTabs.value, sessionId];
   }
@@ -1374,11 +1375,16 @@ export async function killSession(sessionId: string) {
   }
 }
 
-export function markSessionExited(sessionId: string) {
+export function markSessionExited(sessionId: string, exitCode?: number, terminalText?: string) {
   const next = new Set(exitedSessions.value);
   next.add(sessionId);
   exitedSessions.value = next;
   persistTabs();
+  if (exitCode !== undefined && exitCode !== 0 && terminalText) {
+    import('./autofix.js').then(({ handleSessionExit }) => {
+      handleSessionExit(sessionId, exitCode, terminalText);
+    });
+  }
 }
 
 export async function resumeSession(sessionId: string): Promise<string | null> {
@@ -1430,10 +1436,11 @@ export async function spawnTerminal(appId?: string | null, launcherId?: string, 
   }
 }
 
-export async function attachTmuxSession(tmuxTarget: string, appId?: string | null, skipOpen?: boolean) {
+export async function attachTmuxSession(tmuxTarget: string, appId?: string | null, skipOpen?: boolean, launcherId?: string) {
   try {
-    const data: { tmuxTarget: string; appId?: string } = { tmuxTarget };
+    const data: { tmuxTarget: string; appId?: string; launcherId?: string } = { tmuxTarget };
     if (appId && appId !== '__unlinked__') data.appId = appId;
+    if (launcherId) data.launcherId = launcherId;
     const { sessionId } = await api.attachTmuxSession(data);
     if (!skipOpen) openSession(sessionId);
     loadAllSessions();
@@ -1845,6 +1852,31 @@ export function setSessionLabel(sessionId: string, label: string) {
 
 export function getSessionLabel(sessionId: string): string | undefined {
   return sessionLabels.value[sessionId];
+}
+
+export const SESSION_COLOR_PRESETS = [
+  '#ef4444', '#f97316', '#eab308', '#22c55e',
+  '#3b82f6', '#a855f7', '#ec4899', '#06b6d4',
+];
+
+export const sessionColors = signal<Record<string, string>>(loadJson('pw-session-colors', {}));
+
+export function setSessionColor(sessionId: string, color: string) {
+  const next = { ...sessionColors.value };
+  if (color) next[sessionId] = color;
+  else delete next[sessionId];
+  sessionColors.value = next;
+  localStorage.setItem('pw-session-colors', JSON.stringify(next));
+}
+
+export function getSessionColor(sessionId: string): string | undefined {
+  const direct = sessionColors.value[sessionId];
+  if (direct) return direct;
+  const colonIdx = sessionId.indexOf(':');
+  if (colonIdx >= 0) {
+    return sessionColors.value[sessionId.slice(colonIdx + 1)];
+  }
+  return undefined;
 }
 
 export const hotkeyMenuOpen = signal<{ sessionId: string; x: number; y: number } | null>(null);

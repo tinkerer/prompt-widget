@@ -47,6 +47,7 @@ app.post('/', async (c) => {
       tags: body.tags ? JSON.stringify(body.tags) : null,
       authToken: body.authToken || null,
       defaultCwd: body.defaultCwd || null,
+      adminUrl: body.adminUrl || null,
       createdAt: now,
       updatedAt: now,
     })
@@ -90,6 +91,7 @@ app.patch('/:id', async (c) => {
   if (body.tags !== undefined) updates.tags = JSON.stringify(body.tags);
   if (body.authToken !== undefined) updates.authToken = body.authToken;
   if (body.defaultCwd !== undefined) updates.defaultCwd = body.defaultCwd;
+  if (body.adminUrl !== undefined) updates.adminUrl = body.adminUrl;
 
   db.update(schema.machines).set(updates).where(eq(schema.machines.id, id)).run();
   const row = db.select().from(schema.machines).where(eq(schema.machines.id, id)).get();

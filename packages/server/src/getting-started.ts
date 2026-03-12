@@ -1,8 +1,11 @@
 export function gettingStartedMarkdown(baseUrl: string): string {
   return `# Prompt Widget — Agent Getting Started
 
-This server is running at \`${baseUrl}\`. Follow these steps to register your
-project, create an agent endpoint, and embed the feedback widget.
+Quickest way to start is to paste this into a claude code session running in your project directory:
+
+\`\`\`
+see ${baseUrl}/GETTING_STARTED.md Follow these steps to register this project, create an agent endpoint, and embed the feedback widget.
+\`\`\`
 
 ---
 

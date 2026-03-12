@@ -14,9 +14,8 @@ import { AggregatePage } from '../pages/AggregatePage.js';
 import { LiveConnectionsPage } from '../pages/LiveConnectionsPage.js';
 import { SettingsPage } from '../pages/SettingsPage.js';
 import { AppSettingsPage } from '../pages/AppSettingsPage.js';
-import { HarnessesPage } from '../pages/HarnessesPage.js';
-import { SpritesPage } from '../pages/SpritesPage.js';
-import { MachinesPage } from '../pages/MachinesPage.js';
+import { InfrastructurePage } from '../pages/InfrastructurePage.js';
+import { UserGuidePage } from '../pages/UserGuidePage.js';
 import { StandaloneSessionPage } from '../pages/StandaloneSessionPage.js';
 import { DispatchDialog } from './DispatchDialog.js';
 
@@ -126,14 +125,15 @@ export function App() {
     return null;
   } else if (route === '/settings/getting-started') {
     page = <GettingStartedPage />;
+  } else if (route === '/settings/user-guide') {
+    page = <UserGuidePage />;
   } else if (route === '/settings/preferences') {
     page = <SettingsPage />;
-  } else if (route === '/settings/machines') {
-    page = <MachinesPage />;
-  } else if (route === '/settings/harnesses') {
-    page = <HarnessesPage />;
-  } else if (route === '/settings/sprites') {
-    page = <SpritesPage />;
+  } else if (route === '/settings/infrastructure') {
+    page = <InfrastructurePage />;
+  } else if (route === '/settings/machines' || route === '/settings/harnesses' || route === '/settings/sprites') {
+    navigate('/settings/infrastructure');
+    return null;
   } else if (route.startsWith('/session/')) {
     const sessionId = route.replace('/session/', '');
     return <StandaloneSessionPage sessionId={sessionId} />;

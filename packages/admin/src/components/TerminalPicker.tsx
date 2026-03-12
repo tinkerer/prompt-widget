@@ -34,6 +34,7 @@ export function TerminalPicker({ mode, onClose }: Props) {
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [tmuxSessions, setTmuxSessions] = useState<{ name: string; windows: number; created: string; attached: boolean }[]>([]);
+  const [remoteTmux, setRemoteTmux] = useState<Map<string, { name: string; windows: number; created: string; attached: boolean }[]>>(new Map());
   const [tmuxLoading, setTmuxLoading] = useState(true);
   const [internalUrlMode, setInternalUrlMode] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -45,13 +46,40 @@ export function TerminalPicker({ mode, onClose }: Props) {
   }, [internalUrlMode]);
 
   useEffect(() => {
+    function onDocKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') { e.preventDefault(); onClose(); }
+    }
+    document.addEventListener('keydown', onDocKey);
+    return () => document.removeEventListener('keydown', onDocKey);
+  }, []);
+
+  useEffect(() => {
     if (isUrlMode) return;
     ensureTargetsLoaded();
     setTmuxLoading(true);
-    api.listTmuxSessions()
+
+    const localP = api.listTmuxSessions()
       .then((r) => setTmuxSessions(r.sessions))
-      .catch(() => setTmuxSessions([]))
-      .finally(() => setTmuxLoading(false));
+      .catch(() => setTmuxSessions([]));
+
+    // Fetch remote tmux sessions for each online machine
+    const targets = cachedTargets.value;
+    const onlineMachines = targets.filter(t => !t.isHarness && !t.isSprite && t.online);
+    const remoteP = Promise.all(
+      onlineMachines.map(m =>
+        api.listLauncherTmuxSessions(m.launcherId)
+          .then(r => [m.launcherId, r.sessions] as const)
+          .catch(() => [m.launcherId, []] as const)
+      )
+    ).then(results => {
+      const map = new Map<string, typeof tmuxSessions>();
+      for (const [lid, sessions] of results) {
+        if (sessions.length > 0) map.set(lid, sessions);
+      }
+      setRemoteTmux(map);
+    });
+
+    Promise.all([localP, remoteP]).finally(() => setTmuxLoading(false));
   }, []);
 
   const parentSessionId = mode.kind === 'companion' ? mode.sessionId : null;
@@ -91,11 +119,11 @@ export function TerminalPicker({ mode, onClose }: Props) {
     }
   }
 
-  async function pickTmux(tmuxName: string) {
+  async function pickTmux(tmuxName: string, launcherId?: string) {
     onClose();
     const isCompanion = !!parentSessionId;
     if (isCompanion) openCompanionPane('__loading__');
-    const newId = await attachTmuxSession(tmuxName, appId ?? undefined, isCompanion);
+    const newId = await attachTmuxSession(tmuxName, appId ?? undefined, isCompanion, launcherId);
     if (newId && parentSessionId) {
       await loadAllSessions();
       setTerminalCompanion(parentSessionId, newId);
@@ -129,7 +157,7 @@ export function TerminalPicker({ mode, onClose }: Props) {
                 else if (e.key === 'Enter') { e.preventDefault(); submitUrl(query); }
               }}
             />
-            <kbd class="spotlight-esc">esc</kbd>
+            <kbd class="spotlight-esc" onClick={onClose}>esc</kbd>
           </div>
           {query.trim() && (
             <div class="spotlight-results" ref={listRef}>
@@ -185,6 +213,23 @@ export function TerminalPicker({ mode, onClose }: Props) {
       action: t.online ? () => pickNew(t.launcherId) : () => {},
       disabled: !t.online,
     });
+  }
+
+  // 2b. Remote tmux sessions per machine
+  for (const m of machines) {
+    const sessions = remoteTmux.get(m.launcherId);
+    if (!sessions?.length) continue;
+    const machineName = m.machineName || m.name;
+    for (const s of sessions) {
+      items.push({
+        id: `remote-tmux:${m.launcherId}:${s.name}`,
+        category: `${machineName} Tmux`,
+        icon: '\u{1F4DF}',
+        title: s.name,
+        subtitle: `${s.windows} window${s.windows !== 1 ? 's' : ''}${s.attached ? ', attached' : ''}`,
+        action: () => pickTmux(s.name, m.launcherId),
+      });
+    }
   }
 
   // 3. Harnesses
@@ -318,7 +363,10 @@ export function TerminalPicker({ mode, onClose }: Props) {
   // Group by category
   const grouped: [string, PickerItem[]][] = [];
   if (urlItem) grouped.push(['Iframe', [urlItem]]);
-  const categoryOrder = ['New', 'Remote Machines', 'Harnesses', 'Sprites', 'Recent', 'Open Terminals', 'Tmux Sessions', 'Isolated Components', 'Iframe'];
+  const remoteTmuxCategories = machines
+    .filter(m => remoteTmux.has(m.launcherId))
+    .map(m => `${m.machineName || m.name} Tmux`);
+  const categoryOrder = ['New', 'Remote Machines', ...remoteTmuxCategories, 'Harnesses', 'Sprites', 'Recent', 'Open Terminals', 'Tmux Sessions', 'Isolated Components', 'Iframe'];
   for (const cat of categoryOrder) {
     if (cat === 'Iframe' && urlItem) continue;
     const catItems = filtered.filter(i => i.category === cat);
@@ -372,7 +420,7 @@ export function TerminalPicker({ mode, onClose }: Props) {
             onKeyDown={handleKeyDown}
           />
           {tmuxLoading && <span class="spotlight-spinner" />}
-          <kbd class="spotlight-esc">esc</kbd>
+          <kbd class="spotlight-esc" onClick={onClose}>esc</kbd>
         </div>
         {flatFiltered.length > 0 && (
           <div class="spotlight-results" ref={listRef}>

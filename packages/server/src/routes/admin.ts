@@ -28,7 +28,7 @@ import { inputSessionRemote, getSessionStatus, SessionServiceError } from '../se
 import { killSession } from '../agent-sessions.js';
 import { feedbackEvents } from '../events.js';
 import { verifyAdminToken } from '../auth.js';
-import { listLaunchers } from '../launcher-registry.js';
+import { listLaunchers, getLauncher, sendAndWait } from '../launcher-registry.js';
 import { countActiveSpriteSessions } from '../sprite-sessions.js';
 
 const PW_TMUX_CONF = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'tmux-pw.conf');
@@ -583,6 +583,9 @@ adminRoutes.patch('/agents/:id', async (c) => {
     permissionProfile: parsed.data.permissionProfile || 'interactive',
     allowedTools: parsed.data.allowedTools || null,
     autoPlan: parsed.data.autoPlan || false,
+    preferredLauncherId: parsed.data.preferredLauncherId ?? existing.preferredLauncherId,
+    harnessConfigId: parsed.data.harnessConfigId ?? existing.harnessConfigId,
+    spriteConfigId: parsed.data.spriteConfigId ?? existing.spriteConfigId,
     updatedAt: now,
   }).where(eq(schema.agentEndpoints.id, id));
 
@@ -736,7 +739,7 @@ adminRoutes.post('/dispatch', async (c) => {
     return c.json({ error: 'Validation failed', details: parsed.error.flatten() }, 400);
   }
 
-  const { feedbackId, agentEndpointId, instructions, launcherId } = parsed.data;
+  const { feedbackId, agentEndpointId, instructions, launcherId, harnessConfigId } = parsed.data;
 
   try {
     // Admin-specific: detect and kill stuck sessions before dispatching
@@ -789,7 +792,7 @@ adminRoutes.post('/dispatch', async (c) => {
       }
     }
 
-    const result = await dispatchFeedbackToAgent({ feedbackId, agentEndpointId, instructions, launcherId });
+    const result = await dispatchFeedbackToAgent({ feedbackId, agentEndpointId, instructions, launcherId, harnessConfigId });
     return c.json(result);
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : 'Unknown error';
@@ -1191,10 +1194,11 @@ function buildSetupPrompt(
     parts.push(`- **Status**: ${m.status}`);
     parts.push(`- **Capabilities**: ${JSON.stringify(m.capabilities || {})}`);
     parts.push(`- **Tags**: ${(m.tags || []).join(', ') || '(none)'}`);
+    parts.push(`- **Admin URL**: ${m.adminUrl || '(not set)'}`);
     parts.push('');
     parts.push('## Update API');
     parts.push(`PATCH ${baseUrl}/api/v1/admin/machines/${m.id}`);
-    parts.push('Fields: name, hostname, address, type, capabilities (object with hasDocker, hasTmux, hasClaudeCli booleans), tags (string array), authToken');
+    parts.push('Fields: name, hostname, address, type, capabilities (object with hasDocker, hasTmux, hasClaudeCli booleans), tags (string array), authToken, adminUrl');
     parts.push('');
     const wsUrl = baseUrl.replace(/^http/, 'ws');
     parts.push('## Setup Phases');
@@ -1241,6 +1245,31 @@ function buildSetupPrompt(
     parts.push('1. Extract tags from the JSON: CPU model, RAM amount, GPU names, OS');
     parts.push('2. Example tags: `["cpu:AMD EPYC 7513", "ram:256GB", "gpu:RTX 4090 x2", "os:Ubuntu 22.04"]`');
     parts.push('3. Update: `curl -s -X PATCH ' + baseUrl + '/api/v1/admin/machines/' + m.id + ' -H "Content-Type: application/json" -d \'{"tags":["tag1","tag2",...]}\'`');
+    parts.push('');
+    parts.push('### Phase 7: Deploy Prompt-Widget Admin on Remote Machine');
+    parts.push('After the core setup is done, ask the user: "Would you like me to deploy the prompt-widget admin dashboard on this machine too?"');
+    parts.push('If yes, follow these steps using the companion terminal:');
+    const addr = m.address || '<address>';
+    const repoUrl = 'https://github.com/tinkerer/prompt-widget.git';
+    const pwDir = '~/work/github.com/prompt-widget';
+    parts.push('');
+    parts.push('1. Check if the repo already exists:');
+    parts.push(`   \`ssh ${addr} "test -d ${pwDir} && echo EXISTS || echo MISSING"\``);
+    parts.push('2. Clone if missing:');
+    parts.push(`   \`ssh ${addr} "mkdir -p ~/work/github.com && git clone ${repoUrl} ${pwDir}"\``);
+    parts.push('   Or if it exists, pull latest:');
+    parts.push(`   \`ssh ${addr} "cd ${pwDir} && git pull"\``);
+    parts.push('3. Install dependencies:');
+    parts.push(`   \`ssh ${addr} "cd ${pwDir} && npm install"\``);
+    parts.push('4. Build all packages:');
+    parts.push(`   \`ssh ${addr} "cd ${pwDir} && npm run build --workspaces"\``);
+    parts.push('5. Start the server in a persistent tmux session:');
+    parts.push(`   \`ssh ${addr} "tmux new-session -d -s pw-server 'cd ${pwDir}/packages/server && node dist/index.js'"\``);
+    parts.push(`   If "npm run dev" is preferred (with auto-reload): \`ssh ${addr} "tmux new-session -d -s pw-server 'cd ${pwDir}/packages/server && npm run dev'"\``);
+    parts.push('6. Verify the server is running:');
+    parts.push(`   \`curl -s --connect-timeout 3 http://${addr}:3001/api/v1/admin/applications\``);
+    parts.push('7. Set the admin URL on the machine record:');
+    parts.push(`   \`curl -s -X PATCH ${baseUrl}/api/v1/admin/machines/${m.id} -H "Content-Type: application/json" -d '{"adminUrl":"http://${addr}:3001/admin/"}'\``);
     parts.push('');
     parts.push('Note: You can skip phases if they are already done (e.g., launcher already connected, Claude CLI already installed). The admin UI auto-refreshes every 10 seconds.');
   } else if (entityType === 'harness') {
@@ -1360,7 +1389,7 @@ function buildNewEntityPrompt(
     }
     parts.push('## Create API');
     parts.push(`POST ${baseUrl}/api/v1/admin/machines`);
-    parts.push('Fields: name (required), hostname, address, type (local|remote|cloud), capabilities (object with hasDocker, hasTmux, hasClaudeCli booleans), tags (string array)');
+    parts.push('Fields: name (required), hostname, address, type (local|remote|cloud), capabilities (object with hasDocker, hasTmux, hasClaudeCli booleans), tags (string array), adminUrl');
     parts.push('');
     const wsUrl = baseUrl.replace(/^http/, 'ws');
     parts.push('## Workflow');
@@ -1397,6 +1426,20 @@ function buildNewEntityPrompt(
     parts.push('### Phase 6: Tag Machine');
     parts.push('1. Parse the hardware JSON and create tags (e.g., `["cpu:AMD EPYC 7513", "ram:256GB", "gpu:RTX 4090 x2"]`)');
     parts.push('2. Update: `curl -s -X PATCH ' + baseUrl + '/api/v1/admin/machines/<machine-id> -H "Content-Type: application/json" -d \'{"tags":[...]}\'`');
+    parts.push('');
+    parts.push('### Phase 7: Deploy Prompt-Widget Admin on Remote Machine');
+    parts.push('After the core setup is done, ask the user: "Would you like me to deploy the prompt-widget admin dashboard on this machine too?"');
+    parts.push('If yes:');
+    const newRepoUrl = 'https://github.com/tinkerer/prompt-widget.git';
+    const newPwDir = '~/work/github.com/prompt-widget';
+    parts.push('1. Check if repo exists: `ssh <address> "test -d ' + newPwDir + ' && echo EXISTS || echo MISSING"`');
+    parts.push('2. Clone if missing: `ssh <address> "mkdir -p ~/work/github.com && git clone ' + newRepoUrl + ' ' + newPwDir + '"`');
+    parts.push('   Or pull latest: `ssh <address> "cd ' + newPwDir + ' && git pull"`');
+    parts.push('3. Install: `ssh <address> "cd ' + newPwDir + ' && npm install"`');
+    parts.push('4. Build: `ssh <address> "cd ' + newPwDir + ' && npm run build --workspaces"`');
+    parts.push('5. Start in tmux: `ssh <address> "tmux new-session -d -s pw-server \'cd ' + newPwDir + '/packages/server && npm run dev\'"`');
+    parts.push('6. Verify: `curl -s --connect-timeout 3 http://<address>:3001/api/v1/admin/applications`');
+    parts.push('7. Set adminUrl: `curl -s -X PATCH ' + baseUrl + '/api/v1/admin/machines/<machine-id> -H "Content-Type: application/json" -d \'{"adminUrl":"http://<address>:3001/admin/"}\'`');
     parts.push('');
     parts.push('Note: Skip phases already done. The admin UI auto-refreshes.');
     if (companionTmuxName) {
@@ -1571,16 +1614,37 @@ adminRoutes.get('/tmux-sessions', async (c) => {
   return c.json({ sessions: listDefaultTmuxSessions() });
 });
 
+// List tmux sessions on a remote launcher
+adminRoutes.get('/launcher/:launcherId/tmux-sessions', async (c) => {
+  const launcherId = c.req.param('launcherId');
+  const launcher = getLauncher(launcherId);
+  if (!launcher || launcher.ws?.readyState !== 1) {
+    return c.json({ error: 'Launcher not connected' }, 400);
+  }
+  try {
+    const sessionId = ulid();
+    const msg = { type: 'list_tmux_sessions' as const, sessionId };
+    const result = await sendAndWait(launcher.id, msg as any, 'list_tmux_sessions_result', 10_000) as { sessions: { name: string; windows: number; created: string; attached: boolean }[] };
+    return c.json({ sessions: result.sessions });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
 // Attach to an existing tmux session from the default server
 adminRoutes.post('/terminal/attach-tmux', async (c) => {
   const body = await c.req.json().catch(() => ({}));
-  const { tmuxTarget, appId } = body as { tmuxTarget?: string; appId?: string };
+  const { tmuxTarget, appId, launcherId } = body as { tmuxTarget?: string; appId?: string; launcherId?: string };
 
   if (!tmuxTarget) {
     return c.json({ error: 'tmuxTarget is required' }, 400);
   }
 
   try {
+    if (launcherId) {
+      const { sessionId } = await dispatchTerminalSession({ cwd: '~', launcherId, tmuxTarget });
+      return c.json({ sessionId });
+    }
     const { sessionId } = await dispatchTmuxAttachSession({ tmuxTarget, appId });
     return c.json({ sessionId });
   } catch (err) {

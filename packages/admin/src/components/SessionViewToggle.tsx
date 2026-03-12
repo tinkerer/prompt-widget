@@ -7,7 +7,7 @@ export type ViewMode = 'terminal' | 'structured' | 'split';
 interface Props {
   sessionId: string;
   isActive?: boolean;
-  onExit?: (exitCode: number) => void;
+  onExit?: (exitCode: number, terminalText: string) => void;
   onInputStateChange?: (state: InputState) => void;
   permissionProfile?: string;
   mode: ViewMode;

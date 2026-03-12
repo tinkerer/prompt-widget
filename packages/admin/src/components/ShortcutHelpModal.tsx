@@ -16,7 +16,8 @@ export function ShortcutHelpModal({ onClose }: Props) {
   function formatKey(s: (typeof shortcuts)[0]): string {
     const parts: string[] = [];
     if (s.modifiers?.ctrl) parts.push('Ctrl');
-    if (s.modifiers?.shift) parts.push('Shift');
+    // Skip showing Shift for keys that inherently require it (e.g. ?, !, @)
+    if (s.modifiers?.shift && /^[a-zA-Z0-9 ]$/.test(s.key)) parts.push('Shift');
     if (s.modifiers?.alt) parts.push('Alt');
     if (s.modifiers?.meta) parts.push('Cmd');
     if (s.sequence) return s.sequence;

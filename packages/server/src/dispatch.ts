@@ -15,6 +15,8 @@ import type {
   ExportSessionFilesResult,
   SyncCodebase,
   SyncCodebaseResult,
+  SyncCodebaseToContainer,
+  SyncCodebaseToContainerResult,
 } from '@prompt-widget/shared';
 import { db, schema } from './db/index.js';
 import { spawnAgentSession } from './agent-sessions.js';
@@ -116,8 +118,9 @@ export async function dispatchFeedbackToAgent(params: {
   agentEndpointId: string;
   instructions?: string;
   launcherId?: string;
+  harnessConfigId?: string;
 }): Promise<{ dispatched: boolean; sessionId?: string; status: number; response: string; existing?: boolean }> {
-  const { feedbackId, agentEndpointId, instructions, launcherId } = params;
+  const { feedbackId, agentEndpointId, instructions, launcherId, harnessConfigId: explicitHarnessConfigId } = params;
 
   const [feedback, agent] = await Promise.all([
     db.query.feedbackItems.findFirst({
@@ -204,9 +207,10 @@ export async function dispatchFeedbackToAgent(params: {
     };
   } else {
     const cwd = app?.projectDir || process.cwd();
-    const isHarness = !!agent.harnessConfigId;
-    const defaultProfile: PermissionProfile = isHarness ? 'yolo' : 'interactive';
-    const permissionProfile = (agent.permissionProfile || defaultProfile) as PermissionProfile;
+    const isHarness = !!(explicitHarnessConfigId || agent.harnessConfigId);
+    const permissionProfile: PermissionProfile = isHarness
+      ? 'yolo'
+      : (agent.permissionProfile || 'interactive') as PermissionProfile;
 
     const template = agent.promptTemplate || DEFAULT_PROMPT_TEMPLATE;
     const prompt = renderPromptTemplate(template, hydratedFeedback, app, instructions);
@@ -387,20 +391,24 @@ export async function dispatchAgentSession(params: {
     }
   }
 
+  // Load agent endpoint once for launcher resolution and harness detection
+  const agent = db
+    .select()
+    .from(schema.agentEndpoints)
+    .where(eq(schema.agentEndpoints.id, params.agentEndpointId))
+    .get();
+
   // Resolve launcher: explicit param > agent endpoint preference > harnessConfigId > local
   let targetLauncherId = params.launcherId || null;
+  let harnessConfig: typeof schema.harnessConfigs.$inferSelect | undefined;
+
   if (!targetLauncherId) {
-    const agent = db
-      .select()
-      .from(schema.agentEndpoints)
-      .where(eq(schema.agentEndpoints.id, params.agentEndpointId))
-      .get();
     if (agent?.preferredLauncherId) {
       targetLauncherId = agent.preferredLauncherId;
     }
     // Try harnessConfigId — look up the harness config's connected launcher
     if (!targetLauncherId && agent?.harnessConfigId) {
-      const harnessConfig = db
+      harnessConfig = db
         .select()
         .from(schema.harnessConfigs)
         .where(eq(schema.harnessConfigs.id, agent.harnessConfigId))
@@ -432,6 +440,30 @@ export async function dispatchAgentSession(params: {
           claudeSessionId,
         });
       }
+    }
+  }
+
+  // If agent has a harnessConfigId, route through harness dispatch (docker compose exec)
+  if (agent?.harnessConfigId) {
+    if (!harnessConfig) {
+      harnessConfig = db
+        .select()
+        .from(schema.harnessConfigs)
+        .where(eq(schema.harnessConfigs.id, agent.harnessConfigId))
+        .get();
+    }
+    if (harnessConfig && targetLauncherId) {
+      return dispatchHarnessSession({
+        harnessConfigId: harnessConfig.id,
+        launcherId: targetLauncherId,
+        prompt: params.prompt,
+        composeDir: harnessConfig.composeDir || undefined,
+        permissionProfile: params.permissionProfile,
+        feedbackId: params.feedbackId,
+        agentEndpointId: params.agentEndpointId,
+        claudeSessionId,
+        cwd: params.cwd,
+      });
     }
   }
 
@@ -843,9 +875,15 @@ export async function dispatchHarnessSession(params: {
   composeDir?: string;
   serviceName?: string;
   permissionProfile: PermissionProfile;
+  feedbackId?: string | null;
+  agentEndpointId?: string | null;
+  claudeSessionId?: string;
+  cwd?: string;
 }): Promise<{ sessionId: string }> {
   const sessionId = ulid();
   const now = new Date().toISOString();
+  const claudeSessionId = params.claudeSessionId || crypto.randomUUID();
+  const containerCwd = '/workspace';
 
   const launcher = getLauncher(params.launcherId);
   if (!launcher || launcher.ws.readyState !== 1) {
@@ -855,42 +893,97 @@ export async function dispatchHarnessSession(params: {
   db.insert(schema.agentSessions)
     .values({
       id: sessionId,
-      feedbackId: null,
-      agentEndpointId: null,
+      feedbackId: params.feedbackId || null,
+      agentEndpointId: params.agentEndpointId || null,
       permissionProfile: params.permissionProfile,
       status: 'pending',
       outputBytes: 0,
       launcherId: params.launcherId,
+      claudeSessionId,
       createdAt: now,
     })
     .run();
 
-  const msg: LaunchHarnessSession = {
-    type: 'launch_harness_session',
-    sessionId,
-    harnessConfigId: params.harnessConfigId,
-    prompt: params.prompt,
-    composeDir: params.composeDir,
-    serviceName: params.serviceName,
-    permissionProfile: params.permissionProfile,
-    cols: 120,
-    rows: 40,
-  };
+  // Fire-and-forget: return sessionId immediately so UI can open the tab
+  (async () => {
+    // Sync codebase into the Docker container if we have a git repo
+    const projectDir = params.cwd;
+    if (projectDir && isGitRepo(projectDir)) {
+      try {
+        const { branch, remoteUrl } = pushSyncBranch(projectDir, sessionId);
+        await syncCodebaseToContainer(
+          params.launcherId,
+          sessionId,
+          params.harnessConfigId,
+          branch,
+          remoteUrl,
+          containerCwd,
+          params.composeDir,
+          params.serviceName,
+        );
+        console.log(`[dispatch] Synced codebase to container for harness session ${sessionId}`);
+      } catch (err: any) {
+        console.warn(`[dispatch] Container code sync failed, proceeding without sync: ${err.message}`);
+      }
+    }
 
-  try {
-    launcher.ws.send(JSON.stringify(msg));
-    addSessionToLauncher(params.launcherId, sessionId);
-    console.log(`[dispatch] Sent harness session ${sessionId} to launcher ${params.launcherId}`);
-  } catch (err) {
-    console.error(`[dispatch] Failed to send harness session to launcher:`, err);
-    db.update(schema.agentSessions)
-      .set({ status: 'failed', completedAt: new Date().toISOString() })
-      .where(eq(schema.agentSessions.id, sessionId))
-      .run();
-    throw err;
-  }
+    const msg: LaunchHarnessSession = {
+      type: 'launch_harness_session',
+      sessionId,
+      harnessConfigId: params.harnessConfigId,
+      prompt: params.prompt,
+      composeDir: params.composeDir,
+      serviceName: params.serviceName,
+      permissionProfile: params.permissionProfile,
+      containerCwd,
+      claudeSessionId,
+      cols: 120,
+      rows: 40,
+    };
+
+    try {
+      launcher.ws.send(JSON.stringify(msg));
+      addSessionToLauncher(params.launcherId, sessionId);
+      console.log(`[dispatch] Sent harness session ${sessionId} to launcher ${params.launcherId}`);
+    } catch (err) {
+      console.error(`[dispatch] Failed to send harness session to launcher:`, err);
+      db.update(schema.agentSessions)
+        .set({ status: 'failed', completedAt: new Date().toISOString() })
+        .where(eq(schema.agentSessions.id, sessionId))
+        .run();
+    }
+  })().catch((err) => {
+    console.error(`[dispatch] Async harness launch failed for ${sessionId}:`, err);
+  });
 
   return { sessionId };
+}
+
+export async function syncCodebaseToContainer(
+  launcherId: string,
+  sessionId: string,
+  harnessConfigId: string,
+  branch: string,
+  gitRemoteUrl: string,
+  containerPath: string,
+  composeDir?: string,
+  serviceName?: string,
+): Promise<void> {
+  const msg: SyncCodebaseToContainer & { sessionId: string } = {
+    type: 'sync_codebase_to_container',
+    sessionId,
+    harnessConfigId,
+    branch,
+    gitRemoteUrl,
+    containerPath,
+    composeDir,
+    serviceName,
+  };
+
+  const result = await sendAndWait(launcherId, msg, 'sync_codebase_to_container_result', 120_000) as SyncCodebaseToContainerResult;
+  if (!result.ok) {
+    throw new Error(`Container code sync failed on launcher ${launcherId}: ${result.error}`);
+  }
 }
 
 // --- Session transfer across machines ---

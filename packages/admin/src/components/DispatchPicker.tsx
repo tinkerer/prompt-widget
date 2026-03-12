@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'preact/hooks';
 import { signal } from '@preact/signals';
-import { cachedTargets, ensureTargetsLoaded, type DispatchTarget } from './DispatchTargetSelect.js';
+import { cachedTargets, ensureTargetsLoaded, targetKey, findTargetByKey, type DispatchTarget } from './DispatchTargetSelect.js';
 import { navigate } from '../lib/state.js';
 
 export const dispatchPickerOpen = signal(false);
@@ -58,7 +58,7 @@ export function DispatchPicker({ value, onSelect, onClose }: Props) {
       subtitle: t.online
         ? `${t.hostname} \u00b7 ${t.activeSessions}/${t.maxSessions} sessions`
         : `${t.hostname} \u00b7 offline`,
-      launcherId: t.launcherId,
+      launcherId: targetKey(t),
       disabled: !t.online,
     });
   }
@@ -72,7 +72,7 @@ export function DispatchPicker({ value, onSelect, onClose }: Props) {
       subtitle: t.online
         ? `${t.activeSessions}/${t.maxSessions} sessions`
         : 'offline',
-      launcherId: t.launcherId,
+      launcherId: targetKey(t),
       disabled: !t.online,
     });
   }
@@ -86,7 +86,7 @@ export function DispatchPicker({ value, onSelect, onClose }: Props) {
       subtitle: t.online
         ? `${t.hostname} \u00b7 ${t.activeSessions}/${t.maxSessions} sessions`
         : `${t.hostname} \u00b7 offline`,
-      launcherId: t.launcherId,
+      launcherId: targetKey(t),
       disabled: !t.online,
     });
   }
@@ -254,7 +254,7 @@ export function DispatchTargetButton({
     ensureTargetsLoaded();
   }, []);
 
-  const selectedTarget = value ? targets.find(t => t.launcherId === value) : null;
+  const selectedTarget = value ? findTargetByKey(targets, value) : null;
   const label = selectedTarget
     ? (selectedTarget.machineName || selectedTarget.name)
     : 'Local';

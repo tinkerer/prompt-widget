@@ -40,6 +40,9 @@ import {
   sessionLabels,
   setSessionLabel,
   getSessionLabel,
+  getSessionColor,
+  setSessionColor,
+  SESSION_COLOR_PRESETS,
   activePanelId,
   AUTOJUMP_PANEL_ID,
   popoutPanels,
@@ -545,6 +548,7 @@ function PaneTabBar({
           <button
             key={sid}
             class={`terminal-tab ${isActive ? 'active' : ''}`}
+            style={getSessionColor(sid) ? { boxShadow: `inset 0 -2px 0 ${getSessionColor(sid)}` } : undefined}
             onMouseDown={(e) => {
               if (e.button !== 0) return;
               startTabDrag(e, {
@@ -609,7 +613,7 @@ function renderTabContent(
   sid: string,
   isVisible: boolean,
   sessionMap: Map<string, any>,
-  onExit: () => void,
+  onExit: (exitCode: number, terminalText: string) => void,
 ) {
   const isJsonl = sid.startsWith('jsonl:');
   const isFeedback = sid.startsWith('feedback:');
@@ -979,6 +983,26 @@ export function GlobalTerminalPanel() {
             <button onClick={() => { statusMenuOpen.value = null; closeTab(menuSid); }}>
               Close tab {showHotkeyHints.value && <kbd>⌃⇧W</kbd>}
             </button>
+            <div style="display:flex;gap:4px;padding:4px 8px;align-items:center">
+              {SESSION_COLOR_PRESETS.map((c) => (
+                <span
+                  key={c}
+                  onClick={() => { setSessionColor(menuSid, getSessionColor(menuSid) === c ? '' : c); }}
+                  style={{
+                    width: '14px', height: '14px', borderRadius: '50%', background: c, cursor: 'pointer',
+                    border: getSessionColor(menuSid) === c ? '2px solid #fff' : '2px solid transparent',
+                    boxSizing: 'border-box',
+                  }}
+                />
+              ))}
+              {getSessionColor(menuSid) && (
+                <span
+                  onClick={() => setSessionColor(menuSid, '')}
+                  style={{ cursor: 'pointer', fontSize: '12px', opacity: 0.7, marginLeft: '2px' }}
+                  title="Clear color"
+                >{'\u00D7'}</span>
+              )}
+            </div>
           </div>
         );
       })()}
@@ -1027,7 +1051,7 @@ export function GlobalTerminalPanel() {
       )}
       {!minimized && !isSplit && (
         <div class="terminal-body">
-          {tabs.map((sid) => renderTabContent(sid, sid === activeId, sessionMap, () => markSessionExited(sid)))}
+          {tabs.map((sid) => renderTabContent(sid, sid === activeId, sessionMap, (code, text) => markSessionExited(sid, code, text)))}
         </div>
       )}
       {!minimized && isSplit && (
@@ -1054,7 +1078,7 @@ export function GlobalTerminalPanel() {
             </div>
             <PaneHeader sessionId={activeId} sessionMap={sessionMap} exited={exited} />
             <div class="terminal-body">
-              {leftTabs.map((sid) => renderTabContent(sid, sid === activeId, sessionMap, () => markSessionExited(sid)))}
+              {leftTabs.map((sid) => renderTabContent(sid, sid === activeId, sessionMap, (code, text) => markSessionExited(sid, code, text)))}
             </div>
           </div>
           <div class="terminal-split-divider" onMouseDown={onSplitDividerMouseDown} />
@@ -1085,7 +1109,7 @@ export function GlobalTerminalPanel() {
             </div>
             <PaneHeader sessionId={rightActive} sessionMap={sessionMap} exited={exited} />
             <div class="terminal-body">
-              {rightTabs.map((sid) => renderTabContent(sid, sid === rightActive, sessionMap, () => markSessionExited(sid)))}
+              {rightTabs.map((sid) => renderTabContent(sid, sid === rightActive, sessionMap, (code, text) => markSessionExited(sid, code, text)))}
             </div>
           </div>
         </div>

@@ -6,6 +6,7 @@ import { openSession, resumeSession } from '../lib/sessions.js';
 import { copyWithTooltip } from '../lib/clipboard.js';
 import { CropEditor } from '../components/CropEditor.js';
 import { DispatchTargetButton } from '../components/DispatchPicker.js';
+import { cachedTargets, parseTargetKey } from '../components/DispatchTargetSelect.js';
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -160,11 +161,13 @@ async function doDispatch() {
   dispatchLoading.value = true;
   try {
     const selectedAgent = agents.value.find((a) => a.id === dispatchAgentId.value);
+    const { launcherId, harnessConfigId } = parseTargetKey(dispatchTarget.value, cachedTargets.value);
     const result = await api.dispatch({
       feedbackId: fb.id,
       agentEndpointId: dispatchAgentId.value,
       instructions: dispatchInstructions.value || undefined,
-      launcherId: dispatchTarget.value || undefined,
+      launcherId,
+      harnessConfigId,
     });
     dispatchInstructions.value = '';
 

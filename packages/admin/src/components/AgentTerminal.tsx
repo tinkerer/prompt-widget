@@ -10,7 +10,7 @@ const RECONNECT_BACKOFF_CAP_MS = 30_000;
 interface AgentTerminalProps {
   sessionId: string;
   isActive?: boolean;
-  onExit?: (exitCode: number) => void;
+  onExit?: (exitCode: number, terminalText: string) => void;
   onInputStateChange?: (state: InputState) => void;
 }
 
@@ -169,8 +169,6 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
 
     function onContextMenu(e: Event) {
       e.preventDefault();
-      const me = e as MouseEvent;
-      if (me.ctrlKey) showCtxMenu(me);
     }
 
     const xtermScreen = containerRef.current.querySelector('.xterm-screen');
@@ -179,6 +177,218 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
       xtermScreen.addEventListener('mousemove', onMouseMove as EventListener);
       xtermScreen.addEventListener('mousedown', onMouseDown as EventListener);
     }
+
+    // ---- Ctrl+mouse: text selection & context menu ----
+    const selOverlay = document.createElement('div');
+    selOverlay.className = 'pty-sel-overlay';
+    const xtermScreenEl = xtermScreen as HTMLElement | null;
+    if (xtermScreenEl) xtermScreenEl.appendChild(selOverlay);
+
+    const ctxMenu = document.createElement('div');
+    ctxMenu.className = 'pty-ctx-menu';
+    document.body.appendChild(ctxMenu);
+    ctxMenu.style.display = 'none';
+
+    let selStartPos: { row: number; col: number } | null = null;
+    let selEndPos: { row: number; col: number } | null = null;
+    let isDragSelecting = false;
+    let ctrlSelectedText = '';
+
+    function termPosFromEvent(ev: MouseEvent) {
+      if (!xtermScreenEl) return { row: 0, col: 0 };
+      const r = xtermScreenEl.getBoundingClientRect();
+      return {
+        col: Math.max(0, Math.min(term.cols - 1, Math.floor((ev.clientX - r.left) / (r.width / term.cols)))),
+        row: Math.max(0, Math.min(term.rows - 1, Math.floor((ev.clientY - r.top) / (r.height / term.rows)))),
+      };
+    }
+
+    function bufLineText(row: number): string {
+      const line = term.buffer.active.getLine(term.buffer.active.viewportY + row);
+      if (!line) return '';
+      let t = '';
+      for (let i = 0; i < term.cols; i++) {
+        const c = line.getCell(i);
+        t += c ? (c.getChars() || ' ') : ' ';
+      }
+      return t;
+    }
+
+    function rangeText(a: { row: number; col: number }, b: { row: number; col: number }): string {
+      let r1 = a.row, c1 = a.col, r2 = b.row, c2 = b.col;
+      if (r1 > r2 || (r1 === r2 && c1 > c2)) [r1, c1, r2, c2] = [r2, c2, r1, c1];
+      const lines: string[] = [];
+      for (let r = r1; r <= r2; r++) {
+        const lt = bufLineText(r);
+        lines.push(lt.slice(r === r1 ? c1 : 0, r === r2 ? c2 + 1 : lt.length));
+      }
+      return lines.map(l => l.trimEnd()).join('\n');
+    }
+
+    function wordAt(row: number, col: number): string {
+      const ln = bufLineText(row);
+      if (col >= ln.length || ln[col] === ' ') return '';
+      const wc = /[a-zA-Z0-9_\-./~:@#?&=%+]/;
+      let s = col, e = col;
+      while (s > 0 && wc.test(ln[s - 1])) s--;
+      while (e < ln.length - 1 && wc.test(ln[e + 1])) e++;
+      return ln.slice(s, e + 1).trim();
+    }
+
+    function linkAt(row: number, col: number): string | null {
+      const ln = bufLineText(row);
+      const re = /https?:\/\/[^\s<>'")\]]+/g;
+      let m;
+      while ((m = re.exec(ln)) !== null) {
+        if (col >= m.index && col < m.index + m[0].length) return m[0];
+      }
+      return null;
+    }
+
+    function selCellSize() {
+      if (!xtermScreenEl) return { w: 8, h: 16 };
+      const r = xtermScreenEl.getBoundingClientRect();
+      return { w: r.width / term.cols, h: r.height / term.rows };
+    }
+
+    function renderSel() {
+      selOverlay.innerHTML = '';
+      if (!selStartPos || !selEndPos) return;
+      let r1 = selStartPos.row, c1 = selStartPos.col, r2 = selEndPos.row, c2 = selEndPos.col;
+      if (r1 > r2 || (r1 === r2 && c1 > c2)) [r1, c1, r2, c2] = [r2, c2, r1, c1];
+      const { w: cw, h: ch } = selCellSize();
+      for (let r = r1; r <= r2; r++) {
+        const sc = r === r1 ? c1 : 0;
+        const ec = r === r2 ? c2 : term.cols - 1;
+        const hl = document.createElement('div');
+        hl.className = 'pty-sel-hl';
+        hl.style.cssText = `left:${sc * cw}px;top:${r * ch}px;width:${(ec - sc + 1) * cw}px;height:${ch}px`;
+        selOverlay.appendChild(hl);
+      }
+    }
+
+    function clearSel() {
+      selStartPos = null;
+      selEndPos = null;
+      ctrlSelectedText = '';
+      selOverlay.innerHTML = '';
+    }
+
+    function capturePaneText(): string {
+      const lines: string[] = [];
+      for (let i = 0; i < term.rows; i++) lines.push(bufLineText(i).trimEnd());
+      while (lines.length && lines[lines.length - 1] === '') lines.pop();
+      return lines.join('\n');
+    }
+
+    function hideCtxMenu() { ctxMenu.style.display = 'none'; ctxMenu.innerHTML = ''; }
+
+    function showCtxMenu(ev: MouseEvent) {
+      const pos = termPosFromEvent(ev);
+      const items: { label: string; action: () => void }[] = [];
+
+      if (ctrlSelectedText) {
+        items.push({ label: 'Copy selected text', action: () => navigator.clipboard.writeText(ctrlSelectedText) });
+      }
+
+      const w = wordAt(pos.row, pos.col);
+      if (w && w !== ctrlSelectedText) {
+        const p = w.length > 30 ? w.slice(0, 30) + '\u2026' : w;
+        items.push({ label: `Copy "${p}"`, action: () => navigator.clipboard.writeText(w) });
+      }
+
+      const sentence = bufLineText(pos.row).trim();
+      if (sentence && sentence !== w) {
+        const p = sentence.length > 40 ? sentence.slice(0, 40) + '\u2026' : sentence;
+        items.push({ label: `Copy "${p}"`, action: () => navigator.clipboard.writeText(sentence) });
+      }
+
+      items.push({ label: 'Copy pane to clipboard', action: () => navigator.clipboard.writeText(capturePaneText()) });
+
+      const lnk = linkAt(pos.row, pos.col);
+      if (lnk) {
+        const p = lnk.length > 40 ? lnk.slice(0, 40) + '\u2026' : lnk;
+        items.push({ label: `Open ${p}`, action: () => window.open(lnk, '_blank') });
+      }
+
+      ctxMenu.innerHTML = '';
+      for (const it of items) {
+        const btn = document.createElement('button');
+        btn.textContent = it.label;
+        btn.addEventListener('click', () => { it.action(); hideCtxMenu(); });
+        ctxMenu.appendChild(btn);
+      }
+      ctxMenu.style.display = 'block';
+      ctxMenu.style.left = `${ev.clientX}px`;
+      ctxMenu.style.top = `${ev.clientY}px`;
+      requestAnimationFrame(() => {
+        const cr = ctxMenu.getBoundingClientRect();
+        if (cr.right > window.innerWidth) ctxMenu.style.left = `${window.innerWidth - cr.width - 4}px`;
+        if (cr.bottom > window.innerHeight) ctxMenu.style.top = `${window.innerHeight - cr.height - 4}px`;
+      });
+    }
+
+    function onDragMove(ev: MouseEvent) {
+      ev.preventDefault();
+      selEndPos = termPosFromEvent(ev);
+      renderSel();
+    }
+
+    function onDragEnd(ev: MouseEvent) {
+      isDragSelecting = false;
+      selEndPos = termPosFromEvent(ev);
+      renderSel();
+      if (selStartPos && selEndPos && (selStartPos.row !== selEndPos.row || selStartPos.col !== selEndPos.col)) {
+        ctrlSelectedText = rangeText(selStartPos, selEndPos);
+      }
+      document.removeEventListener('mousemove', onDragMove);
+      document.removeEventListener('mouseup', onDragEnd);
+    }
+
+    function onCtrlMouseDown(ev: MouseEvent) {
+      hideCtxMenu();
+      if (ev.ctrlKey && ev.button === 0) {
+        ev.stopPropagation();
+        ev.preventDefault();
+        selStartPos = termPosFromEvent(ev);
+        selEndPos = { ...selStartPos };
+        isDragSelecting = true;
+        ctrlSelectedText = '';
+        renderSel();
+        document.addEventListener('mousemove', onDragMove);
+        document.addEventListener('mouseup', onDragEnd);
+      } else if (ev.ctrlKey && ev.button === 2) {
+        ev.stopPropagation();
+        const onCtrlRightUp = (upEv: MouseEvent) => {
+          document.removeEventListener('mouseup', onCtrlRightUp);
+          showCtxMenu(upEv);
+        };
+        document.addEventListener('mouseup', onCtrlRightUp);
+      } else {
+        clearSel();
+      }
+    }
+
+    function onDocClickDismiss(ev: MouseEvent) {
+      if (ctxMenu.style.display !== 'none' && !ctxMenu.contains(ev.target as Node)) hideCtxMenu();
+    }
+
+    function onEscDismiss(ev: KeyboardEvent) {
+      if (ev.key === 'Escape') {
+        if (ctxMenu.style.display !== 'none') {
+          hideCtxMenu();
+          ev.stopPropagation();
+          ev.preventDefault();
+          return;
+        }
+        if (selStartPos) clearSel();
+      }
+    }
+
+    const container = containerRef.current;
+    container.addEventListener('mousedown', onCtrlMouseDown, true);
+    document.addEventListener('click', onDocClickDismiss);
+    document.addEventListener('keydown', onEscDismiss, true);
 
     function sendOutputAck(seq: number) {
       const ws = wsRef.current;
@@ -245,9 +455,10 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
               if (content.kind === 'output' && content.data) {
                 handleOutput(content.data);
               } else if (content.kind === 'exit') {
+                const paneText = capturePaneText();
                 term.write(`\r\n\x1b[33m--- Session exited (code: ${content.exitCode ?? 'unknown'}) ---\x1b[0m\r\n`);
                 hasExited.current = true;
-                onExit?.(content.exitCode ?? -1);
+                onExit?.(content.exitCode ?? -1, paneText);
                 onInputStateChange?.('active');
               } else if (content.kind === 'error' && content.data) {
                 term.write(`\r\n\x1b[31m${content.data}\x1b[0m\r\n`);
@@ -290,11 +501,13 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
             case 'output':
               handleOutput(msg.data);
               break;
-            case 'exit':
+            case 'exit': {
+              const legacyPaneText = capturePaneText();
               term.write(`\r\n\x1b[33m--- Session exited (code: ${msg.exitCode ?? 'unknown'}) ---\x1b[0m\r\n`);
               hasExited.current = true;
-              onExit?.(msg.exitCode ?? -1);
+              onExit?.(msg.exitCode ?? -1, legacyPaneText);
               break;
+            }
           }
         } catch {
           // ignore malformed messages
@@ -313,7 +526,7 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
 
         if (hasExited.current || event.code === 4004 || event.code === 4001) {
           term.write(`\r\n\x1b[90m--- Disconnected (${event.reason || event.code}) ---\x1b[0m\r\n`);
-          if (event.code === 4004) onExit?.(-1);
+          if (event.code === 4004) onExit?.(-1, capturePaneText());
           return;
         }
 
@@ -459,6 +672,13 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
         xtermScreen.removeEventListener('mousemove', onMouseMove as EventListener);
         xtermScreen.removeEventListener('mousedown', onMouseDown as EventListener);
       }
+      container.removeEventListener('mousedown', onCtrlMouseDown, true);
+      document.removeEventListener('mousemove', onDragMove);
+      document.removeEventListener('mouseup', onDragEnd);
+      document.removeEventListener('click', onDocClickDismiss);
+      document.removeEventListener('keydown', onEscDismiss, true);
+      selOverlay.remove();
+      ctxMenu.remove();
       term.textarea?.removeEventListener('focus', onTermFocus);
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('focus', onWindowFocus);

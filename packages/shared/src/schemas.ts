@@ -199,6 +199,9 @@ export const agentEndpointSchema = z.object({
   permissionProfile: z.enum(PERMISSION_PROFILES).default('interactive'),
   allowedTools: z.string().max(5000).optional(),
   autoPlan: z.boolean().default(false),
+  preferredLauncherId: z.string().nullable().optional(),
+  harnessConfigId: z.string().nullable().optional(),
+  spriteConfigId: z.string().nullable().optional(),
 });
 
 export const dispatchSchema = z.object({
@@ -206,6 +209,7 @@ export const dispatchSchema = z.object({
   agentEndpointId: z.string(),
   instructions: z.string().max(5000).optional(),
   launcherId: z.string().optional(),
+  harnessConfigId: z.string().optional(),
 });
 
 export const PLAN_STATUSES = ['draft', 'active', 'completed'] as const;

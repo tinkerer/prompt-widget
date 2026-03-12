@@ -2,7 +2,7 @@ import { signal } from '@preact/signals';
 import { useState, useEffect, useRef } from 'preact/hooks';
 import { api } from '../lib/api.js';
 import { openSession } from '../lib/sessions.js';
-import { cachedTargets, ensureTargetsLoaded } from './DispatchTargetSelect.js';
+import { cachedTargets, ensureTargetsLoaded, targetKey, findTargetByKey, parseTargetKey } from './DispatchTargetSelect.js';
 
 export interface DispatchDialogRequest {
   feedbackIds: string[];
@@ -69,11 +69,13 @@ function DispatchDialogInner({ req, onClose }: { req: DispatchDialogRequest; onC
         : instructions || undefined;
 
       for (const feedbackId of req.feedbackIds) {
+        const { launcherId, harnessConfigId } = parseTargetKey(target, targets);
         const result = await api.dispatch({
           feedbackId,
           agentEndpointId: agentId,
           instructions: finalInstructions,
-          launcherId: target || undefined,
+          launcherId,
+          harnessConfigId,
         });
         if (result.sessionId && !isBatch) {
           openSession(result.sessionId);
@@ -102,7 +104,7 @@ function DispatchDialogInner({ req, onClose }: { req: DispatchDialogRequest; onC
   }
 
   const selectedAgent = agents.find(a => a.id === agentId);
-  const selectedTarget = target ? targets.find(t => t.launcherId === target) : null;
+  const selectedTarget = target ? findTargetByKey(targets, target) : null;
   const targetLabel = selectedTarget
     ? (selectedTarget.machineName || selectedTarget.name)
     : 'Local';
@@ -147,7 +149,7 @@ function DispatchDialogInner({ req, onClose }: { req: DispatchDialogRequest; onC
               {machines.length > 0 && (
                 <optgroup label="Remote Machines">
                   {machines.map(t => (
-                    <option key={t.launcherId} value={t.launcherId} disabled={!t.online}>
+                    <option key={targetKey(t)} value={targetKey(t)} disabled={!t.online}>
                       {t.machineName || t.name}{t.online ? ` (${t.activeSessions}/${t.maxSessions})` : ' (offline)'}
                     </option>
                   ))}
@@ -156,7 +158,7 @@ function DispatchDialogInner({ req, onClose }: { req: DispatchDialogRequest; onC
               {harnesses.length > 0 && (
                 <optgroup label="Harnesses">
                   {harnesses.map(t => (
-                    <option key={t.launcherId} value={t.launcherId} disabled={!t.online}>
+                    <option key={targetKey(t)} value={targetKey(t)} disabled={!t.online}>
                       {t.name}{t.online ? ` (${t.activeSessions}/${t.maxSessions})` : ' (offline)'}
                     </option>
                   ))}
@@ -165,7 +167,7 @@ function DispatchDialogInner({ req, onClose }: { req: DispatchDialogRequest; onC
               {sprites.length > 0 && (
                 <optgroup label="Sprites">
                   {sprites.map(t => (
-                    <option key={t.launcherId} value={t.launcherId} disabled={!t.online}>
+                    <option key={targetKey(t)} value={targetKey(t)} disabled={!t.online}>
                       {t.name}{t.online ? ` (${t.activeSessions}/${t.maxSessions})` : ' (offline)'}
                     </option>
                   ))}

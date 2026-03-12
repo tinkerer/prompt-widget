@@ -19,6 +19,28 @@ export interface DispatchTarget {
 export const cachedTargets = signal<DispatchTarget[]>([]);
 let lastFetch = 0;
 
+/** Unique selection key for a dispatch target (launcherId alone is not unique for harnesses) */
+export function targetKey(t: DispatchTarget): string {
+  if (t.isHarness && t.harnessConfigId) return `harness:${t.harnessConfigId}`;
+  if (t.isSprite && t.spriteConfigId) return `sprite:${t.spriteConfigId}`;
+  return t.launcherId;
+}
+
+/** Find a target by its unique key */
+export function findTargetByKey(targets: DispatchTarget[], key: string): DispatchTarget | undefined {
+  return targets.find(t => targetKey(t) === key);
+}
+
+/** Parse a target key into launcherId + optional harnessConfigId for API calls */
+export function parseTargetKey(key: string, targets: DispatchTarget[]): { launcherId?: string; harnessConfigId?: string } {
+  const t = findTargetByKey(targets, key);
+  if (!t) return { launcherId: key || undefined };
+  return {
+    launcherId: t.launcherId,
+    harnessConfigId: t.isHarness && t.harnessConfigId ? t.harnessConfigId : undefined,
+  };
+}
+
 export async function refreshTargets() {
   try {
     const { targets } = await api.getDispatchTargets();
@@ -68,7 +90,7 @@ export function DispatchTargetSelect({
       {machines.length > 0 && (
         <optgroup label="Machines">
           {machines.map(t => (
-            <option key={t.launcherId} value={t.launcherId} disabled={!t.online}>
+            <option key={targetKey(t)} value={targetKey(t)} disabled={!t.online}>
               {t.machineName || t.name}{t.online ? ` (${t.activeSessions}/${t.maxSessions})` : ' (offline)'}
             </option>
           ))}
@@ -77,7 +99,7 @@ export function DispatchTargetSelect({
       {harnesses.length > 0 && (
         <optgroup label="Harnesses">
           {harnesses.map(t => (
-            <option key={t.launcherId} value={t.launcherId} disabled={!t.online}>
+            <option key={targetKey(t)} value={targetKey(t)} disabled={!t.online}>
               {t.name}{t.online ? ` (${t.activeSessions}/${t.maxSessions})` : ' (offline)'}
             </option>
           ))}
@@ -86,7 +108,7 @@ export function DispatchTargetSelect({
       {sprites.length > 0 && (
         <optgroup label="Sprites">
           {sprites.map(t => (
-            <option key={t.launcherId} value={t.launcherId} disabled={!t.online}>
+            <option key={targetKey(t)} value={targetKey(t)} disabled={!t.online}>
               {t.name}{t.online ? ` (${t.activeSessions}/${t.maxSessions})` : ' (offline)'}
             </option>
           ))}

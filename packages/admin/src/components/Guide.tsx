@@ -62,6 +62,78 @@ export const GUIDES: GuideDef[] = [
       },
     ],
   },
+  {
+    id: 'machines-harnesses',
+    name: 'Machines & Harnesses',
+    steps: [
+      {
+        selector: 'a[href="#/settings/machines"]',
+        title: 'Machines',
+        text: 'Register remote compute nodes here. Each machine needs a launcher daemon to accept dispatched sessions.',
+        position: 'right',
+      },
+      {
+        selector: '.btn-admin-assist',
+        title: 'Admin Assist',
+        text: 'Click the wrench icon to auto-provision a machine: install dependencies, configure Docker, and start the launcher.',
+        position: 'bottom',
+      },
+      {
+        selector: 'a[href="#/settings/harnesses"]',
+        title: 'Harnesses',
+        text: 'Harness configs define Docker Compose stacks for isolated agent testing. Link them to agent endpoints for safe dispatch.',
+        position: 'right',
+      },
+    ],
+  },
+  {
+    id: 'terminal-companions',
+    name: 'Terminal & Companions',
+    steps: [
+      {
+        selector: '.sidebar-sessions-header',
+        title: 'Session Drawer',
+        text: 'Active sessions appear here. Click to expand the drawer and see session status at a glance.',
+        position: 'right',
+      },
+      {
+        selector: '.terminal-panel',
+        title: 'Terminal Panel',
+        text: 'The terminal panel shows session output. Toggle with Ctrl+Shift+Space. Drag the top edge to resize.',
+        position: 'top',
+      },
+      {
+        selector: '.tab-bar',
+        title: 'Companion Tabs',
+        text: 'Right-click a session tab to open companions: JSONL log, iframe preview, terminal, or feedback detail.',
+        position: 'bottom',
+      },
+    ],
+  },
+  {
+    id: 'keyboard-power-user',
+    name: 'Keyboard Power User',
+    steps: [
+      {
+        selector: '.main',
+        title: 'Hold Ctrl+Shift',
+        text: 'Holding Ctrl+Shift reveals quick-action buttons on the active session tab: Kill, Resolve, and Close.',
+        position: 'left',
+      },
+      {
+        selector: '.sidebar-header',
+        title: 'Spotlight Search',
+        text: 'Press Cmd+K to open spotlight search. Find apps, feedback, sessions, and settings pages instantly.',
+        position: 'right',
+      },
+      {
+        selector: 'nav',
+        title: 'Navigation Shortcuts',
+        text: 'Ctrl+Shift+Arrow to cycle pages. Ctrl+Shift+N for new terminal. Ctrl+\\ to toggle sidebar. Press ? for the full list.',
+        position: 'right',
+      },
+    ],
+  },
 ];
 
 function isGuideCompleted(id: string): boolean {

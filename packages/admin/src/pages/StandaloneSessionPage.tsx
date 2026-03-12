@@ -44,7 +44,7 @@ export function StandaloneSessionPage({ sessionId }: { sessionId: string }) {
         <SessionViewToggle
           sessionId={sessionId}
           isActive={true}
-          onExit={() => markSessionExited(sessionId)}
+          onExit={(code, text) => markSessionExited(sessionId, code, text)}
           onInputStateChange={(s) => setSessionInputState(sessionId, s)}
           permissionProfile={sess?.permissionProfile}
           mode={mode}

@@ -17,9 +17,12 @@ function serializeHarnessConfig(row: typeof schema.harnessConfigs.$inferSelect) 
 
 app.get('/', (c) => {
   const appId = c.req.query('appId');
+  const machineId = c.req.query('machineId');
   let rows;
   if (appId) {
     rows = db.select().from(schema.harnessConfigs).where(eq(schema.harnessConfigs.appId, appId)).all();
+  } else if (machineId) {
+    rows = db.select().from(schema.harnessConfigs).where(eq(schema.harnessConfigs.machineId, machineId)).all();
   } else {
     rows = db.select().from(schema.harnessConfigs).all();
   }

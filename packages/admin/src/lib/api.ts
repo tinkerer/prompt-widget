@@ -91,7 +91,7 @@ export const api = {
   deleteAgent: (id: string) =>
     request(`/admin/agents/${id}`, { method: 'DELETE' }),
 
-  dispatch: (data: { feedbackId: string; agentEndpointId: string; instructions?: string; launcherId?: string }) =>
+  dispatch: (data: { feedbackId: string; agentEndpointId: string; instructions?: string; launcherId?: string; harnessConfigId?: string }) =>
     request<{ dispatched: boolean; sessionId?: string; status: number; response: string }>('/admin/dispatch', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -120,11 +120,14 @@ export const api = {
   listTmuxSessions: () =>
     request<{ sessions: { name: string; windows: number; created: string; attached: boolean }[] }>('/admin/tmux-sessions'),
 
-  attachTmuxSession: (data: { tmuxTarget: string; appId?: string }) =>
+  attachTmuxSession: (data: { tmuxTarget: string; appId?: string; launcherId?: string }) =>
     request<{ sessionId: string }>('/admin/terminal/attach-tmux', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+
+  listLauncherTmuxSessions: (launcherId: string) =>
+    request<{ sessions: Array<{ name: string; windows: number; created: string; attached: boolean }> }>(`/admin/launcher/${launcherId}/tmux-sessions`),
 
   getApplications: () => request<any[]>('/admin/applications'),
 

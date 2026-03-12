@@ -14,6 +14,8 @@ import { SpotlightSearch } from './SpotlightSearch.js';
 import { AddAppModal } from './AddAppModal.js';
 import { RequestPanel } from './RequestPanel.js';
 import { ControlBar } from './ControlBar.js';
+import { HintToast } from './HintToast.js';
+import { AutoFixToast } from './AutoFixToast.js';
 import { registerShortcut, ctrlShiftHeld } from '../lib/shortcuts.js';
 import { toggleTheme, showTabs, arrowTabSwitching, showHotkeyHints, autoJumpWaiting, autoJumpInterrupt, autoJumpDelay, autoJumpShowPopup, autoJumpLogs, autoCloseWaitingPanel, autoJumpHandleBounce } from '../lib/settings.js';
 import {
@@ -80,6 +82,9 @@ import {
   popOutTab,
   focusSessionTerminal,
   getSessionLabel,
+  getSessionColor,
+  setSessionColor,
+  SESSION_COLOR_PRESETS,
   toggleAutoJumpPanel,
   resolveSession,
   activePanelId,
@@ -233,6 +238,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
     const cleanups = [
       registerShortcut({
         key: '?',
+        modifiers: { shift: true },
         label: 'Show keyboard shortcuts',
         category: 'General',
         action: () => setShowShortcutHelp(true),
@@ -663,7 +669,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
   }
 
   const appSubTabs = ['feedback', 'aggregate', 'sessions', 'live', 'settings'];
-  const settingsTabs = ['/settings/agents', '/settings/machines', '/settings/harnesses', '/settings/sprites', '/settings/getting-started', '/settings/preferences'];
+  const settingsTabs = ['/settings/agents', '/settings/infrastructure', '/settings/user-guide', '/settings/getting-started', '/settings/preferences'];
 
   function cycleNav(dir: number) {
     const r = currentRoute.value;
@@ -758,6 +764,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
       <div key={s.id} class="sidebar-session-item-wrapper">
         <div
           class={`sidebar-session-item ${isTabbed ? 'tabbed' : ''} ${isInPanel ? 'in-panel' : ''} ${isVisible ? 'active' : ''}`}
+          style={getSessionColor(s.id) ? { borderLeft: `3px solid ${getSessionColor(s.id)}` } : undefined}
           onClick={() => {
             if (inputSt === 'waiting') {
               focusOrDockSession(s.id);
@@ -831,10 +838,9 @@ export function Layout({ children }: { children: ComponentChildren }) {
 
   const settingsItems = [
     { path: '/settings/agents', label: 'Agents', icon: '\u{1F916}' },
-    { path: '/settings/machines', label: 'Machines', icon: '\u{1F5A5}' },
-    { path: '/settings/harnesses', label: 'Harnesses', icon: '\u{1F433}' },
-    { path: '/settings/sprites', label: 'Sprites', icon: '\u{2601}\uFE0F' },
-    { path: '/settings/getting-started', label: 'Getting Started', icon: '\u{1F4D6}' },
+    { path: '/settings/infrastructure', label: 'Infrastructure', icon: '\u{1F3D7}' },
+    { path: '/settings/user-guide', label: 'User Guide', icon: '\u{1F4D6}' },
+    { path: '/settings/getting-started', label: 'Getting Started', icon: '\u{1F680}' },
     { path: '/settings/preferences', label: 'Preferences', icon: '\u2699' },
   ];
 
@@ -1242,6 +1248,8 @@ export function Layout({ children }: { children: ComponentChildren }) {
         </div>
       )}
       <PerfOverlay />
+      <HintToast />
+      <AutoFixToast />
       {sidebarStatusMenu.value && (() => {
         const menuSid = sidebarStatusMenu.value!.sessionId;
         const menuSess = allSessions.value.find((s: any) => s.id === menuSid);
@@ -1299,6 +1307,26 @@ export function Layout({ children }: { children: ComponentChildren }) {
               api.openSessionInTerminal(menuSid).catch((err: any) => console.error('Open in terminal failed:', err.message));
             }}>Open in Terminal.app</button>
             <button onClick={() => { sidebarItemMenu.value = null; enableSplit(menuSid); }}>Split pane</button>
+            <div style="display:flex;gap:4px;padding:4px 8px;align-items:center">
+              {SESSION_COLOR_PRESETS.map((c) => (
+                <span
+                  key={c}
+                  onClick={() => { setSessionColor(menuSid, getSessionColor(menuSid) === c ? '' : c); }}
+                  style={{
+                    width: '14px', height: '14px', borderRadius: '50%', background: c, cursor: 'pointer',
+                    border: getSessionColor(menuSid) === c ? '2px solid #fff' : '2px solid transparent',
+                    boxSizing: 'border-box',
+                  }}
+                />
+              ))}
+              {getSessionColor(menuSid) && (
+                <span
+                  onClick={() => setSessionColor(menuSid, '')}
+                  style={{ cursor: 'pointer', fontSize: '12px', opacity: 0.7, marginLeft: '2px' }}
+                  title="Clear color"
+                >{'\u00D7'}</span>
+              )}
+            </div>
           </div>
         );
       })()}

@@ -3,6 +3,8 @@ import { theme, setTheme, shortcutsEnabled, tooltipsEnabled, showTabs, arrowTabS
 import { perfOverlayEnabled, perfServerEnabled } from '../lib/perf.js';
 import { getAllShortcuts } from '../lib/shortcuts.js';
 import { Guide, GUIDES, resetGuide } from '../components/Guide.js';
+import { hintsEnabled, resetAllHints } from '../lib/hints.js';
+import { autoFixEnabled, setAutoFixEnabled } from '../lib/autofix.js';
 import { api } from '../lib/api.js';
 import { openSession, panelPresets, savePreset, restorePreset, deletePreset } from '../lib/sessions.js';
 import { DeletedItemsPanel, trackDeletion } from '../components/DeletedItemsPanel.js';
@@ -508,7 +510,7 @@ export function SettingsPage() {
         </div>
 
         <div class="settings-section">
-          <h3>Tooltips</h3>
+          <h3>Tooltips & Hints</h3>
           <div class="settings-toggle-row">
             <div>
               <div class="settings-toggle-label">Show tooltips on hover</div>
@@ -519,6 +521,52 @@ export function SettingsPage() {
                 type="checkbox"
                 checked={tooltipsEnabled.value}
                 onChange={(e) => (tooltipsEnabled.value = (e.target as HTMLInputElement).checked)}
+              />
+              <span class="toggle-slider" />
+            </label>
+          </div>
+
+          <div class="settings-toggle-row">
+            <div>
+              <div class="settings-toggle-label">Show contextual hints</div>
+              <div class="settings-toggle-desc">Display hint toasts when navigating to new pages</div>
+            </div>
+            <label class="toggle-switch">
+              <input
+                type="checkbox"
+                checked={hintsEnabled.value}
+                onChange={(e) => (hintsEnabled.value = (e.target as HTMLInputElement).checked)}
+              />
+              <span class="toggle-slider" />
+            </label>
+          </div>
+
+          <div class="settings-toggle-row">
+            <div>
+              <div class="settings-toggle-label">Reset dismissed hints</div>
+              <div class="settings-toggle-desc">Show all contextual hints again</div>
+            </div>
+            <button
+              class="btn btn-sm"
+              onClick={() => {
+                resetAllHints();
+                hintsEnabled.value = true;
+              }}
+            >
+              Reset
+            </button>
+          </div>
+
+          <div class="settings-toggle-row">
+            <div>
+              <div class="settings-toggle-label">Auto-fix failed sessions</div>
+              <div class="settings-toggle-desc">Automatically launch a diagnostic session when a remote session fails immediately</div>
+            </div>
+            <label class="toggle-switch">
+              <input
+                type="checkbox"
+                checked={autoFixEnabled.value}
+                onChange={(e) => setAutoFixEnabled((e.target as HTMLInputElement).checked)}
               />
               <span class="toggle-slider" />
             </label>

@@ -28,6 +28,9 @@ import {
   sessionInputStates,
   getSessionLabel,
   setSessionLabel,
+  getSessionColor,
+  setSessionColor,
+  SESSION_COLOR_PRESETS,
   getCompanions,
   togglePanelCompanion,
   panelLeftTabs,
@@ -175,7 +178,7 @@ function renderPanelTabContent(
         <SessionViewToggle
           sessionId={sid}
           isActive={isVisible}
-          onExit={() => markSessionExited(sid)}
+          onExit={(code, text) => markSessionExited(sid, code, text)}
           onInputStateChange={(s) => setSessionInputState(sid, s)}
           permissionProfile={sess?.permissionProfile}
           mode={getViewMode(sid, sess?.permissionProfile)}
@@ -491,6 +494,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
               <button
                 key={sid}
                 class={`popout-tab ${isActiveTab ? 'active' : ''}`}
+                style={getSessionColor(sid) ? { boxShadow: `inset 0 -2px 0 ${getSessionColor(sid)}` } : undefined}
                 onMouseDown={(e) => {
                   if (e.button !== 0) return;
                   startTabDrag(e, {
@@ -766,7 +770,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
               key={activeId}
               sessionId={activeId}
               isActive={true}
-              onExit={() => markSessionExited(activeId)}
+              onExit={(code, text) => markSessionExited(activeId, code, text)}
               onInputStateChange={(s) => setSessionInputState(activeId, s)}
               permissionProfile={session?.permissionProfile}
               mode={viewMode}
@@ -788,6 +792,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
                     <button
                       key={sid}
                       class={`popout-tab ${sid === activeId ? 'active' : ''}`}
+                      style={getSessionColor(sid) ? { boxShadow: `inset 0 -2px 0 ${getSessionColor(sid)}` } : undefined}
                       onClick={() => {
                         if (!switchAutoJumpActiveSession(panel.id, sid)) {
                           updatePanel(panel.id, { activeSessionId: sid });
@@ -1372,6 +1377,26 @@ export function PopoutPanel() {
             <button onClick={() => { popoutStatusMenuOpen.value = null; closeTab(menuSid); }}>
               Close tab {showHotkeyHints.value && <kbd>{'\u2303\u21E7'}W</kbd>}
             </button>
+            <div style="display:flex;gap:4px;padding:4px 8px;align-items:center">
+              {SESSION_COLOR_PRESETS.map((c) => (
+                <span
+                  key={c}
+                  onClick={() => { setSessionColor(menuSid, getSessionColor(menuSid) === c ? '' : c); }}
+                  style={{
+                    width: '14px', height: '14px', borderRadius: '50%', background: c, cursor: 'pointer',
+                    border: getSessionColor(menuSid) === c ? '2px solid #fff' : '2px solid transparent',
+                    boxSizing: 'border-box',
+                  }}
+                />
+              ))}
+              {getSessionColor(menuSid) && (
+                <span
+                  onClick={() => setSessionColor(menuSid, '')}
+                  style={{ cursor: 'pointer', fontSize: '12px', opacity: 0.7, marginLeft: '2px' }}
+                  title="Clear color"
+                >{'\u00D7'}</span>
+              )}
+            </div>
           </div>
         );
       })()}

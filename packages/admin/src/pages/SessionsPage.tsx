@@ -2,12 +2,15 @@ import { signal } from '@preact/signals';
 import { useEffect, useRef } from 'preact/hooks';
 import { api } from '../lib/api.js';
 import { navigate, isEmbedded } from '../lib/state.js';
-import { allSessions, openSession, closeTab, deleteSession, permanentlyDeleteSession, spawnTerminal, sessionInputStates, includeDeletedInPolling } from '../lib/sessions.js';
+import { allSessions, openSession, deleteSession, permanentlyDeleteSession, spawnTerminal, sessionInputStates, includeDeletedInPolling, termPickerOpen } from '../lib/sessions.js';
 import { DeletedItemsPanel, trackDeletion } from '../components/DeletedItemsPanel.js';
-import { DispatchTargetSelect } from '../components/DispatchTargetSelect.js';
+import { cachedTargets, ensureTargetsLoaded } from '../components/DispatchTargetSelect.js';
 
-const filterStatus = signal('');
-const terminalTarget = signal('');
+const ALL_STATUSES = ['running', 'pending', 'completed', 'failed', 'killed', 'deleted'] as const;
+const DEFAULT_STATUSES = new Set<string>(['running', 'pending', 'completed', 'failed', 'killed']);
+const filterStatuses = signal<Set<string>>(new Set(DEFAULT_STATUSES));
+const filterTargets = signal<Set<string>>(new Set<string>());
+const searchQuery = signal('');
 const feedbackMap = signal<Record<string, string>>({});
 const agentMap = signal<Record<string, string>>({});
 const agentAppMap = signal<Record<string, string | null>>({});
@@ -76,11 +79,47 @@ async function permanentlyDeleteAll(ids: string[]) {
   }
 }
 
+function toggleStatus(status: string) {
+  const next = new Set(filterStatuses.value);
+  if (next.has(status)) next.delete(status); else next.add(status);
+  filterStatuses.value = next;
+}
+
+function toggleTarget(targetKey: string) {
+  const next = new Set(filterTargets.value);
+  if (next.has(targetKey)) next.delete(targetKey); else next.add(targetKey);
+  filterTargets.value = next;
+}
+
+function getSessionTargetKey(s: any): string {
+  if (s.harnessName) return `harness:${s.harnessName}`;
+  if (s.spriteConfigId) return `sprite:${s.machineName || s.launcherName || 'sprite'}`;
+  if (s.isRemote && s.machineName) return `machine:${s.machineName}`;
+  if (s.isRemote && s.launcherName) return `machine:${s.launcherName}`;
+  return 'local';
+}
+
+function getTargetLabel(key: string): string {
+  if (key === 'local') return 'Local';
+  const [type, name] = key.split(':', 2);
+  return name || type;
+}
+
+function getTargetCategory(key: string): string {
+  if (key === 'local') return '';
+  const type = key.split(':')[0];
+  if (type === 'harness') return 'Harness';
+  if (type === 'sprite') return 'Sprite';
+  if (type === 'machine') return 'Machine';
+  return '';
+}
+
 export function SessionsPage({ appId }: { appId?: string | null }) {
   const autoTerminalDone = useRef(false);
 
   useEffect(() => {
     loadMaps();
+    ensureTargetsLoaded();
     includeDeletedInPolling.value = true;
     return () => { includeDeletedInPolling.value = false; };
   }, []);
@@ -116,9 +155,30 @@ export function SessionsPage({ appId }: { appId?: string | null }) {
     );
   }
 
-  const filtered = filterStatus.value
-    ? appFiltered.filter((s) => s.status === filterStatus.value)
-    : appFiltered.filter((s) => s.status !== 'deleted');
+  const activeStatuses = filterStatuses.value;
+  let filtered = appFiltered.filter((s) => activeStatuses.has(s.status));
+
+  // Target filter
+  const activeTargets = filterTargets.value;
+  if (activeTargets.size > 0) {
+    filtered = filtered.filter((s) => activeTargets.has(getSessionTargetKey(s)));
+  }
+
+  // Search filter
+  const q = searchQuery.value.toLowerCase();
+  if (q) {
+    filtered = filtered.filter((s) => {
+      const agentLabel = s.permissionProfile === 'plain' ? 'Terminal' : (agentMap.value[s.agentEndpointId] || s.agentEndpointId?.slice(-8) || '');
+      const feedbackTitle = feedbackMap.value[s.feedbackId] || '';
+      const label = feedbackTitle || agentLabel || `Session ${s.id.slice(-8)}`;
+      return label.toLowerCase().includes(q)
+        || s.id.toLowerCase().includes(q)
+        || (s.machineName || '').toLowerCase().includes(q)
+        || (s.harnessName || '').toLowerCase().includes(q)
+        || (s.launcherName || '').toLowerCase().includes(q)
+        || s.status.toLowerCase().includes(q);
+    });
+  }
 
   const sorted = [...filtered].sort((a, b) => {
     const statusOrder = (s: string) =>
@@ -134,42 +194,93 @@ export function SessionsPage({ appId }: { appId?: string | null }) {
     return acc;
   }, {});
 
+  // Build target options from sessions + dispatch targets
+  const targetCounts: Record<string, number> = {};
+  for (const s of appFiltered) {
+    const key = getSessionTargetKey(s);
+    targetCounts[key] = (targetCounts[key] || 0) + 1;
+  }
+  // Also include dispatch targets that may have no sessions yet
+  const targets = cachedTargets.value;
+  for (const t of targets) {
+    let key: string;
+    if (t.isHarness) key = `harness:${t.name}`;
+    else if (t.isSprite) key = `sprite:${t.name}`;
+    else key = `machine:${t.machineName || t.name}`;
+    if (!(key in targetCounts)) targetCounts[key] = 0;
+  }
+  if (!('local' in targetCounts)) targetCounts['local'] = 0;
+  const targetKeys = Object.keys(targetCounts).sort((a, b) => {
+    if (a === 'local') return -1;
+    if (b === 'local') return 1;
+    return a.localeCompare(b);
+  });
+
   const feedbackPath = appId ? `/app/${appId}/feedback` : '/feedback';
+
+  const showPurge = activeStatuses.has('deleted') && activeStatuses.size === 1 && sorted.length > 0;
 
   return (
     <div>
       <div class="page-header">
         <h2>Sessions ({appFiltered.length})</h2>
-        <div style="display:flex;gap:6px;align-items:center">
-          <DispatchTargetSelect
-            value={terminalTarget.value}
-            onChange={(id) => { terminalTarget.value = id || ''; }}
-            className="btn-select"
-          />
-          <button class="btn btn-sm" onClick={() => spawnTerminal(appId, terminalTarget.value || undefined)}>
-            Open Terminal
-          </button>
-        </div>
+        <button class="btn btn-sm" onClick={() => { termPickerOpen.value = { kind: 'new' }; }}>
+          Open Terminal
+        </button>
       </div>
 
       <div class="sessions-page-filters">
-        <select
-          value={filterStatus.value}
-          onChange={(e) => { filterStatus.value = (e.target as HTMLSelectElement).value; }}
-        >
-          <option value="">All statuses</option>
-          <option value="running">Running{statusCounts.running ? ` (${statusCounts.running})` : ''}</option>
-          <option value="pending">Pending{statusCounts.pending ? ` (${statusCounts.pending})` : ''}</option>
-          <option value="completed">Completed{statusCounts.completed ? ` (${statusCounts.completed})` : ''}</option>
-          <option value="failed">Failed{statusCounts.failed ? ` (${statusCounts.failed})` : ''}</option>
-          <option value="killed">Killed{statusCounts.killed ? ` (${statusCounts.killed})` : ''}</option>
-          <option value="deleted">Deleted{statusCounts.deleted ? ` (${statusCounts.deleted})` : ''}</option>
-        </select>
+        <input
+          type="text"
+          class="sessions-search-input"
+          placeholder="Search sessions..."
+          value={searchQuery.value}
+          onInput={(e) => { searchQuery.value = (e.target as HTMLInputElement).value; }}
+        />
+      </div>
+
+      <div class="sessions-page-filters">
+        <div class="sessions-filter-group">
+          {ALL_STATUSES.map((status) => {
+            const count = statusCounts[status] || 0;
+            return (
+              <label key={status} class="sessions-filter-checkbox">
+                <input
+                  type="checkbox"
+                  checked={activeStatuses.has(status)}
+                  onChange={() => toggleStatus(status)}
+                />
+                <span class={`session-status-dot ${status}`} style="position:relative;top:0" />
+                {status} {count > 0 && <span class="sessions-filter-count">({count})</span>}
+              </label>
+            );
+          })}
+        </div>
+        {targetKeys.length > 1 && (
+          <div class="sessions-filter-group">
+            {targetKeys.map((key) => {
+              const count = targetCounts[key] || 0;
+              const label = getTargetLabel(key);
+              const cat = getTargetCategory(key);
+              return (
+                <label key={key} class="sessions-filter-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={activeTargets.has(key)}
+                    onChange={() => toggleTarget(key)}
+                  />
+                  {cat && <span class="sessions-filter-badge">{cat}</span>}
+                  {label} {count > 0 && <span class="sessions-filter-count">({count})</span>}
+                </label>
+              );
+            })}
+          </div>
+        )}
         <span style={{ color: 'var(--pw-text-muted)', fontSize: '13px' }}>
           {sorted.length} shown
           {statusCounts.running ? ` \u00b7 ${statusCounts.running} running` : ''}
         </span>
-        {filterStatus.value === 'deleted' && sorted.length > 0 && (
+        {showPurge && (
           <button
             class="btn btn-sm btn-danger"
             onClick={() => permanentlyDeleteAll(sorted.map((s) => s.id))}

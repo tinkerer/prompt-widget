@@ -74,7 +74,31 @@ setTimeout(() => {
 }, 5_000);
 
 import { hostname } from 'node:os';
+import { ulid } from 'ulidx';
 import type { HarnessMetadata } from '@prompt-widget/shared';
+
+function ensureLocalMachine(): string {
+  const existing = db.select().from(schema.machines).where(eq(schema.machines.type, 'local')).get();
+  if (existing) return existing.id;
+
+  const id = ulid();
+  const now = new Date().toISOString();
+  const name = hostname();
+  db.insert(schema.machines).values({
+    id,
+    name,
+    hostname: name,
+    type: 'local',
+    status: 'online',
+    tags: JSON.stringify(['local']),
+    createdAt: now,
+    updatedAt: now,
+  }).run();
+  console.log(`[startup] Auto-created local machine "${name}" (${id})`);
+  return id;
+}
+
+const localMachineId = ensureLocalMachine();
 
 const server = serve({ fetch: app.fetch, port: PORT }, (info) => {
   const url = `http://localhost:${info.port}`;
@@ -107,6 +131,7 @@ const server = serve({ fetch: app.fetch, port: PORT }, (info) => {
       capabilities: { maxSessions: 0, hasTmux: false, hasClaudeCli: false },
       harness,
       isLocal: true,
+      machineId: localMachineId,
     });
     console.log('[harness] Self-registered as harness');
   }

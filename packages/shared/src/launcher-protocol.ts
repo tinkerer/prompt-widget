@@ -160,6 +160,7 @@ export type LauncherToServerMessage =
   | ImportSessionFilesResult
   | ExportSessionFilesResult
   | SyncCodebaseResult
+  | SyncCodebaseToContainerResult
   | ListTmuxSessionsResult
   | CheckClaudeAuthResult
   | CheckContainerClaudeResult
@@ -236,8 +237,28 @@ export interface LaunchHarnessSession {
   composeDir?: string;
   serviceName?: string;
   permissionProfile: PermissionProfile;
+  containerCwd?: string;
+  claudeSessionId?: string;
   cols: number;
   rows: number;
+}
+
+export interface SyncCodebaseToContainer {
+  type: 'sync_codebase_to_container';
+  sessionId: string;
+  harnessConfigId: string;
+  branch: string;
+  gitRemoteUrl: string;
+  containerPath: string;
+  composeDir?: string;
+  serviceName?: string;
+}
+
+export interface SyncCodebaseToContainerResult {
+  type: 'sync_codebase_to_container_result';
+  sessionId: string;
+  ok: boolean;
+  error?: string;
 }
 
 export interface ImportSessionFiles {
@@ -322,6 +343,7 @@ export type ServerToLauncherMessage =
   | ImportSessionFiles
   | ExportSessionFiles
   | SyncCodebase
+  | SyncCodebaseToContainer
   | ListTmuxSessions
   | RestartLauncher
   | CheckClaudeAuth
