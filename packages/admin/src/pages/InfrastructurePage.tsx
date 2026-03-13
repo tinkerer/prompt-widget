@@ -65,6 +65,10 @@ const sFormProvisionNow = signal(true);
 const sFormLoading = signal(false);
 const sFormError = signal('');
 
+// Admin URL health state: machineId -> 'checking' | 'alive' | 'dead'
+const adminHealthStatus = signal<Record<string, 'checking' | 'alive' | 'dead'>>({});
+const adminActionLoading = signal<Record<string, boolean>>({});
+
 // Harness health / auth / setup state
 const healthResults = signal<Record<string, any>>({});
 const authCheckResults = signal<Record<string, any>>({});
@@ -95,6 +99,53 @@ async function loadAll() {
     error.value = err.message;
   } finally {
     loading.value = false;
+  }
+
+  // Probe admin URLs in parallel
+  probeAdminUrls();
+}
+
+async function probeAdminUrls() {
+  const withAdmin = machines.value.filter(m => m.adminUrl);
+  if (!withAdmin.length) return;
+  const statuses = { ...adminHealthStatus.value };
+  for (const m of withAdmin) statuses[m.id] = 'checking';
+  adminHealthStatus.value = statuses;
+
+  await Promise.all(withAdmin.map(async (m) => {
+    try {
+      const result = await api.checkMachineAdminHealth(m.id);
+      adminHealthStatus.value = { ...adminHealthStatus.value, [m.id]: result.alive ? 'alive' : 'dead' };
+    } catch {
+      adminHealthStatus.value = { ...adminHealthStatus.value, [m.id]: 'dead' };
+    }
+  }));
+}
+
+async function handleAdminStart(machineId: string) {
+  adminActionLoading.value = { ...adminActionLoading.value, [machineId]: true };
+  try {
+    await api.startMachineAdmin(machineId);
+    // Wait a few seconds for the server to come up, then re-probe
+    setTimeout(() => {
+      probeAdminUrls();
+      adminActionLoading.value = { ...adminActionLoading.value, [machineId]: false };
+    }, 5000);
+  } catch {
+    adminActionLoading.value = { ...adminActionLoading.value, [machineId]: false };
+  }
+}
+
+async function handleAdminStop(machineId: string) {
+  adminActionLoading.value = { ...adminActionLoading.value, [machineId]: true };
+  try {
+    await api.stopMachineAdmin(machineId);
+    setTimeout(() => {
+      probeAdminUrls();
+      adminActionLoading.value = { ...adminActionLoading.value, [machineId]: false };
+    }, 3000);
+  } catch {
+    adminActionLoading.value = { ...adminActionLoading.value, [machineId]: false };
   }
 }
 
@@ -937,12 +988,51 @@ function MachineCard({ m }: { m: any }) {
           {m.capabilities?.hasTmux && <span class="agent-meta-tag">tmux</span>}
           {m.capabilities?.hasClaudeCli && <span class="agent-meta-tag">Claude CLI</span>}
         </div>
-        {m.adminUrl && (
-          <div style="margin-top:6px;font-size:12px">
-            <span style="font-weight:500;color:var(--pw-text)">Admin: </span>
-            <a href={m.adminUrl} target="_blank" rel="noopener" style="color:var(--pw-primary)">{m.adminUrl}</a>
-          </div>
-        )}
+        {m.adminUrl && (() => {
+          const health = adminHealthStatus.value[m.id];
+          const actionLoading = adminActionLoading.value[m.id];
+          const dotColor = health === 'alive' ? '#22c55e' : health === 'dead' ? '#ef4444' : 'var(--pw-text-faint)';
+          const dotTitle = health === 'alive' ? 'Admin is live' : health === 'dead' ? 'Admin is down' : 'Checking...';
+          const hasLauncher = cachedTargets.value.some(t => t.machineId === m.id && !t.isHarness);
+          return (
+            <div style="margin-top:6px;font-size:12px;display:flex;align-items:center;gap:6px">
+              <span
+                style={`display:inline-block;width:8px;height:8px;border-radius:50%;background:${dotColor};flex-shrink:0;${health === 'checking' ? 'animation:pulse 1s infinite' : ''}`}
+                title={dotTitle}
+              />
+              <span style="font-weight:500;color:var(--pw-text)">Admin: </span>
+              <a href={m.adminUrl} target="_blank" rel="noopener" style="color:var(--pw-primary)">{m.adminUrl}</a>
+              {health === 'dead' && hasLauncher && (
+                <button
+                  class="btn btn-sm"
+                  style="font-size:10px;padding:1px 6px;margin-left:4px"
+                  disabled={actionLoading}
+                  onClick={() => handleAdminStart(m.id)}
+                >
+                  {actionLoading ? 'Starting...' : 'Start'}
+                </button>
+              )}
+              {health === 'alive' && hasLauncher && (
+                <button
+                  class="btn btn-sm"
+                  style="font-size:10px;padding:1px 6px;margin-left:4px"
+                  disabled={actionLoading}
+                  onClick={() => handleAdminStop(m.id)}
+                >
+                  {actionLoading ? 'Stopping...' : 'Stop'}
+                </button>
+              )}
+              <button
+                class="btn btn-sm"
+                style="font-size:10px;padding:1px 4px;margin-left:2px;opacity:0.6"
+                onClick={() => probeAdminUrls()}
+                title="Re-check"
+              >
+                {'\u21BB'}
+              </button>
+            </div>
+          );
+        })()}
         {m.tags?.length > 0 && (
           <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px">
             {m.tags.map((tag: string) => (

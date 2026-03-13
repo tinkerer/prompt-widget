@@ -98,6 +98,81 @@ app.patch('/:id', async (c) => {
   return c.json(serializeMachine(row!));
 });
 
+// Probe a machine's adminUrl to check if it's alive
+app.get('/:id/admin-health', async (c) => {
+  const row = db.select().from(schema.machines).where(eq(schema.machines.id, c.req.param('id'))).get();
+  if (!row) return c.json({ error: 'Machine not found' }, 404);
+  if (!row.adminUrl) return c.json({ alive: false, reason: 'no adminUrl configured' });
+
+  try {
+    const url = row.adminUrl.replace(/\/$/, '') + '/../api/v1/admin/applications';
+    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    return c.json({ alive: res.ok, status: res.status });
+  } catch (err: any) {
+    return c.json({ alive: false, reason: err.message });
+  }
+});
+
+// Start the pw-server on a remote machine via its launcher
+app.post('/:id/admin-start', async (c) => {
+  const row = db.select().from(schema.machines).where(eq(schema.machines.id, c.req.param('id'))).get();
+  if (!row) return c.json({ error: 'Machine not found' }, 404);
+
+  const launcher = listLaunchers().find(l => l.machineId === row.id && !l.isLocal);
+  if (!launcher || launcher.ws.readyState !== 1) {
+    return c.json({ error: 'No connected launcher for this machine' }, 400);
+  }
+
+  const pwDir = row.defaultCwd || '~/work/github.com/prompt-widget';
+  const cmd = `cd ${pwDir}/packages/server && tmux new-session -d -s pw-server 'npm start 2>&1 | tee /tmp/pw-server.log'`;
+
+  // Spawn a short-lived terminal to run the command
+  const { dispatchTerminalSession } = await import('../dispatch.js');
+  const { sessionId } = await dispatchTerminalSession({ cwd: '~', launcherId: launcher.id, permissionProfile: 'plain' });
+
+  // Send the command after a short delay for shell to be ready
+  setTimeout(async () => {
+    try {
+      const { inputSessionRemote } = await import('../session-service-client.js');
+      // For launcher sessions, send via launcher WS
+      launcher.ws.send(JSON.stringify({ type: 'input_to_session', sessionId, data: cmd + '\r' }));
+      // Auto-exit the helper terminal after a moment
+      setTimeout(() => {
+        launcher.ws.send(JSON.stringify({ type: 'input_to_session', sessionId, data: 'exit\r' }));
+      }, 3000);
+    } catch {}
+  }, 1000);
+
+  return c.json({ ok: true, sessionId, command: cmd });
+});
+
+// Stop the pw-server on a remote machine via its launcher
+app.post('/:id/admin-stop', async (c) => {
+  const row = db.select().from(schema.machines).where(eq(schema.machines.id, c.req.param('id'))).get();
+  if (!row) return c.json({ error: 'Machine not found' }, 404);
+
+  const launcher = listLaunchers().find(l => l.machineId === row.id && !l.isLocal);
+  if (!launcher || launcher.ws.readyState !== 1) {
+    return c.json({ error: 'No connected launcher for this machine' }, 400);
+  }
+
+  const cmd = `tmux kill-session -t pw-server 2>/dev/null; tmux kill-session -t pw-sessions 2>/dev/null; echo 'stopped'`;
+
+  const { dispatchTerminalSession } = await import('../dispatch.js');
+  const { sessionId } = await dispatchTerminalSession({ cwd: '~', launcherId: launcher.id, permissionProfile: 'plain' });
+
+  setTimeout(() => {
+    try {
+      launcher.ws.send(JSON.stringify({ type: 'input_to_session', sessionId, data: cmd + '\r' }));
+      setTimeout(() => {
+        launcher.ws.send(JSON.stringify({ type: 'input_to_session', sessionId, data: 'exit\r' }));
+      }, 2000);
+    } catch {}
+  }, 1000);
+
+  return c.json({ ok: true, sessionId, command: cmd });
+});
+
 app.delete('/:id', (c) => {
   const id = c.req.param('id');
   const existing = db.select().from(schema.machines).where(eq(schema.machines.id, id)).get();

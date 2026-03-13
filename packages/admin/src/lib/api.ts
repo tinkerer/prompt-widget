@@ -464,6 +464,15 @@ export const api = {
   deleteMachine: (id: string) =>
     request<{ ok: boolean; id: string }>(`/admin/machines/${id}`, { method: 'DELETE' }),
 
+  checkMachineAdminHealth: (id: string) =>
+    request<{ alive: boolean; status?: number; reason?: string }>(`/admin/machines/${id}/admin-health`),
+
+  startMachineAdmin: (id: string) =>
+    request<{ ok: boolean; sessionId: string }>(`/admin/machines/${id}/admin-start`, { method: 'POST' }),
+
+  stopMachineAdmin: (id: string) =>
+    request<{ ok: boolean; sessionId: string }>(`/admin/machines/${id}/admin-stop`, { method: 'POST' }),
+
   // Harness configs
   getHarnessConfigs: (appId?: string) => {
     const qs = appId ? `?appId=${encodeURIComponent(appId)}` : '';
