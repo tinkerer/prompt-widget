@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'preact/hooks';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { lastTerminalInput } from '../lib/sessions.js';
+import { copyText } from '../lib/clipboard.js';
 import type { InputState } from '../lib/sessions.js';
 
 const MAX_RECONNECT_ATTEMPTS = 10;
@@ -288,22 +289,22 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
       const items: { label: string; action: () => void }[] = [];
 
       if (ctrlSelectedText) {
-        items.push({ label: 'Copy selected text', action: () => navigator.clipboard.writeText(ctrlSelectedText) });
+        items.push({ label: 'Copy selected text', action: () => copyText(ctrlSelectedText) });
       }
 
       const w = wordAt(pos.row, pos.col);
       if (w && w !== ctrlSelectedText) {
         const p = w.length > 30 ? w.slice(0, 30) + '\u2026' : w;
-        items.push({ label: `Copy "${p}"`, action: () => navigator.clipboard.writeText(w) });
+        items.push({ label: `Copy "${p}"`, action: () => copyText(w) });
       }
 
       const sentence = bufLineText(pos.row).trim();
       if (sentence && sentence !== w) {
         const p = sentence.length > 40 ? sentence.slice(0, 40) + '\u2026' : sentence;
-        items.push({ label: `Copy "${p}"`, action: () => navigator.clipboard.writeText(sentence) });
+        items.push({ label: `Copy "${p}"`, action: () => copyText(sentence) });
       }
 
-      items.push({ label: 'Copy pane to clipboard', action: () => navigator.clipboard.writeText(capturePaneText()) });
+      items.push({ label: 'Copy pane to clipboard', action: () => copyText(capturePaneText()) });
 
       const lnk = linkAt(pos.row, pos.col);
       if (lnk) {

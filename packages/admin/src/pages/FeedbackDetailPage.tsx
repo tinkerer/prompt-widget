@@ -3,7 +3,7 @@ import { marked } from 'marked';
 import { api } from '../lib/api.js';
 import { navigate } from '../lib/state.js';
 import { openSession, resumeSession } from '../lib/sessions.js';
-import { copyWithTooltip } from '../lib/clipboard.js';
+import { copyText, copyWithTooltip } from '../lib/clipboard.js';
 import { CropEditor } from '../components/CropEditor.js';
 import { DispatchTargetButton } from '../components/DispatchPicker.js';
 import { cachedTargets, parseTargetKey } from '../components/DispatchTargetSelect.js';
@@ -714,7 +714,7 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
                       <div>
                         <span class="session-id" title="Click to copy full ID" onClick={(e: Event) => {
                           e.stopPropagation();
-                          navigator.clipboard.writeText(s.id);
+                          copyText(s.id);
                           const el = e.currentTarget as HTMLElement;
                           const orig = el.textContent;
                           el.textContent = 'Copied!';

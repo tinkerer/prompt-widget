@@ -2,7 +2,7 @@ import { signal } from '@preact/signals';
 import { api } from '../lib/api.js';
 import { loadApplications as refreshSidebarApps } from '../lib/state.js';
 import { spawnTerminal } from '../lib/sessions.js';
-import { copyWithTooltip } from '../lib/clipboard.js';
+import { copyText, copyWithTooltip } from '../lib/clipboard.js';
 import { DeletedItemsPanel, trackDeletion } from '../components/DeletedItemsPanel.js';
 
 const apps = signal<any[]>([]);
@@ -144,7 +144,7 @@ async function deleteApp(id: string, name: string) {
 async function regenerateKey(id: string) {
   const result = await api.regenerateApplicationKey(id);
   await loadApps();
-  navigator.clipboard.writeText(result.apiKey);
+  copyText(result.apiKey);
 }
 
 

@@ -2,6 +2,7 @@ import { useState } from 'preact/hooks';
 import { api } from '../lib/api.js';
 import { loadApplications, navigate } from '../lib/state.js';
 import { DirPicker } from './DirPicker.js';
+import { copyText } from '../lib/clipboard.js';
 
 type Mode = null | 'create' | 'existing' | 'clone';
 
@@ -76,7 +77,7 @@ export function AddAppModal({ onClose }: { onClose: () => void }) {
     : '';
 
   function copySnippet() {
-    navigator.clipboard.writeText(snippetTag);
+    copyText(snippetTag);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }

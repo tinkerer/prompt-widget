@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'preact/hooks';
 import { api } from '../lib/api.js';
 import { applications, loadApplications, navigate } from '../lib/state.js';
-import { copyWithTooltip } from '../lib/clipboard.js';
+import { copyText, copyWithTooltip } from '../lib/clipboard.js';
 import { AiAssistButton } from '../components/AiAssistButton.js';
 
 interface SuggestionDraft {
@@ -166,7 +166,7 @@ export function AppSettingsPage({ appId }: { appId: string }) {
   async function regenerateKey() {
     const result = await api.regenerateApplicationKey(appId);
     await loadApplications();
-    navigator.clipboard.writeText(result.apiKey);
+    copyText(result.apiKey);
   }
 
   async function deleteApp() {

@@ -76,7 +76,7 @@ import { navigate, selectedAppId } from '../lib/state.js';
 import { showTabs, showHotkeyHints, popoutMode, type PopoutMode } from '../lib/settings.js';
 import { ctrlShiftHeld } from '../lib/shortcuts.js';
 import { api } from '../lib/api.js';
-import { copyWithTooltip } from '../lib/clipboard.js';
+import { copyText, copyWithTooltip } from '../lib/clipboard.js';
 import { TerminalPicker } from './TerminalPicker.js';
 
 const statusMenuOpen = signal<{ sessionId: string; x: number; y: number } | null>(null);
@@ -736,9 +736,9 @@ export function GlobalTerminalPanel() {
       const key = e.key.toLowerCase();
       let handled = true;
       if (key === 'c') {
-        navigator.clipboard.writeText(menuSessionId);
+        copyText(menuSessionId);
       } else if (key === 't') {
-        navigator.clipboard.writeText(buildTmuxAttachCmd(menuSessionId, sessionMap.get(menuSessionId)));
+        copyText(buildTmuxAttachCmd(menuSessionId, sessionMap.get(menuSessionId)));
       } else if (key === 'p') {
         executePopout(menuSessionId, 'panel');
       } else if (key === 'w') {
@@ -749,10 +749,10 @@ export function GlobalTerminalPanel() {
         executePopout(menuSessionId, 'terminal');
       } else if (key === 'j') {
         const s = sessionMap.get(menuSessionId);
-        if (s?.jsonlPath) navigator.clipboard.writeText(s.jsonlPath);
+        if (s?.jsonlPath) copyText(s.jsonlPath);
       } else if (key === 'd') {
         const s = sessionMap.get(menuSessionId);
-        if (s?.feedbackId) navigator.clipboard.writeText(s.feedbackId);
+        if (s?.feedbackId) copyText(s.feedbackId);
       } else if (key === 'l') {
         const s = sessionMap.get(menuSessionId);
         if (s?.jsonlPath) toggleCompanion(menuSessionId, 'jsonl');

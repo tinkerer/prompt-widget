@@ -1,6 +1,6 @@
 import { useRef, useCallback, useEffect } from 'preact/hooks';
 import { signal } from '@preact/signals';
-import { copyWithTooltip } from '../lib/clipboard.js';
+import { copyText, copyWithTooltip } from '../lib/clipboard.js';
 import { SessionViewToggle, type ViewMode } from './SessionViewToggle.js';
 import {
   type PopoutPanelState,
@@ -1146,9 +1146,9 @@ export function PopoutPanel() {
       const key = e.key.toLowerCase();
       let handled = true;
       if (key === 'c') {
-        navigator.clipboard.writeText(menuSessionId);
+        copyText(menuSessionId);
       } else if (key === 't') {
-        navigator.clipboard.writeText(buildTmuxAttachCmd(menuSessionId, sessionMap.get(menuSessionId)));
+        copyText(buildTmuxAttachCmd(menuSessionId, sessionMap.get(menuSessionId)));
       } else if (key === 'p') {
         popBackIn(menuSessionId);
       } else if (key === 'w') {
@@ -1159,7 +1159,7 @@ export function PopoutPanel() {
         api.openSessionInTerminal(menuSessionId);
       } else if (key === 'j') {
         const s = sessionMap.get(menuSessionId);
-        if (s?.jsonlPath) navigator.clipboard.writeText(s.jsonlPath);
+        if (s?.jsonlPath) copyText(s.jsonlPath);
       } else if (key === 'l') {
         const s = sessionMap.get(menuSessionId);
         if (s?.jsonlPath) {

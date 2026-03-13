@@ -7,6 +7,7 @@ import { timed } from '../lib/perf.js';
 import { GlobalTerminalPanel, idMenuOpen } from './GlobalTerminalPanel.js';
 import { PopoutPanel, popoutIdMenuOpen, popoutWindowMenuOpen } from './PopoutPanel.js';
 import { PerfOverlay } from './PerfOverlay.js';
+import { copyText } from '../lib/clipboard.js';
 import { FileViewerOverlay } from './FileViewerPanel.js';
 import { Tooltip } from './Tooltip.js';
 import { ShortcutHelpModal } from './ShortcutHelpModal.js';
@@ -1290,7 +1291,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
           >
             <button onClick={() => {
               sidebarItemMenu.value = null;
-              navigator.clipboard.writeText(`${location.origin}${location.pathname}#/session/${menuSid}`);
+              copyText(`${location.origin}${location.pathname}#/session/${menuSid}`);
               showActionToast('\u{1F517}', 'Link copied', 'var(--pw-accent, var(--pw-primary))');
             }}>Copy link</button>
             <button onClick={() => { sidebarItemMenu.value = null; popOutTab(menuSid); }}>Open in panel</button>
