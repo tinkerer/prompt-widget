@@ -239,6 +239,7 @@ export interface LaunchHarnessSession {
   permissionProfile: PermissionProfile;
   containerCwd?: string;
   claudeSessionId?: string;
+  anthropicApiKey?: string;
   cols: number;
   rows: number;
 }

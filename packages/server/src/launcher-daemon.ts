@@ -763,7 +763,7 @@ function handleServerMessage(msg: ServerToLauncherMessage): void {
     }
 
     case 'launch_harness_session': {
-      const { sessionId, harnessConfigId, prompt, composeDir, serviceName, permissionProfile, containerCwd, claudeSessionId, cols, rows } = msg;
+      const { sessionId, harnessConfigId, prompt, composeDir, serviceName, permissionProfile, containerCwd, claudeSessionId, anthropicApiKey, cols, rows } = msg;
       const svc = serviceName || 'pw-server';
 
       console.log(`[launcher] Launching harness session ${sessionId} in ${composeDir || harnessConfigId}/${svc}${containerCwd ? ` (cwd=${containerCwd})` : ''}`);
@@ -774,12 +774,12 @@ function handleServerMessage(msg: ServerToLauncherMessage): void {
       }
 
       const { command: innerCmd, args: innerArgs } = buildClaudeArgs(prompt, permissionProfile, undefined, claudeSessionId);
-      // Interactive profiles (plain, interactive) need a TTY from docker for stdin;
-      // non-interactive profiles (auto, yolo) use -T since they pipe input
+      // Claude always needs a TTY (even -p mode uses TUI internally).
+      // Only disable TTY (-T) when there's no tmux/pty to provide one.
       const useTmux = isTmuxAvailable();
-      const needsDockerTty = permissionProfile === 'plain' || permissionProfile === 'interactive';
-      const execFlags = (useTmux && !needsDockerTty) ? ['-T'] : [];
+      const execFlags = useTmux ? [] : ['-T'];
       if (containerCwd) execFlags.push('-w', containerCwd);
+      if (anthropicApiKey) execFlags.push('-e', `ANTHROPIC_API_KEY=${anthropicApiKey}`);
       const projectName = `pw-${harnessConfigId}`.toLowerCase();
       const dockerArgs = composeDir
         ? ['compose', '--project-directory', composeDir, '-p', projectName, 'exec', ...execFlags, svc, innerCmd, ...innerArgs]

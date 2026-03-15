@@ -891,6 +891,19 @@ export async function dispatchHarnessSession(params: {
   const claudeSessionId = params.claudeSessionId || crypto.randomUUID();
   let containerCwd: string | undefined;
 
+  // Pre-flight: verify harness is running
+  const harnessConfig = db
+    .select()
+    .from(schema.harnessConfigs)
+    .where(eq(schema.harnessConfigs.id, params.harnessConfigId))
+    .get();
+  if (!harnessConfig) {
+    throw new Error(`Harness config ${params.harnessConfigId} not found`);
+  }
+  if (harnessConfig.status !== 'running') {
+    throw new Error(`Harness "${harnessConfig.name}" is not running (status: ${harnessConfig.status}). Start it first.`);
+  }
+
   const launcher = getLauncher(params.launcherId);
   if (!launcher || launcher.ws.readyState !== 1) {
     throw new Error('Launcher is not connected');
@@ -906,12 +919,12 @@ export async function dispatchHarnessSession(params: {
       outputBytes: 0,
       launcherId: params.launcherId,
       claudeSessionId,
+      cwd: params.cwd || null,
       createdAt: now,
     })
     .run();
 
-  // Fire-and-forget: return sessionId immediately so UI can open the tab
-  (async () => {
+  try {
     // Sync codebase into the Docker container if we have a git repo
     const projectDir = params.cwd;
     if (projectDir && isGitRepo(projectDir)) {
@@ -944,24 +957,37 @@ export async function dispatchHarnessSession(params: {
       permissionProfile: params.permissionProfile,
       containerCwd,
       claudeSessionId,
+      anthropicApiKey: harnessConfig.anthropicApiKey || undefined,
       cols: 120,
       rows: 40,
     };
 
-    try {
-      launcher.ws.send(JSON.stringify(msg));
-      addSessionToLauncher(params.launcherId, sessionId);
-      console.log(`[dispatch] Sent harness session ${sessionId} to launcher ${params.launcherId}`);
-    } catch (err) {
-      console.error(`[dispatch] Failed to send harness session to launcher:`, err);
-      db.update(schema.agentSessions)
-        .set({ status: 'failed', completedAt: new Date().toISOString() })
-        .where(eq(schema.agentSessions.id, sessionId))
-        .run();
-    }
-  })().catch((err) => {
-    console.error(`[dispatch] Async harness launch failed for ${sessionId}:`, err);
-  });
+    // sendAndWait resolves when launcher sends launcher_session_started
+    // resolveLauncherResponse short-circuits the normal handler in index.ts,
+    // so we must update the DB ourselves after confirmation
+    const response = await sendAndWait(params.launcherId, msg, 'launcher_session_started', 120_000);
+    addSessionToLauncher(params.launcherId, sessionId);
+
+    const startedMsg = response as { pid?: number; tmuxSessionName?: string };
+    db.update(schema.agentSessions)
+      .set({
+        status: 'running',
+        pid: startedMsg.pid,
+        startedAt: new Date().toISOString(),
+        ...(startedMsg.tmuxSessionName ? { tmuxSessionName: startedMsg.tmuxSessionName } : {}),
+      })
+      .where(eq(schema.agentSessions.id, sessionId))
+      .run();
+
+    console.log(`[dispatch] Harness session ${sessionId} started on launcher ${params.launcherId} (pid=${startedMsg.pid})`);
+  } catch (err: any) {
+    console.error(`[dispatch] Harness session ${sessionId} failed:`, err.message);
+    db.update(schema.agentSessions)
+      .set({ status: 'failed', completedAt: new Date().toISOString() })
+      .where(eq(schema.agentSessions.id, sessionId))
+      .run();
+    throw err;
+  }
 
   return { sessionId };
 }
