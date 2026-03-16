@@ -112,6 +112,8 @@ export const api = {
       machineId: string | null;
       isHarness: boolean;
       harnessConfigId: string | null;
+      isSprite?: boolean;
+      spriteConfigId?: string | null;
       activeSessions: number;
       maxSessions: number;
       online: boolean;

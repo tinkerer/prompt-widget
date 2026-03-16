@@ -2,7 +2,7 @@ import { signal, effect } from '@preact/signals';
 import { useEffect, useRef } from 'preact/hooks';
 import { api } from '../lib/api.js';
 import { navigate, currentRoute } from '../lib/state.js';
-import { openSession, sessionInputStates, startSessionPolling } from '../lib/sessions.js';
+import { openSession, sessionInputStates } from '../lib/sessions.js';
 import { openDispatchDialog, dispatchDialogResult } from '../components/DispatchDialog.js';
 import { copyWithTooltip } from '../lib/clipboard.js';
 import { DeletedItemsPanel, trackDeletion } from '../components/DeletedItemsPanel.js';
@@ -290,9 +290,8 @@ export function FeedbackListPage({ appId }: { appId: string }) {
 
   useEffect(() => {
     loadFeedback();
-    const stopPolling = startSessionPolling();
     const token = localStorage.getItem('pw-admin-token');
-    if (!token) return stopPolling;
+    if (!token) return;
     const es = new EventSource(`/api/v1/admin/feedback/events?token=${encodeURIComponent(token)}`);
     const onEvent = (e: MessageEvent) => {
       const data = JSON.parse(e.data);
@@ -302,7 +301,7 @@ export function FeedbackListPage({ appId }: { appId: string }) {
     };
     es.addEventListener('new-feedback', onEvent);
     es.addEventListener('feedback-updated', onEvent);
-    return () => { es.close(); stopPolling(); };
+    return () => { es.close(); };
   }, [appId]);
 
   // Re-sort when session states change (for state-based sort modes)

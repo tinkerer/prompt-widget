@@ -16,6 +16,7 @@ import {
   sidebarWidth,
   sidebarCollapsed,
   allSessions,
+  sessionMapComputed,
   persistPanelState,
   popOutTab,
   getViewMode,
@@ -625,8 +626,7 @@ export function GlobalTerminalPanel() {
   const minimized = panelMinimized.value;
   const height = panelHeight.value;
   const exited = exitedSessions.value;
-  const sessions = allSessions.value;
-  const sessionMap = new Map(sessions.map((s: any) => [s.id, s]));
+  const sessionMap = sessionMapComputed.value;
   const isSplit = splitEnabled.value;
   const leftTabs = isSplit ? leftPaneTabs() : tabs;
   const rightTabs = isSplit ? rightPaneTabs.value : [];

@@ -1,29 +1,21 @@
-import { ComponentChildren } from 'preact';
-import { useEffect, useRef, useCallback, useState } from 'preact/hooks';
-import { signal } from '@preact/signals';
-import { currentRoute, clearToken, navigate, selectedAppId, applications, unlinkedCount, appFeedbackCounts, addAppModalOpen } from '../lib/state.js';
+import { useEffect, useRef, useState } from 'preact/hooks';
+import { currentRoute, navigate, selectedAppId, applications, addAppModalOpen } from '../lib/state.js';
 import { api } from '../lib/api.js';
-import { timed } from '../lib/perf.js';
 import { idMenuOpen } from './LeafPane.js';
 import { PopoutPanel, popoutIdMenuOpen, popoutWindowMenuOpen } from './PopoutPanel.js';
 import { PaneTree } from './PaneTree.js';
-import { SplitPane } from './SplitPane.js';
 import { layoutTree, focusedLeafId, splitLeaf, mergeLeaf, getAllLeaves, setFocusedLeaf, findLeaf, findLeafWithTab, SESSIONS_LEAF_ID } from '../lib/pane-tree.js';
 import { PerfOverlay } from './PerfOverlay.js';
 import { copyText } from '../lib/clipboard.js';
 import { FileViewerOverlay } from './FileViewerPanel.js';
-import { Tooltip } from './Tooltip.js';
 import { ShortcutHelpModal } from './ShortcutHelpModal.js';
 import { SpotlightSearch } from './SpotlightSearch.js';
 import { AddAppModal } from './AddAppModal.js';
-import { RequestPanel } from './RequestPanel.js';
-import { ControlBar } from './ControlBar.js';
 import { HintToast } from './HintToast.js';
 import { AutoFixToast } from './AutoFixToast.js';
 import { TerminalPicker } from './TerminalPicker.js';
-import { SidebarFilesDrawer } from './SidebarFilesDrawer.js';
 import { registerShortcut, ctrlShiftHeld } from '../lib/shortcuts.js';
-import { toggleTheme, arrowTabSwitching, showHotkeyHints, autoJumpWaiting, autoJumpInterrupt, autoJumpDelay, autoJumpShowPopup, autoJumpLogs, autoCloseWaitingPanel, autoJumpHandleBounce } from '../lib/settings.js';
+import { toggleTheme, arrowTabSwitching, showHotkeyHints } from '../lib/settings.js';
 import {
   openTabs,
   activeTabId,
@@ -36,7 +28,6 @@ import {
   exitedSessions,
   startSessionPolling,
   openSession,
-  focusOrDockSession,
   deleteSession,
   killSession,
   resumeSession,
@@ -44,27 +35,11 @@ import {
   actionToast,
   showActionToast,
   hotkeyMenuOpen,
-  sessionsDrawerOpen,
-  sessionSearchQuery,
-  toggleSessionsDrawer,
-  sessionsHeight,
-  setSessionsHeight,
-  terminalsHeight,
-  setTerminalsHeight,
-  setSidebarWidth,
   spawnTerminal,
   handleTabDigit0to9,
   togglePopOutActive,
-  pendingFirstDigit,
-  sessionStatusFilters,
-  sessionFiltersOpen,
-  toggleStatusFilter,
-  toggleSessionFiltersOpen,
-  sessionPassesFilters,
-  allNumberedSessions,
   popoutPanels,
   findPanelForSession,
-  sidebarAnimating,
   updatePanel,
   persistPopoutState,
   cyclePanelFocus,
@@ -77,107 +52,24 @@ import {
   enableSplit,
   disableSplit,
   focusedPanelId,
-  cycleWaitingSession,
   goToPreviousTab,
-  pendingAutoJump,
   autoJumpCountdown,
-  autoJumpPaused,
   cancelAutoJump,
-  hideAutoJumpPopup,
   popOutTab,
-  focusSessionTerminal,
-  getSessionLabel,
   getSessionColor,
   setSessionColor,
   SESSION_COLOR_PRESETS,
   toggleAutoJumpPanel,
   resolveSession,
   activePanelId,
-  bringToFront,
   termPickerOpen,
-  sidebarSplitRatio,
-  setSidebarSplitRatio,
+  sidebarStatusMenu,
+  sidebarItemMenu,
+  popInPickerSessionId,
+  cycleWaitingSession,
 } from '../lib/sessions.js';
 
-interface LiveConnection {
-  sessionId: string;
-  connectedAt: string;
-  lastActivity: string;
-  url: string | null;
-  appId: string | null;
-}
-const liveConnections = signal<LiveConnection[]>([]);
-const liveConnectionCounts = signal<Record<string, number>>({});
-const totalLiveConnections = signal(0);
-const liveSites = signal<{ origin: string; hostname: string; count: number }[]>([]);
-const sidebarStatusMenu = signal<{ sessionId: string; x: number; y: number } | null>(null);
-const sidebarItemMenu = signal<{ sessionId: string; x: number; y: number } | null>(null);
-const filesDrawerOpen = signal(false);
-
-function highlightMatch(text: string, query: string) {
-  const lower = text.toLowerCase();
-  const q = query.toLowerCase();
-  const idx = lower.indexOf(q);
-  if (idx < 0) return text;
-  return (
-    <>
-      {text.slice(0, idx)}
-      <span class="search-match">{text.slice(idx, idx + q.length)}</span>
-      {text.slice(idx + q.length)}
-    </>
-  );
-}
-const autoJumpMenuOpen = signal(false);
-
-async function pollLiveConnections() {
-  try {
-    const conns = await api.getLiveConnections();
-    liveConnections.value = conns;
-    totalLiveConnections.value = conns.length;
-    const counts: Record<string, number> = {};
-    const siteMap = new Map<string, number>();
-    const serverOrigin = window.location.origin;
-    for (const c of conns) {
-      const key = c.appId || '__unlinked__';
-      counts[key] = (counts[key] || 0) + 1;
-      if (c.url) {
-        try {
-          const u = new URL(c.url);
-          if (u.origin !== serverOrigin) {
-            siteMap.set(u.origin, (siteMap.get(u.origin) || 0) + 1);
-          }
-        } catch { /* invalid url */ }
-      }
-    }
-    liveConnectionCounts.value = counts;
-    liveSites.value = [...siteMap.entries()]
-      .map(([origin, count]) => ({ origin, hostname: new URL(origin).hostname, count }))
-      .sort((a, b) => a.hostname.localeCompare(b.hostname));
-  } catch {
-    // ignore
-  }
-}
-
-
-function SidebarTabBadge({ tabNum }: { tabNum: number }) {
-  const pending = pendingFirstDigit.value;
-  const digits = String(tabNum);
-  if (pending !== null) {
-    const pendingStr = String(pending);
-    if (!digits.startsWith(pendingStr)) {
-      return <span class="sidebar-tab-badge tab-badge-dimmed">{tabNum}</span>;
-    }
-    return (
-      <span class="sidebar-tab-badge tab-badge-pending">
-        <span class="tab-badge-green">{pendingStr}</span>
-        {digits.slice(pendingStr.length) || ''}
-      </span>
-    );
-  }
-  return <span class="sidebar-tab-badge">{tabNum}</span>;
-}
-
-export function Layout({ children }: { children: ComponentChildren }) {
+export function Layout() {
   const route = currentRoute.value;
   const collapsed = sidebarCollapsed.value;
   const width = sidebarWidth.value;
@@ -189,17 +81,12 @@ export function Layout({ children }: { children: ComponentChildren }) {
   showSpotlightRef.current = showSpotlight;
 
   useEffect(() => {
-    // Defer sidebar polling so visible page content loads first
-    let liveInterval: ReturnType<typeof setInterval> | null = null;
     let stopSessionPolling: (() => void) | null = null;
     const deferTimer = setTimeout(() => {
-      timed('liveConnections', () => pollLiveConnections());
-      liveInterval = setInterval(pollLiveConnections, 5_000);
       stopSessionPolling = startSessionPolling();
     }, 100);
     return () => {
       clearTimeout(deferTimer);
-      if (liveInterval) clearInterval(liveInterval);
       if (stopSessionPolling) stopSessionPolling();
     };
   }, []);
@@ -217,13 +104,6 @@ export function Layout({ children }: { children: ComponentChildren }) {
     document.addEventListener('click', close);
     return () => document.removeEventListener('click', close);
   }, [sidebarItemMenu.value]);
-
-  useEffect(() => {
-    if (!autoJumpMenuOpen.value) return;
-    const close = () => { autoJumpMenuOpen.value = false; };
-    document.addEventListener('click', close);
-    return () => document.removeEventListener('click', close);
-  }, [autoJumpMenuOpen.value]);
 
   function getActivePanelSession(): string | null {
     // Check focused tree leaf first
@@ -266,7 +146,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
         key: 'Escape',
         label: 'Close modal',
         category: 'General',
-        action: () => { setShowShortcutHelp(false); setShowSpotlight(false); },
+        action: () => { setShowShortcutHelp(false); setShowSpotlight(false); popInPickerSessionId.value = null; },
       }),
       registerShortcut({
         key: ' ',
@@ -552,7 +432,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
         category: 'Panels',
         action: () => {
           const leafId = focusedLeafId.value || SESSIONS_LEAF_ID;
-          splitLeaf(leafId, 'horizontal');
+          splitLeaf(leafId, 'horizontal', 'second', [], 0.5, true);
         },
       }),
       registerShortcut({
@@ -563,7 +443,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
         category: 'Panels',
         action: () => {
           const leafId = focusedLeafId.value || SESSIONS_LEAF_ID;
-          splitLeaf(leafId, 'vertical');
+          splitLeaf(leafId, 'vertical', 'second', [], 0.5, true);
         },
       }),
       registerShortcut({
@@ -652,65 +532,6 @@ export function Layout({ children }: { children: ComponentChildren }) {
     return () => window.removeEventListener('message', onMessage);
   }, []);
 
-  const sessions = allSessions.value;
-  const tabs = openTabs.value;
-  const tabSet = new Set(tabs);
-  for (const panel of popoutPanels.value) {
-    for (const sid of panel.sessionIds) tabSet.add(sid);
-  }
-  const visibleSessions = sessions.filter((s: any) => sessionPassesFilters(s, tabSet));
-  const recentSessions = [...visibleSessions]
-    .sort((a, b) => {
-      const aOpen = tabSet.has(a.id) ? 0 : 1;
-      const bOpen = tabSet.has(b.id) ? 0 : 1;
-      if (aOpen !== bOpen) return aOpen - bOpen;
-      const statusOrder = (s: string) =>
-        s === 'running' ? 0 : s === 'pending' ? 1 : 2;
-      const diff = statusOrder(a.status) - statusOrder(b.status);
-      if (diff !== 0) return diff;
-      return new Date(b.startedAt || b.createdAt || 0).getTime() -
-        new Date(a.startedAt || a.createdAt || 0).getTime();
-    });
-
-  const apps = applications.value;
-  const selAppId = selectedAppId.value;
-  const hasUnlinked = unlinkedCount.value > 0;
-  const fbCounts = appFeedbackCounts.value;
-  const runningSessions = sessions.filter((s: any) => s.status === 'running').length;
-  const waitingCount = sessions.filter((s: any) => s.status === 'running' && sessionInputStates.value.get(s.id) === 'waiting').length;
-  const nonDeletedSessions = sessions.filter((s: any) => s.status !== 'deleted');
-  const statusCounts: Record<string, number> = {};
-  for (const s of nonDeletedSessions) {
-    statusCounts[s.status] = (statusCounts[s.status] || 0) + 1;
-  }
-  const filtersOpen = sessionFiltersOpen.value;
-  const activeStatusFilters = sessionStatusFilters.value;
-  const activeFilterCount = activeStatusFilters.size;
-
-  function startDrag(
-    e: MouseEvent,
-    cursor: 'ew-resize' | 'ns-resize',
-    onMove: (ev: MouseEvent) => void,
-    handle?: HTMLElement,
-  ) {
-    e.preventDefault();
-    const overlay = document.createElement('div');
-    overlay.className = `resize-overlay ${cursor === 'ew-resize' ? 'ew' : 'ns'}`;
-    document.body.appendChild(overlay);
-    document.body.style.userSelect = 'none';
-    if (handle) handle.classList.add('dragging');
-    const move = (ev: MouseEvent) => onMove(ev);
-    const up = () => {
-      overlay.remove();
-      document.body.style.userSelect = '';
-      if (handle) handle.classList.remove('dragging');
-      document.removeEventListener('mousemove', move);
-      document.removeEventListener('mouseup', up);
-    };
-    document.addEventListener('mousemove', move);
-    document.addEventListener('mouseup', up);
-  }
-
   const appSubTabs = ['feedback', 'aggregate', 'sessions', 'live', 'settings'];
   const settingsTabs = ['/settings/agents', '/settings/infrastructure', '/settings/user-guide', '/settings/getting-started', '/settings/preferences'];
 
@@ -759,504 +580,10 @@ export function Layout({ children }: { children: ComponentChildren }) {
     openSession(next);
   }
 
-  const filtered = recentSessions.filter((s) => {
-    if (!sessionSearchQuery.value) return true;
-    const q = sessionSearchQuery.value.toLowerCase();
-    const text = [getSessionLabel(s.id), s.feedbackTitle, s.agentName, s.id, s.paneTitle, s.paneCommand, s.panePath].filter(Boolean).join(' ').toLowerCase();
-    return text.includes(q);
-  });
-  const terminals = filtered.filter((s: any) => s.permissionProfile === 'plain');
-  const agents = filtered.filter((s: any) => s.permissionProfile !== 'plain');
-  const waitingAgents = agents.filter((s: any) => s.status === 'running' && sessionInputStates.value.get(s.id) === 'waiting');
-  const restAgents = agents.filter((s: any) => !(s.status === 'running' && sessionInputStates.value.get(s.id) === 'waiting'));
-  const globalSessions = allNumberedSessions();
-  const visibleSet = new Set<string>();
-  if (activeTabId.value) visibleSet.add(activeTabId.value);
-  if (rightPaneActiveId.value) visibleSet.add(rightPaneActiveId.value);
-  for (const p of popoutPanels.value) {
-    if (p.visible && p.activeSessionId) visibleSet.add(p.activeSessionId);
-  }
-  const renderItem = (s: any) => {
-    const isTabbed = tabSet.has(s.id);
-    const isInPanel = !!findPanelForSession(s.id);
-    const isVisible = visibleSet.has(s.id);
-    const isNumbered = isTabbed || isInPanel;
-    const inputSt = s.status === 'running' ? (sessionInputStates.value.get(s.id) || null) : null;
-    const isPlain = s.permissionProfile === 'plain';
-    const plainLabel = s.paneCommand
-      ? `${s.paneCommand}:${s.panePath || ''} \u2014 ${s.paneTitle || s.id.slice(-6)}`
-      : (s.paneTitle || s.id.slice(-6));
-    const customLabel = getSessionLabel(s.id);
-    const locationPrefix = s.isHarness ? '\u{1F4E6}' : s.isRemote ? '\u{1F310}' : '';
-    const raw = customLabel || (isPlain ? `${locationPrefix || '\u{1F5A5}\uFE0F'} ${plainLabel}` : `${locationPrefix ? locationPrefix + ' ' : ''}${s.feedbackTitle || s.agentName || `Session ${s.id.slice(-6)}`}`);
-    const tooltipParts: string[] = [];
-    if (s.isHarness) tooltipParts.push(`Harness: ${s.harnessName || 'unknown'}`);
-    else if (s.isRemote) tooltipParts.push(`Remote: ${s.machineName || s.launcherHostname || 'unknown'}`);
-    if (s.paneCommand) tooltipParts.push(`Process: ${s.paneCommand}`);
-    if (s.panePath) tooltipParts.push(`Path: ${s.panePath}`);
-    tooltipParts.push(isPlain
-      ? `Terminal \u2014 ${s.status}`
-      : s.feedbackTitle
-        ? `${s.feedbackTitle} \u2014 ${s.status}`
-        : `${s.agentName || 'Session'} \u2014 ${s.status}`);
-    const tooltip = tooltipParts.join('\n');
-    const globalIdx = globalSessions.indexOf(s.id);
-    const globalNum = globalIdx >= 0 ? globalIdx + 1 : null;
-    const showPausedPopup = autoJumpPaused.value && pendingAutoJump.value === s.id && autoJumpShowPopup.value;
-    return (
-      <div key={s.id} class="sidebar-session-item-wrapper">
-        <div
-          class={`sidebar-session-item ${isTabbed ? 'tabbed' : ''} ${isInPanel ? 'in-panel' : ''} ${isVisible ? 'active' : ''}`}
-          style={getSessionColor(s.id) ? { borderLeft: `3px solid ${getSessionColor(s.id)}` } : undefined}
-          onClick={() => {
-            if (inputSt === 'waiting') {
-              focusOrDockSession(s.id);
-            } else {
-              const panel = findPanelForSession(s.id);
-              if (panel) {
-                updatePanel(panel.id, { activeSessionId: s.id, visible: true });
-                bringToFront(panel.id);
-                persistPopoutState();
-                focusSessionTerminal(s.id);
-              } else {
-                openSession(s.id);
-                focusSessionTerminal(s.id);
-              }
-            }
-          }}
-          title={tooltip}
-        >
-          <span class="sidebar-dot-wrapper">
-            <span
-              class={`session-status-dot ${s.status}${isPlain ? ' plain' : ''}${inputSt ? ` ${inputSt}` : ''}`}
-              title={inputSt === 'waiting' ? 'waiting for input' : inputSt === 'idle' ? 'idle' : s.status}
-              onClick={(e) => {
-                e.stopPropagation();
-                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                sidebarStatusMenu.value = { sessionId: s.id, x: rect.right + 4, y: rect.top };
-              }}
-            />
-            {ctrlShiftHeld.value && inputSt === 'waiting' ? (
-              <span class="sidebar-tab-badge sidebar-tab-badge-overlay tab-badge-waiting">A</span>
-            ) : ctrlShiftHeld.value && isNumbered && globalNum !== null ? (
-              <span class="sidebar-tab-badge-overlay"><SidebarTabBadge tabNum={globalNum} /></span>
-            ) : null}
-          </span>
-          <span class="session-label">{sessionSearchQuery.value ? highlightMatch(raw, sessionSearchQuery.value) : raw}</span>
-          <button
-            class="sidebar-item-menu-btn"
-            onClick={(e) => {
-              e.stopPropagation();
-              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-              sidebarItemMenu.value = { sessionId: s.id, x: rect.right + 4, y: rect.top };
-            }}
-            title="Session actions"
-          >
-            {'\u25BE'}
-          </button>
-          <button
-            class="session-delete-btn"
-            onClick={(e) => {
-              e.stopPropagation();
-              deleteSession(s.id);
-            }}
-            title="Archive session"
-          >
-            {'\u00D7'}
-          </button>
-        </div>
-        {showPausedPopup && (
-          <div class="auto-jump-popup" onClick={(e) => e.stopPropagation()}>
-            <span class="auto-jump-popup-text">Waiting for you to stop typing</span>
-            <span class="auto-jump-popup-actions">
-              <kbd onClick={() => { cycleWaitingSession(); cancelAutoJump(); }}>{'\u2303\u21E7'}A</kbd> jump
-              {' '}<kbd onClick={cancelAutoJump}>{'\u2303\u21E7'}X</kbd> cancel
-              {' '}<kbd onClick={hideAutoJumpPopup}>hide</kbd>
-            </span>
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  const settingsItems = [
-    { path: '/settings/agents', label: 'Agents', icon: '\u{1F916}' },
-    { path: '/settings/infrastructure', label: 'Infrastructure', icon: '\u{1F3D7}' },
-    { path: '/settings/user-guide', label: 'User Guide', icon: '\u{1F4D6}' },
-    { path: '/settings/getting-started', label: 'Getting Started', icon: '\u{1F680}' },
-    { path: '/settings/preferences', label: 'Preferences', icon: '\u2699' },
-  ];
-
-  const sidebarJSX = (
-    <>
-      <div class={`sidebar ${collapsed ? 'collapsed' : ''}${sidebarAnimating.value ? ' animating' : ''}`} style={{ width: `${width}px` }}>
-        <div class="sidebar-header">
-          <Tooltip text={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} shortcut="Ctrl+\" position="right">
-            <button class="sidebar-toggle" onClick={toggleSidebar}>
-              &#9776;
-            </button>
-          </Tooltip>
-          <span class="sidebar-title">Prompt Widget</span>
-          {!collapsed && (
-            <a
-              class="bookmarklet-link"
-              href={`javascript:void((function(){var e=document.getElementById('pw-bookmarklet-frame');if(e){e.remove();return}var f=document.createElement('iframe');f.id='pw-bookmarklet-frame';f.src='${window.location.origin}/widget/bookmarklet.html?host='+encodeURIComponent(location.href);f.style.cssText='position:fixed;bottom:0;right:0;width:420px;height:100%;border:none;z-index:2147483647;pointer-events:none;';f.allow='clipboard-write';window.addEventListener('message',function(m){if(m.data&&m.data.type==='pw-bookmarklet-remove'){var el=document.getElementById('pw-bookmarklet-frame');if(el)el.remove()}});document.body.appendChild(f)})())`}
-              title="Drag to bookmarks bar to load widget on any site"
-              onClick={(e) => e.preventDefault()}
-            >
-              {'\u{1F516}'}
-            </a>
-          )}
-        </div>
-        <nav>
-          {!collapsed && (
-            <div class="sidebar-section-header">
-              Apps
-              <button
-                class="sidebar-new-terminal-btn"
-                onClick={(e) => { e.stopPropagation(); addAppModalOpen.value = true; }}
-                title="Add app"
-              >+</button>
-            </div>
-          )}
-          {apps.map((app) => {
-            const isSelected = selAppId === app.id;
-            return (
-              <div key={app.id}>
-                <a
-                  href={`#/app/${app.id}/feedback`}
-                  class={`sidebar-app-item ${isSelected ? 'active' : ''}`}
-                  onClick={(e) => { e.preventDefault(); navigate(`/app/${app.id}/feedback`); }}
-                  title={collapsed ? app.name : undefined}
-                >
-                  <span class="nav-icon">{'\u{1F4BB}'}</span>
-                  <span class="nav-label">{app.name}</span>
-                </a>
-                {isSelected && !collapsed && (
-                  <div class="sidebar-subnav">
-                    <a
-                      href={`#/app/${app.id}/feedback`}
-                      class={route === `/app/${app.id}/feedback` || route.startsWith(`/app/${app.id}/feedback/`) ? 'active' : ''}
-                      onClick={(e) => { e.preventDefault(); navigate(`/app/${app.id}/feedback`); }}
-                    >
-                      {'\u{1F4CB}'} Feedback
-                      {fbCounts[app.id] > 0 && <span class="sidebar-count">{fbCounts[app.id]}</span>}
-                    </a>
-                    <a
-                      href={`#/app/${app.id}/aggregate`}
-                      class={route === `/app/${app.id}/aggregate` ? 'active' : ''}
-                      onClick={(e) => { e.preventDefault(); navigate(`/app/${app.id}/aggregate`); }}
-                    >
-                      {'\u{1F4CA}'} Aggregate
-                    </a>
-                    <a
-                      href={`#/app/${app.id}/sessions`}
-                      class={route === `/app/${app.id}/sessions` ? 'active' : ''}
-                      onClick={(e) => { e.preventDefault(); navigate(`/app/${app.id}/sessions`); }}
-                    >
-                      {'\u26A1'} Sessions
-                    </a>
-                    <a
-                      href={`#/app/${app.id}/live`}
-                      class={route === `/app/${app.id}/live` ? 'active' : ''}
-                      onClick={(e) => { e.preventDefault(); navigate(`/app/${app.id}/live`); }}
-                    >
-                      {'\u{1F310}'} Live
-                      {(liveConnectionCounts.value[app.id] || 0) > 0 && (
-                        <span class="sidebar-count">{liveConnectionCounts.value[app.id]}</span>
-                      )}
-                    </a>
-                    <a
-                      href={`#/app/${app.id}/settings`}
-                      class={route === `/app/${app.id}/settings` ? 'active' : ''}
-                      onClick={(e) => { e.preventDefault(); navigate(`/app/${app.id}/settings`); }}
-                    >
-                      {'\u2699'} Settings
-                    </a>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-          {hasUnlinked && (
-            <div>
-              <a
-                href="#/app/__unlinked__/feedback"
-                class={`sidebar-app-item ${selAppId === '__unlinked__' ? 'active' : ''}`}
-                onClick={(e) => { e.preventDefault(); navigate('/app/__unlinked__/feedback'); }}
-                title={collapsed ? 'Unlinked' : undefined}
-              >
-                <span class="nav-icon">{'\u{1F517}'}</span>
-                <span class="nav-label">Unlinked</span>
-                {!collapsed && unlinkedCount.value > 0 && <span class="sidebar-count">{unlinkedCount.value}</span>}
-              </a>
-              {selAppId === '__unlinked__' && !collapsed && (
-                <div class="sidebar-subnav">
-                  <a
-                    href="#/app/__unlinked__/feedback"
-                    class={route.startsWith('/app/__unlinked__/feedback') ? 'active' : ''}
-                    onClick={(e) => { e.preventDefault(); navigate('/app/__unlinked__/feedback'); }}
-                  >
-                    {'\u{1F4CB}'} Feedback
-                  </a>
-                </div>
-              )}
-            </div>
-          )}
-
-          {!collapsed && liveSites.value.length > 0 && (
-            <>
-              <div class="sidebar-divider" />
-              <div class="sidebar-section-header">Sites</div>
-              {liveSites.value.map((site) => (
-                <div key={site.origin} class="sidebar-site-item" title={site.origin}>
-                  <span class="nav-icon">{'\u{1F310}'}</span>
-                  <span class="nav-label">{site.hostname}</span>
-                  <span class="sidebar-count">{site.count}</span>
-                </div>
-              ))}
-            </>
-          )}
-
-          <div class="sidebar-divider" />
-
-          {!collapsed && (
-            <div class="sidebar-section-header">Settings</div>
-          )}
-          {settingsItems.map((item) => (
-            <a
-              key={item.path}
-              href={`#${item.path}`}
-              class={route === item.path ? 'active' : ''}
-              onClick={(e) => { e.preventDefault(); navigate(item.path); }}
-              title={collapsed ? item.label : undefined}
-            >
-              <span class="nav-icon">{item.icon}</span>
-              <span class="nav-label">{item.label}</span>
-            </a>
-          ))}
-          <a
-            href="#"
-            onClick={(e) => {
-              e.preventDefault();
-              clearToken();
-              navigate('/login');
-            }}
-            title={collapsed ? 'Logout' : undefined}
-          >
-            <span class="nav-icon">{'\u21A9'}</span>
-            <span class="nav-label">Logout</span>
-          </a>
-        </nav>
-        {!collapsed && (
-          <SplitPane
-            direction="vertical"
-            ratio={sidebarSplitRatio.value}
-            splitId="sidebar-split"
-            onRatioChange={(_id, r) => setSidebarSplitRatio(r)}
-            first={
-              <div class={`sidebar-sessions ${sessionsDrawerOpen.value ? 'open' : 'closed'}`} style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-                <div class="sidebar-sessions-header">
-                  <span class={`sessions-chevron ${sessionsDrawerOpen.value ? 'expanded' : ''}`} onClick={toggleSessionsDrawer}>{'\u25B8'}</span>
-                  Sessions ({visibleSessions.length})
-                  {runningSessions > 0 && <span class="sidebar-running-badge">{runningSessions} running</span>}
-                  {waitingCount > 0 && <span class="sidebar-waiting-badge">{waitingCount} waiting</span>}
-                  <div class="auto-jump-dropdown" onClick={(e) => e.stopPropagation()}>
-                      <span
-                        class={`auto-jump-trigger${autoJumpWaiting.value ? ' active' : ''}`}
-                        onClick={() => { autoJumpMenuOpen.value = !autoJumpMenuOpen.value; }}
-                      >
-                        aj {autoJumpWaiting.value ? '\u25CF' : '\u25CB'} {'\u25BE'}
-                      </span>
-                      {autoJumpMenuOpen.value && (
-                        <div class="auto-jump-menu" onClick={(e) => e.stopPropagation()}>
-                          <label>
-                            <input
-                              type="checkbox"
-                              checked={autoJumpWaiting.value}
-                              onChange={(e) => { autoJumpWaiting.value = (e.target as HTMLInputElement).checked; }}
-                            />
-                            Enable Auto-Jump
-                          </label>
-                          <div class="id-dropdown-separator" />
-                          <label>
-                            <input
-                              type="checkbox"
-                              checked={autoJumpInterrupt.value}
-                              onChange={(e) => { autoJumpInterrupt.value = (e.target as HTMLInputElement).checked; }}
-                            />
-                            Interrupt typing
-                          </label>
-                          <label>
-                            <input
-                              type="checkbox"
-                              checked={autoJumpDelay.value}
-                              onChange={(e) => { autoJumpDelay.value = (e.target as HTMLInputElement).checked; }}
-                            />
-                            3s delay <kbd>{'\u2303\u21E7'}X</kbd>
-                          </label>
-                          <label>
-                            <input
-                              type="checkbox"
-                              checked={autoJumpShowPopup.value}
-                              onChange={(e) => { autoJumpShowPopup.value = (e.target as HTMLInputElement).checked; }}
-                            />
-                            Show paused popup
-                          </label>
-                          <label>
-                            <input
-                              type="checkbox"
-                              checked={autoCloseWaitingPanel.value}
-                              onChange={(e) => { autoCloseWaitingPanel.value = (e.target as HTMLInputElement).checked; }}
-                            />
-                            Auto-close panel
-                          </label>
-                          <label>
-                            <input
-                              type="checkbox"
-                              checked={autoJumpHandleBounce.value}
-                              onChange={(e) => { autoJumpHandleBounce.value = (e.target as HTMLInputElement).checked; }}
-                            />
-                            Handle bounce
-                          </label>
-                          <div class="id-dropdown-separator" />
-                          <label>
-                            <input
-                              type="checkbox"
-                              checked={autoJumpLogs.value}
-                              onChange={(e) => { autoJumpLogs.value = (e.target as HTMLInputElement).checked; }}
-                            />
-                            Log to console
-                          </label>
-                        </div>
-                      )}
-                    </div>
-                  <button
-                    class="sidebar-new-terminal-btn"
-                    onClick={() => { termPickerOpen.value = { kind: 'claude' }; }}
-                    title="New Claude session (g c)"
-                  >+</button>
-                </div>
-                {sessionsDrawerOpen.value && (
-                  <>
-                    <div class="sidebar-sessions-filters">
-                      <input
-                        type="text"
-                        placeholder="Search..."
-                        value={sessionSearchQuery.value}
-                        onInput={(e) => (sessionSearchQuery.value = (e.target as HTMLInputElement).value)}
-                        onClick={(e) => e.stopPropagation()}
-                      />
-                      <button
-                        class={`sidebar-filter-toggle-btn ${filtersOpen ? 'active' : ''}`}
-                        onClick={(e) => { e.stopPropagation(); toggleSessionFiltersOpen(); }}
-                        title="Filter options"
-                      >
-                        {'\u2630'}
-                        {activeFilterCount < 5 && <span class="filter-active-dot" />}
-                      </button>
-                    </div>
-                    {filtersOpen && (
-                      <div class="sidebar-filter-panel" onClick={(e) => e.stopPropagation()}>
-                        <div class="sidebar-filter-section">
-                          <div class="sidebar-filter-section-label">Status</div>
-                          <div class="sidebar-filter-checkboxes">
-                            {(['running', 'pending', 'completed', 'failed', 'killed'] as const).map((status) => (
-                              <label key={status} class="sidebar-filter-checkbox">
-                                <input
-                                  type="checkbox"
-                                  checked={activeStatusFilters.has(status)}
-                                  onChange={() => toggleStatusFilter(status)}
-                                />
-                                <span class={`session-status-dot ${status}`} />
-                                <span>{status}</span>
-                                {(statusCounts[status] || 0) > 0 && (
-                                  <span class="sidebar-filter-count">{statusCounts[status]}</span>
-                                )}
-                              </label>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                    <div class="sidebar-sessions-list" style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
-                      {waitingAgents.length > 0 && (
-                        <>
-                          <div class="sidebar-section-label waiting-section-label">
-                            Waiting for input ({waitingAgents.length})
-                          </div>
-                          {waitingAgents.map(renderItem)}
-                        </>
-                      )}
-                      {restAgents.length > 0 && (
-                        <>
-                          <div class="sidebar-section-label">Agent Sessions ({restAgents.length})</div>
-                          {restAgents.map(renderItem)}
-                        </>
-                      )}
-                    </div>
-                  </>
-                )}
-              </div>
-            }
-            second={
-              <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-                <div class="sidebar-terminals" style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: filesDrawerOpen.value ? '30px' : 0, overflow: 'hidden' }}>
-                  <div class="sidebar-terminals-header">
-                    Terminals ({terminals.length})
-                    <button
-                      class="sidebar-new-terminal-btn"
-                      onClick={() => { termPickerOpen.value = { kind: 'new' }; }}
-                      title="New terminal (g t)"
-                    >+</button>
-                  </div>
-                  {terminals.length > 0 && (
-                    <div class="sidebar-terminals-list" style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
-                      {terminals.map(renderItem)}
-                    </div>
-                  )}
-                </div>
-                <SidebarFilesDrawer
-                  appId={selectedAppId.value}
-                  open={filesDrawerOpen.value}
-                  onToggle={() => { filesDrawerOpen.value = !filesDrawerOpen.value; }}
-                />
-              </div>
-            }
-          />
-        )}
-      </div>
-      {!collapsed && (
-        <div
-          class="sidebar-edge-handle"
-          onMouseDown={(e) => {
-            const startX = e.clientX;
-            const startW = width;
-            startDrag(e, 'ew-resize', (ev) => setSidebarWidth(startW + (ev.clientX - startX)), e.currentTarget as HTMLElement);
-          }}
-        />
-      )}
-    </>
-  );
-
-  const pageJSX = (
-    <>
-      <ControlBar />
-      <div class="main" style={{
-        flex: 1, minHeight: 0, overflow: 'auto',
-      }}>
-        <RequestPanel />
-        {children}
-      </div>
-    </>
-  );
-
   return (
     <div class="layout">
       <PaneTree
         node={layoutTree.value.root}
-        sidebarContent={sidebarJSX}
-        pageContent={pageJSX}
       />
       <PopoutPanel />
       {termPickerOpen.value && (

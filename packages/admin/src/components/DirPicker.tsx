@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef } from 'preact/hooks';
+import { useState, useRef } from 'preact/hooks';
 import { api } from '../lib/api.js';
+import { PopupMenu } from './PopupMenu.js';
 
 interface DirPickerProps {
   value: string;
@@ -14,18 +15,7 @@ export function DirPicker({ value, onInput, placeholder }: DirPickerProps) {
   const [dirs, setDirs] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    function onClickOutside(e: MouseEvent) {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    }
-    document.addEventListener('mousedown', onClickOutside);
-    return () => document.removeEventListener('mousedown', onClickOutside);
-  }, [open]);
+  const browseRef = useRef<HTMLButtonElement>(null);
 
   async function browse(path?: string) {
     setLoading(true);
@@ -63,7 +53,7 @@ export function DirPicker({ value, onInput, placeholder }: DirPickerProps) {
   }
 
   return (
-    <div class="dir-picker" ref={containerRef}>
+    <div class="dir-picker">
       <div class="dir-picker-input-row">
         <input
           type="text"
@@ -72,12 +62,12 @@ export function DirPicker({ value, onInput, placeholder }: DirPickerProps) {
           placeholder={placeholder}
           style={{ flex: 1 }}
         />
-        <button type="button" class="btn btn-small" onClick={handleOpen} title="Browse directories">
+        <button ref={browseRef} type="button" class="btn btn-small" onClick={handleOpen} title="Browse directories">
           ...
         </button>
       </div>
       {open && (
-        <div class="dir-picker-dropdown">
+        <PopupMenu anchorRef={browseRef} onClose={() => setOpen(false)} className="dir-picker-dropdown">
           <div class="dir-picker-path">
             {parent && (
               <button type="button" class="dir-picker-up" onClick={goUp} title="Go up">
@@ -118,7 +108,7 @@ export function DirPicker({ value, onInput, placeholder }: DirPickerProps) {
               ))}
             </div>
           )}
-        </div>
+        </PopupMenu>
       )}
     </div>
   );

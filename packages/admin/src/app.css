@@ -997,6 +997,46 @@ body {
   font-weight: 600;
 }
 
+/* Portal-based popup menu — escapes overflow:hidden via position:fixed at body level */
+.popup-menu {
+  position: fixed;
+  z-index: 10000;
+  min-width: 200px;
+  background: var(--pw-bg-surface);
+  border: 1px solid var(--pw-border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  padding: 4px 0;
+}
+
+.popup-menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  font-size: 12px;
+  text-align: left;
+  border: none;
+  background: none;
+  color: var(--pw-text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.popup-menu-item:hover {
+  background: var(--pw-bg-hover, var(--pw-sidebar));
+}
+
+.popup-menu-item.active {
+  font-weight: 600;
+  color: var(--pw-primary, #3b82f6);
+}
+
+.popup-menu-divider {
+  height: 1px;
+  background: var(--pw-border);
+  margin: 4px 0;
+}
+
 .control-bar-menu {
   position: absolute;
   top: 100%;
@@ -1841,10 +1881,6 @@ input:focus, select:focus, textarea:focus {
 }
 
 /* Directory picker */
-.dir-picker {
-  position: relative;
-}
-
 .dir-picker-input-row {
   display: flex;
   gap: 6px;
@@ -1857,17 +1893,12 @@ input:focus, select:focus, textarea:focus {
 }
 
 .dir-picker-dropdown {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  right: 0;
-  margin-top: 4px;
   background: var(--pw-bg-surface);
   border: 1px solid var(--pw-border);
   border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
-  z-index: 100;
   max-height: 280px;
+  min-width: 300px;
   display: flex;
   flex-direction: column;
 }
@@ -7888,7 +7919,8 @@ body.pw-isolate {
   flex-shrink: 0;
   background: var(--pw-terminal-border, #333);
   transition: background 0.15s ease;
-  z-index: 1;
+  z-index: 10;
+  position: relative;
 }
 
 .pane-split-divider:hover,
@@ -7918,8 +7950,100 @@ body.pw-isolate {
 }
 
 .pane-leaf-focused {
-  outline: 2px solid var(--pw-accent, #6366f1);
-  outline-offset: -2px;
+  box-shadow: inset 0 0 0 2px var(--pw-accent, #6366f1);
+  z-index: 2;
+  position: relative;
+}
+
+.singleton-handle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--pw-text-muted, #64748b);
+  background: var(--pw-terminal-tab-bg, #111);
+  border-bottom: 1px solid var(--pw-terminal-border, #333);
+  cursor: grab;
+  user-select: none;
+  flex-shrink: 0;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  min-height: 22px;
+}
+
+.singleton-collapse-icon {
+  cursor: pointer;
+  font-size: 10px;
+  transition: transform 0.15s;
+  display: inline-block;
+  opacity: 0.6;
+}
+
+.singleton-collapse-icon.expanded {
+  transform: rotate(90deg);
+}
+
+.singleton-collapse-icon:hover {
+  opacity: 1;
+}
+
+.singleton-label {
+  white-space: nowrap;
+}
+
+.pane-leaf-collapsed {
+  flex: 0 0 auto !important;
+}
+
+.popout-singleton-bar {
+  gap: 6px;
+}
+.popout-singleton-bar .popout-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Pop-in pane picker overlay */
+.pop-in-picker-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(99, 102, 241, 0.15);
+  border: 2px solid rgba(99, 102, 241, 0.5);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 100;
+  transition: background 0.1s;
+}
+.pop-in-picker-overlay:hover {
+  background: rgba(99, 102, 241, 0.3);
+  border-color: rgba(99, 102, 241, 0.8);
+}
+.pop-in-picker-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #6366f1;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  pointer-events: none;
+}
+.pane-leaf {
+  position: relative;
+}
+.pane-leaf-empty {
+  position: relative;
+}
+.pane-leaf-singleton {
+  position: relative;
+}
+
+.pane-leaf-collapsed .pane-leaf-body {
+  display: none;
 }
 
 .pane-leaf-tabs {
@@ -8031,14 +8155,7 @@ body.pw-isolate {
 
 /* Sidebar File Tree */
 
-.sidebar-file-tree-controls {
-  display: flex;
-  gap: 4px;
-  padding: 3px 8px;
-  border-bottom: 1px solid rgba(255,255,255,0.05);
-}
-
-.sidebar-file-tree-controls button {
+.sidebar-file-tree-toggle {
   border: none;
   background: transparent;
   color: #64748b;
@@ -8048,7 +8165,7 @@ body.pw-isolate {
   font-size: 11px;
 }
 
-.sidebar-file-tree-controls button:hover { color: #e2e8f0; background: rgba(255,255,255,0.06); }
+.sidebar-file-tree-toggle:hover { color: #e2e8f0; background: rgba(255,255,255,0.06); }
 
 .sidebar-file-entry {
   display: flex;
@@ -8320,6 +8437,12 @@ body.pw-isolate {
 }
 
 .file-companion-selection-toolbar button:hover { background: #0f172a; }
+
+.file-companion .fv-markdown {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
 
 .file-companion-toast {
   position: absolute;

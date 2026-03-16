@@ -2,11 +2,13 @@ import { useRef, useCallback, useEffect } from 'preact/hooks';
 import { signal } from '@preact/signals';
 import { copyText, copyWithTooltip } from '../lib/clipboard.js';
 import { SessionViewToggle, type ViewMode } from './SessionViewToggle.js';
+import { PopupMenu } from './PopupMenu.js';
 import {
   type PopoutPanelState,
   type CompanionType,
   popoutPanels,
   allSessions,
+  sessionMapComputed,
   exitedSessions,
   popBackIn,
   updatePanel,
@@ -64,6 +66,7 @@ import { navigate, selectedAppId } from '../lib/state.js';
 import { showHotkeyHints } from '../lib/settings.js';
 import { api } from '../lib/api.js';
 import { renderTabContent } from './PaneContent.js';
+import { setFocusedLeaf } from '../lib/pane-tree.js';
 
 export const popoutIdMenuOpen = signal<string | null>(null);
 const popoutStatusMenuOpen = signal<{ sessionId: string; panelId: string; x: number; y: number } | null>(null);
@@ -140,8 +143,7 @@ function PanelTabBadge({ tabNum }: { tabNum: number }) {
 function PanelView({ panel }: { panel: PopoutPanelState }) {
   const ids = panel.sessionIds;
   const activeId = panel.activeSessionId || ids[0];
-  const sessions = allSessions.value;
-  const sessionMap = new Map(sessions.map((s: any) => [s.id, s]));
+  const sessionMap = sessionMapComputed.value;
   const session = sessionMap.get(activeId);
   const isExited = activeId ? exitedSessions.value.has(activeId) : false;
   const viewMode = activeId ? getViewMode(activeId, session?.permissionProfile) : 'terminal';
@@ -153,6 +155,11 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
   const splitDragging = useRef(false);
   const prevActiveRef = useRef<string | null>(null);
   const startPos = useRef({ mx: 0, my: 0, x: 0, y: 0, w: 0, h: 0, dockedHeight: 0, dockedTopOffset: 0, dockedBaseTop: 0 });
+  const idMenuBtnRef = useRef<HTMLSpanElement>(null);
+  const idMenuBtnRef2 = useRef<HTMLSpanElement>(null);
+  const windowMenuBtnRef = useRef<HTMLButtonElement>(null);
+  const windowMenuBtnRef2 = useRef<HTMLButtonElement>(null);
+  const companionMenuBtnRef = useRef<HTMLButtonElement>(null);
 
   // Sync companions when active session changes
   useEffect(() => {
@@ -357,6 +364,19 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
   const tabsRef = useRef<HTMLDivElement>(null);
 
   function tabLabel(sid: string) {
+    if (sid === 'view:page') return 'Page';
+    if (sid === 'view:controlbar') return 'Control Bar';
+    if (sid === 'view:sessions-list') return 'Sessions';
+    if (sid === 'view:terminals') return 'Terminals';
+    if (sid === 'view:files') return 'Files';
+    if (sid === 'view:nav') return 'Nav';
+    if (sid === 'view:feedback') return 'Feedback';
+    if (sid === 'view:aggregate') return 'Aggregate';
+    if (sid === 'view:sessions-page') return 'Sessions';
+    if (sid === 'view:live') return 'Live';
+    if (sid.startsWith('view:files:')) return 'Files';
+    if (sid.startsWith('view:git:')) return 'Git Changes';
+    if (sid.startsWith('view:')) return sid.slice(5);
     const isJsonl = sid.startsWith('jsonl:');
     const isFeedback = sid.startsWith('feedback:');
     const isIframe = sid.startsWith('iframe:');
@@ -424,8 +444,230 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
         class={`${docked ? `popout-docked${isLeftDocked ? ' docked-left' : ''}` : 'popout-floating'}${isMinimized ? ' minimized' : ''}${isFocused ? ' panel-focused' : ''}${isActive ? ' panel-active' : ''}${panel.alwaysOnTop ? ' always-on-top' : ''}`}
         style={panelStyle}
         data-panel-id={panel.id}
-        onMouseDown={() => { activePanelId.value = panel.id; bringToFront(panel.id); if (panel.activeSessionId) focusSessionTerminal(panel.activeSessionId); }}
+        onMouseDown={() => { activePanelId.value = panel.id; bringToFront(panel.id); setFocusedLeaf(null); if (panel.activeSessionId) focusSessionTerminal(panel.activeSessionId); }}
       >
+      {ids.length === 1 ? (
+      <div class="popout-tab-bar popout-singleton-bar" onMouseDown={onHeaderDragStart} onDblClick={() => {
+        if (!docked) { updatePanel(panel.id, { minimized: !panel.minimized }); persistPopoutState(); }
+      }}>
+        {activeId && !activeId.startsWith('view:') && (
+          <span
+            class={`status-dot${isExited ? ' exited' : ''}${isPlain ? ' plain' : ''}${!isExited ? ` ${sessionInputStates.value.get(activeId) || ''}` : ''}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+              popoutStatusMenuOpen.value = { sessionId: activeId, panelId: panel.id, x: rect.left, y: rect.bottom + 4 };
+            }}
+          />
+        )}
+        {activeId && activeId.startsWith('view:') && (
+          <span class="singleton-label" style="font-weight:600;font-size:12px;margin:0 8px;white-space:nowrap">{tabLabel(activeId)}</span>
+        )}
+        {activeId && !activeId.startsWith('view:') && (
+          <>
+            <span
+              ref={idMenuBtnRef}
+              class="tmux-id-label"
+              onClick={(e) => { e.stopPropagation(); popoutIdMenuOpen.value = showIdMenu ? null : activeId; }}
+            >
+              pw-{activeId.slice(-6)} <span class="id-dropdown-caret">{'\u25BE'}</span>
+            </span>
+            {showIdMenu && (
+              <PopupMenu anchorRef={idMenuBtnRef} onClose={() => { popoutIdMenuOpen.value = null; }} className="id-dropdown-menu">
+                <button class="popup-menu-item" onClick={(e) => { e.stopPropagation(); popoutIdMenuOpen.value = null; copyWithTooltip(activeId, e as any); }}>
+                  Copy {activeId} <kbd>C</kbd>
+                </button>
+                <button class="popup-menu-item" onClick={(e) => { e.stopPropagation(); popoutIdMenuOpen.value = null; copyWithTooltip(buildTmuxAttachCmd(activeId, sessionMap.get(activeId)), e as any); }}>
+                  Copy tmux command <kbd>T</kbd>
+                </button>
+                {session?.jsonlPath && (
+                  <button class="popup-menu-item" onClick={(e) => { e.stopPropagation(); popoutIdMenuOpen.value = null; copyWithTooltip(session.jsonlPath, e as any); }}>
+                    Copy JSONL path <kbd>J</kbd>
+                  </button>
+                )}
+                {session?.jsonlPath && (() => {
+                  const panelRight = panel.rightPaneTabs || [];
+                  const jsonlActive = panelRight.includes(companionTabId(activeId, 'jsonl')) && panel.splitEnabled;
+                  return (
+                    <button class="popup-menu-item" onClick={() => { popoutIdMenuOpen.value = null; togglePanelCompanion(panel.id, activeId, 'jsonl'); }}>
+                      {jsonlActive ? '\u2713 ' : ''}JSONL companion <kbd>L</kbd>
+                    </button>
+                  );
+                })()}
+                {session?.feedbackId && (() => {
+                  const panelRight = panel.rightPaneTabs || [];
+                  const fbActive = panelRight.includes(companionTabId(activeId, 'feedback')) && panel.splitEnabled;
+                  return (
+                    <button class="popup-menu-item" onClick={() => { popoutIdMenuOpen.value = null; togglePanelCompanion(panel.id, activeId, 'feedback'); }}>
+                      {fbActive ? '\u2713 ' : ''}Feedback companion <kbd>F</kbd>
+                    </button>
+                  );
+                })()}
+                {session?.url && (() => {
+                  const panelRight = panel.rightPaneTabs || [];
+                  const iframeActive = panelRight.includes(companionTabId(activeId, 'iframe')) && panel.splitEnabled;
+                  return (
+                    <button class="popup-menu-item" onClick={() => { popoutIdMenuOpen.value = null; togglePanelCompanion(panel.id, activeId, 'iframe'); }}>
+                      {iframeActive ? '\u2713 ' : ''}Page iframe <kbd>I</kbd>
+                    </button>
+                  );
+                })()}
+                {(() => {
+                  const panelRight = panel.rightPaneTabs || [];
+                  const termActive = panelRight.includes(companionTabId(activeId, 'terminal')) && panel.splitEnabled;
+                  return (
+                    <button class="popup-menu-item" onClick={(e: any) => {
+                      e.stopPropagation();
+                      popoutIdMenuOpen.value = null;
+                      if (termActive) {
+                        togglePanelCompanion(panel.id, activeId, 'terminal');
+                      } else {
+                        termPickerOpen.value = { kind: 'companion', sessionId: activeId, panelId: panel.id };
+                      }
+                    }}>
+                      {termActive ? '\u2713 ' : ''}Terminal companion <kbd>M</kbd>
+                    </button>
+                  );
+                })()}
+                {session?.isHarness && session?.harnessAppPort && (
+                  <button class="popup-menu-item" onClick={() => {
+                    const host = session.isRemote && session.launcherHostname ? session.launcherHostname : 'localhost';
+                    openUrlCompanion(`http://${host}:${session.harnessAppPort}`);
+                    popoutIdMenuOpen.value = null;
+                  }}>
+                    Open App <kbd>O</kbd>
+                  </button>
+                )}
+                <div class="popup-menu-divider" />
+                <button class="popup-menu-item" onClick={() => { popoutIdMenuOpen.value = null; popBackIn(activeId); }}>Pop back to tab bar <kbd>P</kbd></button>
+                <button class="popup-menu-item" onClick={() => { popoutIdMenuOpen.value = null; window.open(`#/session/${activeId}`, '_blank', 'width=900,height=600,menubar=no,toolbar=no'); }}>Open in window <kbd>W</kbd></button>
+                <button class="popup-menu-item" onClick={() => { popoutIdMenuOpen.value = null; window.open(`#/session/${activeId}`, '_blank'); }}>Open in browser tab <kbd>B</kbd></button>
+                {!isExited && (
+                  <button class="popup-menu-item" onClick={() => { popoutIdMenuOpen.value = null; api.openSessionInTerminal(activeId).catch(() => {}); }}>Open in Terminal.app <kbd>A</kbd></button>
+                )}
+              </PopupMenu>
+            )}
+          </>
+        )}
+        {feedbackPath && (
+          <a
+            href={`#${feedbackPath}`}
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (!dragMoved.current) navigate(feedbackPath); }}
+            class="feedback-title-link"
+            title={session?.feedbackTitle || 'View feedback'}
+          >
+            {session?.feedbackTitle || 'View feedback'}
+          </a>
+        )}
+        <span style="flex:1" />
+        <div class="popout-header-actions">
+          {activeId && (session?.permissionProfile === 'auto' || session?.permissionProfile === 'yolo') && (
+            <select
+              class="view-mode-select"
+              value={viewMode}
+              onChange={(e) => setViewMode(activeId, (e.target as HTMLSelectElement).value as ViewMode)}
+            >
+              <option value="terminal">Term</option>
+              <option value="structured">Struct</option>
+              <option value="split">Split</option>
+            </select>
+          )}
+          {activeId && session?.feedbackId && (
+            <button class="btn-resolve" onClick={() => resolveSession(activeId, session.feedbackId)} title="Resolve">Resolve</button>
+          )}
+          {activeId && !activeId.startsWith('view:') && (isExited ? (
+            <button onClick={() => resumeSession(activeId)} title="Resume">Resume</button>
+          ) : (
+            <button class="btn-kill" onClick={() => killSession(activeId)} title="Kill">Kill</button>
+          ))}
+        </div>
+        <div class="popout-window-controls">
+          <div class="window-menu-wrapper">
+            <button
+              class="btn-window-menu"
+              onClick={(e) => { e.stopPropagation(); popoutWindowMenuOpen.value = popoutWindowMenuOpen.value === panel.id ? null : panel.id; }}
+              title="Window options"
+            >
+              {'\u2261'}
+            </button>
+            {popoutWindowMenuOpen.value === panel.id && (
+              <div class="window-menu" onClick={(e) => e.stopPropagation()}>
+                {activeId && (
+                  <button onClick={() => { popoutWindowMenuOpen.value = null; popBackIn(activeId); }}>
+                    {'\u2B05'} Pop in <kbd>S</kbd>
+                  </button>
+                )}
+                <button onClick={() => { popoutWindowMenuOpen.value = null; toggleAlwaysOnTop(panel.id); }}>
+                  {panel.alwaysOnTop ? '\u2713 ' : ''}{'\u{1F4CC}'} Pin on top <kbd>W</kbd>
+                </button>
+                {!docked && (
+                  <button onClick={() => { popoutWindowMenuOpen.value = null; updatePanel(panel.id, { minimized: !panel.minimized }); persistPopoutState(); }}>
+                    {isMinimized ? '\u25A1 Restore' : '\u2212 Minimize'} <kbd>Space</kbd>
+                  </button>
+                )}
+                {!docked && (
+                  <button onClick={() => {
+                    popoutWindowMenuOpen.value = null;
+                    if (panel.maximized) {
+                      if (panel.preMaximizeRect) {
+                        updatePanel(panel.id, { maximized: false, floatingRect: panel.preMaximizeRect, preMaximizeRect: undefined });
+                      } else {
+                        updatePanel(panel.id, { maximized: false });
+                      }
+                    } else {
+                      updatePanel(panel.id, {
+                        maximized: true,
+                        minimized: false,
+                        preMaximizeRect: { ...panel.floatingRect },
+                        floatingRect: { x: 0, y: 40, w: window.innerWidth, h: window.innerHeight - 40 },
+                      });
+                    }
+                    persistPopoutState();
+                  }}>
+                    {panel.maximized ? '\u25A3 Restore size' : '\u25A1 Maximize'} <kbd>M</kbd>
+                  </button>
+                )}
+                <div class="window-menu-separator" />
+                <div class="window-menu-dock-row">
+                  <button
+                    class={isLeftDocked ? 'dock-active' : ''}
+                    onClick={() => {
+                      popoutWindowMenuOpen.value = null;
+                      if (isLeftDocked) {
+                        updatePanel(panel.id, { docked: false, minimized: false, grabY: 0 });
+                      } else {
+                        updatePanel(panel.id, { docked: true, dockedSide: 'left', dockedTopOffset: 0, minimized: false, grabY: 0, dockedHeight: docked ? panel.dockedHeight : panel.floatingRect.h, dockedWidth: docked ? panel.dockedWidth : panel.floatingRect.w });
+                      }
+                      persistPopoutState();
+                      window.dispatchEvent(new Event('resize'));
+                    }}
+                  >
+                    {'\u25C0'} Left <kbd>A</kbd>
+                  </button>
+                  <button
+                    class={docked && !isLeftDocked ? 'dock-active' : ''}
+                    onClick={() => {
+                      popoutWindowMenuOpen.value = null;
+                      if (docked && !isLeftDocked) {
+                        updatePanel(panel.id, { docked: false, minimized: false, grabY: 0 });
+                      } else {
+                        updatePanel(panel.id, { docked: true, dockedSide: 'right', dockedTopOffset: 0, minimized: false, grabY: 0, dockedHeight: docked ? panel.dockedHeight : panel.floatingRect.h, dockedWidth: docked ? panel.dockedWidth : panel.floatingRect.w });
+                      }
+                      persistPopoutState();
+                      window.dispatchEvent(new Event('resize'));
+                    }}
+                  >
+                    Right {'\u25B6'} <kbd>D</kbd>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+          <button class="btn-close-panel" onClick={() => { updatePanel(panel.id, { visible: false }); persistPopoutState(); }} title="Hide panel">&times;</button>
+        </div>
+      </div>
+      ) : (
+      <>
       <div class="popout-tab-bar" onMouseDown={onHeaderDragStart} onDblClick={() => {
         if (!docked) {
           updatePanel(panel.id, { minimized: !panel.minimized });
@@ -707,16 +949,20 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
           {activeId && session?.feedbackId && (
             <button class="btn-resolve" onClick={() => resolveSession(activeId, session.feedbackId)} title="Resolve">Resolve</button>
           )}
-          {activeId && (isExited ? (
+          {activeId && !activeId.startsWith('view:') && (isExited ? (
             <button onClick={() => resumeSession(activeId)} title="Resume">Resume</button>
           ) : (
             <button class="btn-kill" onClick={() => killSession(activeId)} title="Kill">Kill</button>
           ))}
         </div>
       </div>
+      </>
+      )}
       {!isMinimized && !isSplit && (
         <div class="popout-body">
-          {activeId && (
+          {activeId && (activeId.startsWith('view:') ? (
+            renderTabContent(activeId, true, sessionMap)
+          ) : (
             <SessionViewToggle
               key={activeId}
               sessionId={activeId}
@@ -726,7 +972,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
               permissionProfile={session?.permissionProfile}
               mode={viewMode}
             />
-          )}
+          ))}
         </div>
       )}
       {!isMinimized && isSplit && (
@@ -1057,7 +1303,7 @@ export function PopoutPanel() {
   const guides = snapGuides.value;
   const statusMenu = popoutStatusMenuOpen.value;
   const hotkeyMenu = popoutHotkeyMenuOpen.value;
-  const sessions = allSessions.value;
+  const sessions = allSessions.value;  // needed for find() calls below
   const exited = exitedSessions.value;
 
   useEffect(() => {
@@ -1092,14 +1338,14 @@ export function PopoutPanel() {
   useEffect(() => {
     const menuSessionId = popoutIdMenuOpen.value;
     if (!menuSessionId) return;
-    const sessionMap = new Map(sessions.map((s: any) => [s.id, s]));
+    const sMap = sessionMapComputed.value;
     const onKey = (e: KeyboardEvent) => {
       const key = e.key.toLowerCase();
       let handled = true;
       if (key === 'c') {
         copyText(menuSessionId);
       } else if (key === 't') {
-        copyText(buildTmuxAttachCmd(menuSessionId, sessionMap.get(menuSessionId)));
+        copyText(buildTmuxAttachCmd(menuSessionId, sMap.get(menuSessionId)));
       } else if (key === 'p') {
         popBackIn(menuSessionId);
       } else if (key === 'w') {
@@ -1109,22 +1355,22 @@ export function PopoutPanel() {
       } else if (key === 'a' && !exited.has(menuSessionId)) {
         api.openSessionInTerminal(menuSessionId);
       } else if (key === 'j') {
-        const s = sessionMap.get(menuSessionId);
+        const s = sMap.get(menuSessionId);
         if (s?.jsonlPath) copyText(s.jsonlPath);
       } else if (key === 'l') {
-        const s = sessionMap.get(menuSessionId);
+        const s = sMap.get(menuSessionId);
         if (s?.jsonlPath) {
           const ownerPanel = panels.find((p) => p.sessionIds.includes(menuSessionId));
           if (ownerPanel) togglePanelCompanion(ownerPanel.id, menuSessionId, 'jsonl');
         }
       } else if (key === 'f') {
-        const s = sessionMap.get(menuSessionId);
+        const s = sMap.get(menuSessionId);
         if (s?.feedbackId) {
           const ownerPanel = panels.find((p) => p.sessionIds.includes(menuSessionId));
           if (ownerPanel) togglePanelCompanion(ownerPanel.id, menuSessionId, 'feedback');
         }
       } else if (key === 'i') {
-        const s = sessionMap.get(menuSessionId);
+        const s = sMap.get(menuSessionId);
         if (s?.url) {
           const ownerPanel = panels.find((p) => p.sessionIds.includes(menuSessionId));
           if (ownerPanel) togglePanelCompanion(ownerPanel.id, menuSessionId, 'iframe');

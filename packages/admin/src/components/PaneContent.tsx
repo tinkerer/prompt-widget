@@ -5,12 +5,25 @@ import { IframeCompanionView } from './IframeCompanionView.js';
 import { IsolateCompanionView } from './IsolateCompanionView.js';
 import { TerminalCompanionView } from './TerminalCompanionView.js';
 import { FileCompanionView } from './FileCompanionView.js';
+import { SessionsListView } from './SessionsListView.js';
+import { TerminalsListView } from './TerminalsListView.js';
+import { FilesView } from './FilesView.js';
+import { SidebarNavView } from './SidebarNavView.js';
+import { SidebarFilesDrawer } from './SidebarFilesDrawer.js';
+import { GitChangesView } from './GitChangesView.js';
+import { PageView } from './PageView.js';
+import { ControlBar } from './ControlBar.js';
+import { FeedbackListPage } from '../pages/FeedbackListPage.js';
+import { AggregatePage } from '../pages/AggregatePage.js';
+import { SessionsPage } from '../pages/SessionsPage.js';
+import { LiveConnectionsPage } from '../pages/LiveConnectionsPage.js';
 import {
   getTerminalCompanion,
   getViewMode,
   setSessionInputState,
   markSessionExited,
 } from '../lib/sessions.js';
+import { applications, selectedAppId } from '../lib/state.js';
 
 export function renderTabContent(
   sid: string,
@@ -18,6 +31,46 @@ export function renderTabContent(
   sessionMap: Map<string, any>,
   onExit?: (exitCode: number, terminalText: string) => void,
 ) {
+  // View tabs (sidebar sections rendered as pane content)
+  const isView = sid.startsWith('view:');
+  if (isView) {
+    return (
+      <div key={sid} style={{ display: isVisible ? 'flex' : 'none', width: '100%', flex: 1, minHeight: 0 }}>
+        {sid === 'view:page' ? (
+          <PageView />
+        ) : sid === 'view:feedback' ? (
+          (() => { const aid = selectedAppId.value || applications.value[0]?.id; return aid ? <FeedbackListPage appId={aid} /> : <div style={{ padding: 16, color: 'var(--pw-text-muted)' }}>No apps configured</div>; })()
+        ) : sid === 'view:aggregate' ? (
+          (() => { const aid = selectedAppId.value || applications.value[0]?.id; return aid ? <AggregatePage appId={aid} /> : <div style={{ padding: 16, color: 'var(--pw-text-muted)' }}>No apps configured</div>; })()
+        ) : sid === 'view:sessions-page' ? (
+          <SessionsPage appId={selectedAppId.value} />
+        ) : sid === 'view:live' ? (
+          <LiveConnectionsPage appId={selectedAppId.value} />
+        ) : sid === 'view:controlbar' ? (
+          <ControlBar />
+        ) : sid === 'view:sessions-list' ? (
+          <SessionsListView />
+        ) : sid === 'view:terminals' ? (
+          <TerminalsListView />
+        ) : sid === 'view:files' ? (
+          <FilesView />
+        ) : sid === 'view:nav' ? (
+          <SidebarNavView />
+        ) : sid.startsWith('view:files:') ? (
+          <SidebarFilesDrawer appId={sid.slice('view:files:'.length) || null} open={true} onToggle={() => {}} />
+        ) : sid.startsWith('view:git:') ? (
+          (() => {
+            const gitAppId = sid.slice('view:git:'.length);
+            const app = applications.value.find(a => a.id === gitAppId);
+            return <GitChangesView appId={gitAppId} projectDir={app?.projectDir || ''} />;
+          })()
+        ) : (
+          <div class="companion-error">Unknown view: {sid}</div>
+        )}
+      </div>
+    );
+  }
+
   const isJsonl = sid.startsWith('jsonl:');
   const isFeedback = sid.startsWith('feedback:');
   const isIframe = sid.startsWith('iframe:');

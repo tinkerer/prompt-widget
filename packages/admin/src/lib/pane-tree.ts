@@ -18,6 +18,8 @@ export interface LeafNode {
   panelType: 'tabs' | 'sidebar';
   tabs: string[];
   activeTabId: string | null;
+  singleton?: boolean;
+  collapsed?: boolean;
 }
 
 export type PaneNode = SplitNode | LeafNode;
@@ -32,6 +34,7 @@ export interface LayoutTree {
 export const SIDEBAR_LEAF_ID = 'sidebar-leaf';
 export const PAGE_LEAF_ID = 'page-leaf';
 export const SESSIONS_LEAF_ID = 'sessions-leaf';
+export const CONTROLBAR_LEAF_ID = 'controlbar-leaf';
 
 // --- Persistence ---
 
@@ -64,31 +67,113 @@ export function buildDefaultLayout(): LayoutTree {
       ratio: 0.15,
       children: [
         {
-          type: 'leaf',
-          id: SIDEBAR_LEAF_ID,
-          panelType: 'sidebar',
-          tabs: [],
-          activeTabId: null,
+          type: 'split',
+          id: 'sidebar-split',
+          direction: 'vertical',
+          ratio: 0.35,
+          children: [
+            {
+              type: 'leaf',
+              id: SIDEBAR_LEAF_ID,
+              panelType: 'tabs',
+              tabs: ['view:nav'],
+              activeTabId: 'view:nav',
+              singleton: true,
+            },
+            {
+              type: 'split',
+              id: 'sidebar-lower',
+              direction: 'vertical',
+              ratio: 0.45,
+              children: [
+                {
+                  type: 'leaf',
+                  id: 'sidebar-sessions',
+                  panelType: 'tabs',
+                  tabs: ['view:sessions-list'],
+                  activeTabId: 'view:sessions-list',
+                  singleton: true,
+                },
+                {
+                  type: 'split',
+                  id: 'sidebar-bottom',
+                  direction: 'vertical',
+                  ratio: 0.5,
+                  children: [
+                    {
+                      type: 'leaf',
+                      id: 'sidebar-terminals',
+                      panelType: 'tabs',
+                      tabs: ['view:terminals'],
+                      activeTabId: 'view:terminals',
+                      singleton: true,
+                    },
+                    {
+                      type: 'leaf',
+                      id: 'sidebar-files',
+                      panelType: 'tabs',
+                      tabs: ['view:files'],
+                      activeTabId: 'view:files',
+                      singleton: true,
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
         },
         {
           type: 'split',
           id: 'main-split',
           direction: 'vertical',
-          ratio: 1.0,
+          ratio: 0.04,
           children: [
             {
               type: 'leaf',
-              id: PAGE_LEAF_ID,
+              id: CONTROLBAR_LEAF_ID,
               panelType: 'tabs',
-              tabs: [],
-              activeTabId: null,
+              tabs: ['view:controlbar'],
+              activeTabId: 'view:controlbar',
+              singleton: true,
             },
             {
-              type: 'leaf',
-              id: SESSIONS_LEAF_ID,
-              panelType: 'tabs',
-              tabs: [],
-              activeTabId: null,
+              type: 'split',
+              id: 'content-split',
+              direction: 'horizontal',
+              ratio: 0.5,
+              children: [
+                {
+                  type: 'split',
+                  id: 'pages-left-split',
+                  direction: 'vertical',
+                  ratio: 1.0,
+                  children: [
+                    {
+                      type: 'leaf',
+                      id: PAGE_LEAF_ID,
+                      panelType: 'tabs',
+                      tabs: ['view:feedback'],
+                      activeTabId: 'view:feedback',
+                      singleton: true,
+                    },
+                    {
+                      type: 'leaf',
+                      id: SESSIONS_LEAF_ID,
+                      panelType: 'tabs',
+                      tabs: [],
+                      activeTabId: null,
+                    },
+                  ],
+                },
+                {
+                  type: 'leaf',
+                  id: 'aggregate-leaf',
+                  panelType: 'tabs',
+                  tabs: ['view:aggregate'],
+                  activeTabId: 'view:aggregate',
+                  singleton: true,
+                },
+              ],
             },
           ],
         },
@@ -98,9 +183,121 @@ export function buildDefaultLayout(): LayoutTree {
   };
 }
 
+// --- Migration ---
+
+function migrateTree(tree: LayoutTree): LayoutTree {
+  function find(node: PaneNode, id: string): LeafNode | null {
+    if (node.type === 'leaf') return node.id === id ? node : null;
+    if (node.type === 'split') return find(node.children[0], id) ?? find(node.children[1], id);
+    return null;
+  }
+  function findParentOf(root: PaneNode, id: string): SplitNode | null {
+    if (root.type === 'leaf') return null;
+    if (root.children[0].id === id || root.children[1].id === id) return root;
+    return findParentOf(root.children[0], id) ?? findParentOf(root.children[1], id);
+  }
+  const sidebar = find(tree.root, SIDEBAR_LEAF_ID);
+  if (sidebar) {
+    // Fix old panelType
+    if (sidebar.panelType === 'sidebar') sidebar.panelType = 'tabs';
+    // Ensure nav tab exists
+    if (!sidebar.tabs.includes('view:nav')) {
+      sidebar.tabs.unshift('view:nav');
+      if (!sidebar.activeTabId) sidebar.activeTabId = 'view:nav';
+    }
+    // Remove sessions-list from nav leaf (it belongs in its own leaf now)
+    sidebar.tabs = sidebar.tabs.filter(t => t !== 'view:sessions-list');
+    if (sidebar.activeTabId === 'view:sessions-list') sidebar.activeTabId = sidebar.tabs[0] ?? null;
+  }
+  // If there's no sidebar-sessions leaf, create one by wrapping sidebar-leaf in a split
+  const sidebarSessionsLeaf = find(tree.root, 'sidebar-sessions');
+  if (!sidebarSessionsLeaf && sidebar) {
+    const parent = findParentOf(tree.root, SIDEBAR_LEAF_ID);
+    if (parent) {
+      const idx = parent.children[0].id === SIDEBAR_LEAF_ID ? 0 : 1;
+      const newSplit: SplitNode = {
+        type: 'split',
+        id: 'sidebar-split',
+        direction: 'vertical',
+        ratio: 0.35,
+        children: [
+          { ...sidebar },
+          { type: 'leaf', id: 'sidebar-sessions', panelType: 'tabs', tabs: ['view:sessions-list'], activeTabId: 'view:sessions-list' },
+        ],
+      };
+      parent.children[idx] = newSplit as any;
+    }
+  } else if (sidebarSessionsLeaf) {
+    // Ensure sessions leaf has the sessions-list tab
+    if (!sidebarSessionsLeaf.tabs.includes('view:sessions-list')) {
+      sidebarSessionsLeaf.tabs.unshift('view:sessions-list');
+      if (!sidebarSessionsLeaf.activeTabId) sidebarSessionsLeaf.activeTabId = 'view:sessions-list';
+    }
+  }
+  // Migrate page-leaf: replace view:page with view:feedback
+  const pageLeaf = find(tree.root, PAGE_LEAF_ID);
+  if (pageLeaf) {
+    const hasPageView = pageLeaf.tabs.includes('view:page');
+    const hasFeedback = pageLeaf.tabs.includes('view:feedback');
+    if (hasPageView && !hasFeedback) {
+      pageLeaf.tabs = pageLeaf.tabs.map(t => t === 'view:page' ? 'view:feedback' : t);
+      if (pageLeaf.activeTabId === 'view:page') pageLeaf.activeTabId = 'view:feedback';
+    } else if (pageLeaf.tabs.length === 0) {
+      pageLeaf.tabs = ['view:feedback'];
+      pageLeaf.activeTabId = 'view:feedback';
+    }
+  }
+
+  // Migrate singleton flags on well-known leaves
+  const singletonLeafIds = [SIDEBAR_LEAF_ID, 'sidebar-sessions', 'sidebar-terminals', 'sidebar-files', CONTROLBAR_LEAF_ID, PAGE_LEAF_ID, 'aggregate-leaf'];
+  for (const id of singletonLeafIds) {
+    const leaf = find(tree.root, id);
+    if (leaf && !leaf.singleton) leaf.singleton = true;
+  }
+
+  // Migrate controlbar-leaf: create if missing
+  const controlbarLeaf = find(tree.root, CONTROLBAR_LEAF_ID);
+  if (!controlbarLeaf) {
+    function findSplit(node: PaneNode, id: string): SplitNode | null {
+      if (node.type === 'split') {
+        if (node.id === id) return node;
+        return findSplit(node.children[0], id) ?? findSplit(node.children[1], id);
+      }
+      return null;
+    }
+    const mainSplit = findSplit(tree.root, 'main-split');
+    if (mainSplit) {
+      const prevRatio = mainSplit.ratio;
+      const newControlbar: LeafNode = {
+        type: 'leaf',
+        id: CONTROLBAR_LEAF_ID,
+        panelType: 'tabs',
+        tabs: ['view:controlbar'],
+        activeTabId: 'view:controlbar',
+        singleton: true,
+      };
+      const contentSplit: SplitNode = {
+        type: 'split',
+        id: 'content-split',
+        direction: 'vertical',
+        ratio: prevRatio,
+        children: [mainSplit.children[0], mainSplit.children[1]],
+      };
+      mainSplit.ratio = 0.04;
+      mainSplit.children = [newControlbar, contentSplit];
+    }
+  }
+
+  return tree;
+}
+
 // --- Signals ---
 
-export const layoutTree = signal<LayoutTree>(loadTree() ?? buildDefaultLayout());
+export const layoutTree = signal<LayoutTree>((() => {
+  const loaded = loadTree();
+  if (loaded) return migrateTree(loaded);
+  return buildDefaultLayout();
+})());
 export const focusedLeafId = signal<string | null>(layoutTree.value.focusedLeafId);
 
 function persist() {
@@ -152,13 +349,43 @@ export function findCompanionSibling(sessionLeafId: string, sessionId: string): 
   return null;
 }
 
-// Deep clone to ensure immutability
+// Deep clone to ensure immutability (use structuredClone for speed)
 function cloneTree(tree: LayoutTree): LayoutTree {
-  return JSON.parse(JSON.stringify(tree));
+  return structuredClone(tree);
 }
 
 function cloneNode(node: PaneNode): PaneNode {
-  return JSON.parse(JSON.stringify(node));
+  return structuredClone(node);
+}
+
+// --- Batching: defer signal update + persist until batch completes ---
+
+let _batchDepth = 0;
+let _batchTree: LayoutTree | null = null;
+
+/** Run multiple tree mutations as a single signal update. */
+export function batch(fn: () => void) {
+  _batchDepth++;
+  try {
+    fn();
+  } finally {
+    _batchDepth--;
+    if (_batchDepth === 0 && _batchTree) {
+      layoutTree.value = _batchTree;
+      _batchTree = null;
+      persist();
+    }
+  }
+}
+
+/** Commit a cloned tree — deferred during batch. */
+function commitTree(tree: LayoutTree) {
+  if (_batchDepth > 0) {
+    _batchTree = tree;
+  } else {
+    layoutTree.value = tree;
+    persist();
+  }
 }
 
 // --- Tree mutation functions (all immutable — clone, mutate, assign) ---
@@ -174,18 +401,28 @@ export function splitLeaf(
   newPosition: 'first' | 'second' = 'second',
   newTabs: string[] = [],
   ratio = 0.5,
+  moveActiveTab = false,
 ): LeafNode | null {
   const tree = cloneTree(layoutTree.value);
   const parent = findParent(tree.root, leafId);
   const leaf = findLeaf(tree.root, leafId);
   if (!leaf) return null;
 
+  // If moveActiveTab is set and no explicit newTabs, move the active tab from the original leaf
+  const tabsForNew = [...newTabs];
+  if (moveActiveTab && tabsForNew.length === 0 && leaf.activeTabId && leaf.tabs.length > 1) {
+    const movingTab = leaf.activeTabId;
+    tabsForNew.push(movingTab);
+    leaf.tabs = leaf.tabs.filter(t => t !== movingTab);
+    leaf.activeTabId = leaf.tabs[0] ?? null;
+  }
+
   const newLeaf: LeafNode = {
     type: 'leaf',
     id: genId('leaf'),
     panelType: 'tabs',
-    tabs: newTabs,
-    activeTabId: newTabs[0] ?? null,
+    tabs: tabsForNew,
+    activeTabId: tabsForNew[0] ?? null,
   };
 
   const newSplit: SplitNode = {
@@ -207,8 +444,7 @@ export function splitLeaf(
     else parent.children[1] = newSplit;
   }
 
-  layoutTree.value = tree;
-  persist();
+  commitTree(tree);
   return newLeaf;
 }
 
@@ -250,8 +486,7 @@ export function mergeLeaf(leafId: string) {
     focusedLeafId.value = leaves[0]?.id ?? null;
   }
 
-  layoutTree.value = tree;
-  persist();
+  commitTree(tree);
 }
 
 export function addTabToLeaf(leafId: string, tabId: string, activate = true) {
@@ -266,8 +501,7 @@ export function addTabToLeaf(leafId: string, tabId: string, activate = true) {
     leaf.activeTabId = tabId;
   }
 
-  layoutTree.value = tree;
-  persist();
+  commitTree(tree);
 }
 
 export function removeTabFromLeaf(leafId: string, tabId: string, autoMerge = true) {
@@ -280,8 +514,7 @@ export function removeTabFromLeaf(leafId: string, tabId: string, autoMerge = tru
     leaf.activeTabId = leaf.tabs[0] ?? null;
   }
 
-  layoutTree.value = tree;
-  persist();
+  commitTree(tree);
 
   // Auto-merge empty non-well-known leaves
   if (autoMerge && leaf.tabs.length === 0 && !isWellKnownLeaf(leafId)) {
@@ -294,8 +527,7 @@ export function setActiveTab(leafId: string, tabId: string) {
   const leaf = findLeaf(tree.root, leafId);
   if (!leaf || !leaf.tabs.includes(tabId)) return;
   leaf.activeTabId = tabId;
-  layoutTree.value = tree;
-  persist();
+  commitTree(tree);
 }
 
 export function moveTab(fromLeafId: string, toLeafId: string, tabId: string) {
@@ -315,8 +547,7 @@ export function moveTab(fromLeafId: string, toLeafId: string, tabId: string) {
   }
   to.activeTabId = tabId;
 
-  layoutTree.value = tree;
-  persist();
+  commitTree(tree);
 
   // Auto-merge empty non-well-known leaves
   if (from.tabs.length === 0 && !isWellKnownLeaf(fromLeafId)) {
@@ -330,8 +561,7 @@ export function setSplitRatio(splitId: string, ratio: number) {
   const node = findNodeById(tree.root, splitId);
   if (!node || node.type !== 'split') return;
   node.ratio = clamped;
-  layoutTree.value = tree;
-  persist();
+  commitTree(tree);
 }
 
 export function setFocusedLeaf(leafId: string | null) {
@@ -339,10 +569,18 @@ export function setFocusedLeaf(leafId: string | null) {
   persist();
 }
 
+export function toggleLeafCollapsed(leafId: string) {
+  const tree = cloneTree(layoutTree.value);
+  const leaf = findLeaf(tree.root, leafId);
+  if (!leaf) return;
+  leaf.collapsed = !leaf.collapsed;
+  commitTree(tree);
+}
+
 // --- Utilities ---
 
 function isWellKnownLeaf(id: string): boolean {
-  return id === SIDEBAR_LEAF_ID || id === PAGE_LEAF_ID || id === SESSIONS_LEAF_ID;
+  return id === SIDEBAR_LEAF_ID || id === PAGE_LEAF_ID || id === SESSIONS_LEAF_ID || id === CONTROLBAR_LEAF_ID || id === 'aggregate-leaf';
 }
 
 function findNodeById(node: PaneNode, id: string): PaneNode | null {
@@ -373,22 +611,75 @@ export const treeSessionsLeafHasTabs = computed(() => {
 
 export function showSessionsLeaf() {
   const tree = cloneTree(layoutTree.value);
-  const mainSplit = findNodeById(tree.root, 'main-split');
-  if (mainSplit && mainSplit.type === 'split' && mainSplit.ratio >= 0.95) {
-    mainSplit.ratio = 0.6;
+  // Find the split that directly contains the sessions-leaf
+  const parent = findParentSplit(tree.root, SESSIONS_LEAF_ID);
+  if (parent && parent.type === 'split' && parent.ratio >= 0.95) {
+    parent.ratio = 0.6;
     layoutTree.value = tree;
     persist();
   }
 }
 
+/**
+ * Ensure SESSIONS_LEAF_ID exists in the tree.
+ * If it doesn't, create a vertical split in the main content area.
+ * Returns the leaf ID to use for adding sessions.
+ */
+export function ensureSessionsLeaf(): string {
+  const existing = findLeaf(layoutTree.value.root, SESSIONS_LEAF_ID);
+  if (existing) return SESSIONS_LEAF_ID;
+
+  // Sessions leaf doesn't exist — create one by splitting an appropriate leaf.
+  // Strategy: find the focused leaf, or any non-sidebar/non-controlbar leaf in the main area.
+  const tree = cloneTree(layoutTree.value);
+  const allLeaves = getAllLeaves(tree.root);
+  const sidebarIds = new Set([SIDEBAR_LEAF_ID, CONTROLBAR_LEAF_ID, 'sidebar-sessions', 'sidebar-terminals', 'sidebar-files']);
+  const mainLeaf = allLeaves.find(l => !sidebarIds.has(l.id)) || allLeaves[0];
+  if (!mainLeaf) return SESSIONS_LEAF_ID; // shouldn't happen
+
+  // Split the chosen leaf vertically, placing a new sessions leaf at the bottom
+  const newSessionsLeaf: LeafNode = {
+    type: 'leaf',
+    id: SESSIONS_LEAF_ID,
+    panelType: 'tabs',
+    tabs: [],
+    activeTabId: null,
+  };
+
+  const parent = findParent(tree.root, mainLeaf.id);
+  const newSplit: SplitNode = {
+    type: 'split',
+    id: genId('split'),
+    direction: 'vertical',
+    ratio: 0.6,
+    children: [cloneNode(mainLeaf) as LeafNode, newSessionsLeaf],
+  };
+
+  if (!parent) {
+    tree.root = newSplit;
+  } else {
+    if (parent.children[0].id === mainLeaf.id) parent.children[0] = newSplit;
+    else parent.children[1] = newSplit;
+  }
+
+  commitTree(tree);
+  return SESSIONS_LEAF_ID;
+}
+
 export function hideSessionsLeaf() {
   const tree = cloneTree(layoutTree.value);
-  const mainSplit = findNodeById(tree.root, 'main-split');
-  if (mainSplit && mainSplit.type === 'split') {
-    mainSplit.ratio = 1.0;
+  const parent = findParentSplit(tree.root, SESSIONS_LEAF_ID);
+  if (parent && parent.type === 'split') {
+    parent.ratio = 1.0;
     layoutTree.value = tree;
     persist();
   }
+}
+
+function findParentSplit(node: PaneNode, childId: string): SplitNode | null {
+  if (node.type !== 'split') return null;
+  if (node.children[0].id === childId || node.children[1].id === childId) return node;
+  return findParentSplit(node.children[0], childId) ?? findParentSplit(node.children[1], childId);
 }
 
 export function reorderTabInLeaf(leafId: string, tabId: string, insertBeforeTabId: string | null) {
@@ -408,8 +699,7 @@ export function reorderTabInLeaf(leafId: string, tabId: string, insertBeforeTabI
   } else {
     leaf.tabs.push(tabId);
   }
-  layoutTree.value = tree;
-  persist();
+  commitTree(tree);
 }
 
 export function resetLayout() {

@@ -1,7 +1,8 @@
 import { useEffect, useState, useRef, useCallback } from 'preact/hooks';
 import { api } from '../lib/api.js';
-import { getExt, getLanguage, IMAGE_EXTS } from '../lib/file-utils.js';
+import { getExt, getLanguage, IMAGE_EXTS, MARKDOWN_EXTS } from '../lib/file-utils.js';
 import hljs from 'highlight.js/lib/common';
+import { marked } from 'marked';
 
 interface Props {
   filePath: string;
@@ -18,6 +19,7 @@ export function FileCompanionView({ filePath }: Props) {
 
   const ext = getExt(filePath);
   const isImage = IMAGE_EXTS.has(ext);
+  const isMarkdown = MARKDOWN_EXTS.has(ext);
   const fileName = filePath.split('/').pop() || filePath;
 
   useEffect(() => {
@@ -115,7 +117,10 @@ export function FileCompanionView({ filePath }: Props) {
           <img src={imageUrl} alt={fileName} style={{ maxWidth: '100%', maxHeight: '100%' }} />
         </div>
       )}
-      {content !== null && (
+      {content !== null && isMarkdown && (
+        <div class="fv-markdown" dangerouslySetInnerHTML={{ __html: (() => { const h = marked.parse(content); return typeof h === 'string' ? h : ''; })() }} />
+      )}
+      {content !== null && !isMarkdown && (
         <div class="file-companion-code" ref={codeRef}>
           {isRange && selectedLines && (
             <div class="file-companion-selection-toolbar">

@@ -1,4 +1,4 @@
-import { signal, effect } from '@preact/signals';
+import { signal, effect, computed } from '@preact/signals';
 import { api } from './api.js';
 import { autoNavigateToFeedback, autoJumpWaiting, autoJumpInterrupt, autoJumpDelay, autoJumpLogs, autoCloseWaitingPanel, autoJumpHandleBounce } from './settings.js';
 import { navigate, selectedAppId, applications } from './state.js';
@@ -16,7 +16,11 @@ import {
   mergeLeaf,
   focusedLeafId,
   showSessionsLeaf,
+  ensureSessionsLeaf,
   SESSIONS_LEAF_ID,
+  setActiveTab,
+  setFocusedLeaf,
+  batch as batchTreeOps,
 } from './pane-tree.js';
 
 export const termPickerOpen = signal<TerminalPickerMode | null>(null);
@@ -51,18 +55,22 @@ export const rightPaneTabs = signal<string[]>(loadJson('pw-right-pane-tabs', [])
 export const rightPaneActiveId = signal<string | null>(loadJson('pw-right-pane-active', null));
 export const splitRatio = signal<number>(loadJson('pw-split-ratio', 0.5));
 export const activePanelId = signal<string | null>('split-left');
+export const popInPickerSessionId = signal<string | null>(null);
 
 // Seed pane tree from flat signals on first load (migration)
 {
-  const sessLeaf = findLeaf(layoutTree.value.root, SESSIONS_LEAF_ID);
+  const leafId = ensureSessionsLeaf();
+  const sessLeaf = findLeaf(layoutTree.value.root, leafId);
   if (sessLeaf && sessLeaf.tabs.length === 0 && openTabs.value.length > 0) {
-    for (const tab of openTabs.value) {
-      addTabToLeaf(SESSIONS_LEAF_ID, tab, false);
-    }
-    if (activeTabId.value) {
-      addTabToLeaf(SESSIONS_LEAF_ID, activeTabId.value, true);
-    }
-    showSessionsLeaf();
+    batchTreeOps(() => {
+      for (const tab of openTabs.value) {
+        addTabToLeaf(leafId, tab, false);
+      }
+      if (activeTabId.value) {
+        addTabToLeaf(leafId, activeTabId.value, true);
+      }
+      showSessionsLeaf();
+    });
   }
 }
 
@@ -835,6 +843,11 @@ export function popOutTab(sessionId: string) {
     }
     persistSplitState();
   }
+
+  // Sync to pane tree — remove from whichever leaf it's in
+  const treeLeaf = findLeafWithTab(sessionId);
+  if (treeLeaf) removeTabFromLeaf(treeLeaf.id, sessionId);
+
   // If already in a panel, just make sure it's visible
   const existing = findPanelForSession(sessionId);
   if (existing) {
@@ -848,8 +861,14 @@ export function popOutTab(sessionId: string) {
   const companions = getCompanions(sessionId);
   const companionTabs = companions.map((t) => companionTabId(sessionId, t));
 
-  // Remove companion tabs from bottom panel's openTabs / rightPaneTabs
+  // Remove companion tabs from pane tree + bottom panel's openTabs / rightPaneTabs
   if (companionTabs.length > 0) {
+    batchTreeOps(() => {
+      for (const ct of companionTabs) {
+        const ctLeaf = findLeafWithTab(ct);
+        if (ctLeaf) removeTabFromLeaf(ctLeaf.id, ct);
+      }
+    });
     const companionSet = new Set(companionTabs);
     openTabs.value = openTabs.value.filter((id) => !companionSet.has(id));
     if (splitEnabled.value) {
@@ -887,6 +906,12 @@ export function popOutTab(sessionId: string) {
 
 export function popBackIn(sessionId: string) {
   if (!sessionId) return;
+  // Enter pane picker mode — user clicks a leaf to place the session
+  popInPickerSessionId.value = sessionId;
+}
+
+export function popBackInToLeaf(sessionId: string, leafId: string) {
+  if (!sessionId) return;
   const panel = findPanelForSession(sessionId);
   const isAutoJump = panel?.id === AUTOJUMP_PANEL_ID;
   if (isAutoJump) {
@@ -913,6 +938,13 @@ export function popBackIn(sessionId: string) {
   if (isAutoJump) {
     transferAutoJumpToGlobalPanel(sessionId);
   }
+
+  // Sync to pane tree (batched)
+  batchTreeOps(() => {
+    addTabToLeaf(leafId, sessionId, true);
+    if (leafId === SESSIONS_LEAF_ID) showSessionsLeaf();
+  });
+
   persistTabs();
   persistPopoutState();
   persistPanelState();
@@ -932,6 +964,19 @@ export function popBackInAll() {
   }
   if (allIds.length > 0) activeTabId.value = allIds[allIds.length - 1];
   panelMinimized.value = false;
+
+  // Sync to pane tree (batched)
+  batchTreeOps(() => {
+    const leafId = ensureSessionsLeaf();
+    for (const sid of allIds) {
+      addTabToLeaf(leafId, sid, false);
+    }
+    if (allIds.length > 0) {
+      addTabToLeaf(leafId, allIds[allIds.length - 1], true);
+      showSessionsLeaf();
+    }
+  });
+
   persistTabs();
   persistPopoutState();
   persistPanelState();
@@ -1035,6 +1080,8 @@ export const sidebarWidth = signal(
 export const sidebarAnimating = signal(false);
 
 export const allSessions = signal<any[]>([]);
+/** Pre-built session Map keyed by ID — avoids rebuilding in every component render. */
+export const sessionMapComputed = computed(() => new Map(allSessions.value.map((s: any) => [s.id, s])));
 export const sessionsLoading = signal(false);
 export const sessionsDrawerOpen = signal(localStorage.getItem('pw-sessions-drawer') !== 'false');
 export const showResolvedSessions = signal(localStorage.getItem('pw-show-resolved') === 'true');
@@ -1092,6 +1139,9 @@ export function toggleSessionsDrawer() {
   localStorage.setItem('pw-sessions-drawer', String(sessionsDrawerOpen.value));
 }
 
+export const sidebarStatusMenu = signal<{ sessionId: string; x: number; y: number } | null>(null);
+export const sidebarItemMenu = signal<{ sessionId: string; x: number; y: number } | null>(null);
+
 export function toggleShowResolved() {
   showResolvedSessions.value = !showResolvedSessions.value;
   localStorage.setItem('pw-show-resolved', String(showResolvedSessions.value));
@@ -1120,7 +1170,7 @@ export function setSidebarSplitRatio(ratio: number) {
 }
 
 export async function loadAllSessions(includeDeleted = false, isAutoPoll = false) {
-  if (isAutoPoll && lastTerminalInput.value > 0 && Date.now() - lastTerminalInput.value < 2000) {
+  if (isAutoPoll && lastTerminalInput.value > 0 && Date.now() - lastTerminalInput.value < 5000) {
     return;
   }
   sessionsLoading.value = true;
@@ -1223,6 +1273,27 @@ export function focusSessionTerminal(sessionId: string) {
 export function openSession(sessionId: string) {
   autoJumpLogs.value && console.log(`[auto-jump] openSession: ${sessionId.slice(-6)}, currentActive=${activeTabId.value?.slice(-6) ?? 'null'}, alreadyOpen=${openTabs.value.includes(sessionId)}`);
   import('./autofix.js').then(({ trackSessionOpen }) => trackSessionOpen(sessionId));
+
+  // 1. If already in a popout panel, focus it there
+  const panel = findPanelForSession(sessionId);
+  if (panel) {
+    updatePanel(panel.id, { activeSessionId: sessionId, visible: true });
+    bringToFront(panel.id);
+    persistPopoutState();
+    focusSessionTerminal(sessionId);
+    return;
+  }
+
+  // 2. If already in a pane tree leaf, activate it there
+  const existingLeaf = findLeafWithTab(sessionId);
+  if (existingLeaf) {
+    setActiveTab(existingLeaf.id, sessionId);
+    setFocusedLeaf(existingLeaf.id);
+    focusSessionTerminal(sessionId);
+    return;
+  }
+
+  // 3. Add to legacy openTabs state
   if (!openTabs.value.includes(sessionId)) {
     openTabs.value = [...openTabs.value, sessionId];
   }
@@ -1234,9 +1305,12 @@ export function openSession(sessionId: string) {
   panelMinimized.value = false;
   persistTabs();
 
-  // Sync to pane tree
-  addTabToLeaf(SESSIONS_LEAF_ID, sessionId, true);
-  showSessionsLeaf();
+  // 4. Sync to pane tree — ensure sessions leaf exists, then add tab
+  batchTreeOps(() => {
+    const leafId = ensureSessionsLeaf();
+    addTabToLeaf(leafId, sessionId, true);
+    showSessionsLeaf();
+  });
 
   // Auto-seed terminal companion from server's companionSessionId if not already mapped
   const sess = allSessions.value.find((s) => s.id === sessionId);
@@ -2146,7 +2220,8 @@ export function toggleCompanion(sessionId: string, type: CompanionType) {
       }
     } else {
       // Fallback: add to sessions leaf
-      addTabToLeaf(SESSIONS_LEAF_ID, tabId, true);
+      const leafId = ensureSessionsLeaf();
+      addTabToLeaf(leafId, tabId, true);
     }
 
     // Keep legacy signals in sync
@@ -2167,8 +2242,11 @@ export function openIsolateCompanion(componentName: string) {
   if (focusedLeaf && focusedLeaf.panelType === 'tabs' && focusedLeaf.tabs.length > 0) {
     splitLeaf(focusedLeaf.id, 'horizontal', 'second', [tabId], 0.5);
   } else {
-    addTabToLeaf(SESSIONS_LEAF_ID, tabId, true);
-    showSessionsLeaf();
+    batchTreeOps(() => {
+      const leafId = ensureSessionsLeaf();
+      addTabToLeaf(leafId, tabId, true);
+      showSessionsLeaf();
+    });
   }
 }
 
@@ -2189,8 +2267,11 @@ export function openUrlCompanion(url: string) {
   if (focusedLeaf && focusedLeaf.panelType === 'tabs' && focusedLeaf.tabs.length > 0) {
     splitLeaf(focusedLeaf.id, 'horizontal', 'second', [tabId], 0.5);
   } else {
-    addTabToLeaf(SESSIONS_LEAF_ID, tabId, true);
-    showSessionsLeaf();
+    batchTreeOps(() => {
+      const leafId = ensureSessionsLeaf();
+      addTabToLeaf(leafId, tabId, true);
+      showSessionsLeaf();
+    });
   }
 }
 
@@ -2199,8 +2280,11 @@ export function openFileCompanion(filePath: string) {
   if (!openTabs.value.includes(tabId)) {
     openTabs.value = [...openTabs.value, tabId];
   }
-  addTabToLeaf(SESSIONS_LEAF_ID, tabId, true);
-  showSessionsLeaf();
+  batchTreeOps(() => {
+    const leafId = ensureSessionsLeaf();
+    addTabToLeaf(leafId, tabId, true);
+    showSessionsLeaf();
+  });
 }
 
 export function syncCompanionsToRightPane(newSessionId: string, oldSessionId?: string | null) {

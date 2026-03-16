@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from 'preact/hooks';
+import { useState, useRef, useMemo } from 'preact/hooks';
 import { selectedAppId, applications, navigate, addAppModalOpen } from '../lib/state.js';
 import { api } from '../lib/api.js';
 import {
@@ -11,11 +11,12 @@ import {
   bringToFront,
   activePanelId,
   activeTabId,
-  allSessions,
+  sessionMapComputed,
   getSessionLabel,
   openSession,
 } from '../lib/sessions.js';
 import type { PaneMruEntry } from '../lib/sessions.js';
+import { PopupMenu } from './PopupMenu.js';
 
 function getSessionMruLabel(sessionId: string, sessionMap: Map<string, any>): string {
   const custom = getSessionLabel(sessionId);
@@ -44,27 +45,12 @@ export function ControlBar() {
   const [running, setRunning] = useState<string | null>(null);
   const [appDropdown, setAppDropdown] = useState(false);
   const [mruDropdown, setMruDropdown] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-  const mruDropdownRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!appDropdown && !mruDropdown) return;
-    const handler = (e: MouseEvent) => {
-      if (appDropdown && dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
-        setAppDropdown(false);
-      }
-      if (mruDropdown && mruDropdownRef.current && !mruDropdownRef.current.contains(e.target as Node)) {
-        setMruDropdown(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [appDropdown, mruDropdown]);
+  const appBtnRef = useRef<HTMLButtonElement>(null);
+  const mruBtnRef = useRef<HTMLButtonElement>(null);
 
   const panels = popoutPanels.value;
   const mruHistory = paneMruHistory.value;
-  const sessions = allSessions.value;
-  const sessionMap = useMemo(() => new Map(sessions.map((s: any) => [s.id, s])), [sessions]);
+  const sessionMap = sessionMapComputed.value;
   const panelMap = useMemo(() => new Map(panels.map((p: any) => [p.id, p])), [panels]);
 
   async function run(actionId: string) {
@@ -105,36 +91,35 @@ export function ControlBar() {
   return (
     <div class="control-bar">
       {/* App selector */}
-      <div class="control-bar-dropdown" ref={dropdownRef}>
-        <button
-          class="control-bar-btn control-bar-app-btn"
-          onClick={() => setAppDropdown(!appDropdown)}
-        >
-          <span class="control-bar-icon">{'\u{1F4BB}'}</span>
-          {app?.name || 'Select App'}
-          <span class="control-bar-caret">{'\u25BE'}</span>
-        </button>
-        {appDropdown && (
-          <div class="control-bar-menu">
-            {apps.map((a: any) => (
-              <button
-                key={a.id}
-                class={`control-bar-menu-item ${a.id === appId ? 'active' : ''}`}
-                onClick={() => selectApp(a.id)}
-              >
-                {a.name}
-              </button>
-            ))}
-            <div class="control-bar-menu-divider" />
+      <button
+        ref={appBtnRef}
+        class="control-bar-btn control-bar-app-btn"
+        onClick={() => setAppDropdown(!appDropdown)}
+      >
+        <span class="control-bar-icon">{'\u{1F4BB}'}</span>
+        {app?.name || 'Select App'}
+        <span class="control-bar-caret">{'\u25BE'}</span>
+      </button>
+      {appDropdown && (
+        <PopupMenu anchorRef={appBtnRef} onClose={() => setAppDropdown(false)}>
+          {apps.map((a: any) => (
             <button
-              class="control-bar-menu-item"
-              onClick={() => { setAppDropdown(false); addAppModalOpen.value = true; }}
+              key={a.id}
+              class={`popup-menu-item ${a.id === appId ? 'active' : ''}`}
+              onClick={() => selectApp(a.id)}
             >
-              + New App
+              {a.name}
             </button>
-          </div>
-        )}
-      </div>
+          ))}
+          <div class="popup-menu-divider" />
+          <button
+            class="popup-menu-item"
+            onClick={() => { setAppDropdown(false); addAppModalOpen.value = true; }}
+          >
+            + New App
+          </button>
+        </PopupMenu>
+      )}
 
       <div class="control-bar-sep" />
 
@@ -165,61 +150,58 @@ export function ControlBar() {
       </button>
 
       {/* MRU pane history dropdown */}
-      <>
-        <div class="control-bar-sep" />
-        <div class="control-bar-dropdown" ref={mruDropdownRef}>
-          <button
-            class="control-bar-btn control-bar-mru-btn control-bar-mru-active"
-            onClick={() => setMruDropdown(!mruDropdown)}
-          >
-            {(() => {
-              if (mruHistory.length === 0) return 'History';
-              const top = mruHistory[0];
-              if (top.type === 'tab') return getSessionMruLabel(top.sessionId, sessionMap);
-              const p = panelMap.get(top.panelId);
-              return p ? getPanelMruLabel(p, sessionMap) : top.panelId.slice(-6);
-            })()}
-            <span class="control-bar-caret">{'\u25BE'}</span>
-          </button>
-          {mruDropdown && (
-            <div class="control-bar-menu">
-              {mruHistory.length === 0 && (
-                <div class="control-bar-menu-item" style="opacity:0.5;cursor:default">No history</div>
-              )}
-              {mruHistory.map((entry: PaneMruEntry, i: number) => {
-                const key = entry.type === 'tab' ? `tab:${entry.sessionId}` : `panel:${entry.panelId}`;
-                const isActive = entry.type === 'tab'
-                  ? activeTabId.value === entry.sessionId
-                  : activePanelId.value === entry.panelId;
-                const label = entry.type === 'tab'
-                  ? getSessionMruLabel(entry.sessionId, sessionMap)
-                  : (() => { const p = panelMap.get(entry.panelId); return p ? getPanelMruLabel(p, sessionMap) : entry.panelId.slice(-6); })();
-                return (
-                  <button
-                    key={key}
-                    class={`control-bar-menu-item ${isActive ? 'active' : ''}`}
-                    onClick={() => {
-                      if (entry.type === 'tab') {
-                        openSession(entry.sessionId);
-                      } else {
-                        const p = panelMap.get(entry.panelId);
-                        if (p) {
-                          bringToFront(entry.panelId);
-                          activePanelId.value = entry.panelId;
-                        }
-                      }
-                      setMruDropdown(false);
-                    }}
-                  >
-                    <span style="opacity:0.5;margin-right:6px">{entry.type === 'tab' ? '\u{1F4CB}' : '\u{1F5D7}'}</span>
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
+      <div class="control-bar-sep" />
+      <button
+        ref={mruBtnRef}
+        class="control-bar-btn control-bar-mru-btn control-bar-mru-active"
+        onClick={() => setMruDropdown(!mruDropdown)}
+      >
+        {(() => {
+          if (mruHistory.length === 0) return 'History';
+          const top = mruHistory[0];
+          if (top.type === 'tab') return getSessionMruLabel(top.sessionId, sessionMap);
+          const p = panelMap.get(top.panelId);
+          return p ? getPanelMruLabel(p, sessionMap) : top.panelId.slice(-6);
+        })()}
+        <span class="control-bar-caret">{'\u25BE'}</span>
+      </button>
+      {mruDropdown && (
+        <PopupMenu anchorRef={mruBtnRef} onClose={() => setMruDropdown(false)}>
+          {mruHistory.length === 0 && (
+            <div class="popup-menu-item" style="opacity:0.5;cursor:default">No history</div>
           )}
-        </div>
-      </>
+          {mruHistory.map((entry: PaneMruEntry) => {
+            const key = entry.type === 'tab' ? `tab:${entry.sessionId}` : `panel:${entry.panelId}`;
+            const isActive = entry.type === 'tab'
+              ? activeTabId.value === entry.sessionId
+              : activePanelId.value === entry.panelId;
+            const label = entry.type === 'tab'
+              ? getSessionMruLabel(entry.sessionId, sessionMap)
+              : (() => { const p = panelMap.get(entry.panelId); return p ? getPanelMruLabel(p, sessionMap) : entry.panelId.slice(-6); })();
+            return (
+              <button
+                key={key}
+                class={`popup-menu-item ${isActive ? 'active' : ''}`}
+                onClick={() => {
+                  if (entry.type === 'tab') {
+                    openSession(entry.sessionId);
+                  } else {
+                    const p = panelMap.get(entry.panelId);
+                    if (p) {
+                      bringToFront(entry.panelId);
+                      activePanelId.value = entry.panelId;
+                    }
+                  }
+                  setMruDropdown(false);
+                }}
+              >
+                <span style="opacity:0.5;margin-right:6px">{entry.type === 'tab' ? '\u{1F4CB}' : '\u{1F5D7}'}</span>
+                {label}
+              </button>
+            );
+          })}
+        </PopupMenu>
+      )}
 
       <div style="flex:1" />
       <button

@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { eq, desc, ne, and } from 'drizzle-orm';
+import { eq, desc, ne, and, inArray, or, sql } from 'drizzle-orm';
 import { existsSync, readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { db, schema } from '../db/index.js';
@@ -276,9 +276,35 @@ agentSessionRoutes.get('/error-summary', async (c) => {
 agentSessionRoutes.get('/', async (c) => {
   const feedbackId = c.req.query('feedbackId');
   const includeDeleted = c.req.query('includeDeleted') === 'true';
+  const includeParam = c.req.query('include');
+  const includeIds = includeParam ? includeParam.split(',').filter(Boolean) : [];
+  const limitParam = c.req.query('limit');
+  const limit = limitParam ? Math.min(parseInt(limitParam, 10) || 200, 1000) : 0;
 
+  // Select specific columns — exclude output_log (up to 512KB per row) for list queries
   const selectFields = {
-    session: schema.agentSessions,
+    id: schema.agentSessions.id,
+    feedbackId: schema.agentSessions.feedbackId,
+    agentEndpointId: schema.agentSessions.agentEndpointId,
+    permissionProfile: schema.agentSessions.permissionProfile,
+    parentSessionId: schema.agentSessions.parentSessionId,
+    status: schema.agentSessions.status,
+    pid: schema.agentSessions.pid,
+    exitCode: schema.agentSessions.exitCode,
+    outputBytes: schema.agentSessions.outputBytes,
+    lastOutputSeq: schema.agentSessions.lastOutputSeq,
+    lastInputSeq: schema.agentSessions.lastInputSeq,
+    tmuxSessionName: schema.agentSessions.tmuxSessionName,
+    launcherId: schema.agentSessions.launcherId,
+    machineId: schema.agentSessions.machineId,
+    claudeSessionId: schema.agentSessions.claudeSessionId,
+    companionSessionId: schema.agentSessions.companionSessionId,
+    cwd: schema.agentSessions.cwd,
+    spriteConfigId: schema.agentSessions.spriteConfigId,
+    spriteExecSessionId: schema.agentSessions.spriteExecSessionId,
+    createdAt: schema.agentSessions.createdAt,
+    startedAt: schema.agentSessions.startedAt,
+    completedAt: schema.agentSessions.completedAt,
     feedbackTitle: schema.feedbackItems.title,
     feedbackAppId: schema.feedbackItems.appId,
     agentName: schema.agentEndpoints.name,
@@ -302,18 +328,51 @@ agentSessionRoutes.get('/', async (c) => {
       .where(where)
       .orderBy(desc(schema.agentSessions.createdAt))
       .all();
-  } else {
-    const where = includeDeleted ? undefined : ne(schema.agentSessions.status, 'deleted');
+  } else if (includeIds.length > 0) {
+    // Smart polling: return running + pending + explicitly included sessions + recent up to limit
+    const activeStatuses = ['running', 'pending', 'dispatching'];
+    const notDeleted = ne(schema.agentSessions.status, 'deleted');
+    const isActive = inArray(schema.agentSessions.status, activeStatuses);
+    const isIncluded = inArray(schema.agentSessions.id, includeIds);
+    const where = includeDeleted
+      ? or(isActive, isIncluded)
+      : and(notDeleted, or(isActive, isIncluded));
     rows = baseQuery()
       .where(where)
       .orderBy(desc(schema.agentSessions.createdAt))
       .all();
+    // Also fetch recent sessions to populate sidebar lists, up to a limit
+    const recentLimit = limit || 100;
+    const existingIds = new Set(rows.map(r => r.id));
+    const recentWhere = includeDeleted ? undefined : notDeleted;
+    const recentRows = baseQuery()
+      .where(recentWhere)
+      .orderBy(desc(schema.agentSessions.createdAt))
+      .limit(recentLimit)
+      .all();
+    for (const r of recentRows) {
+      if (!existingIds.has(r.id)) {
+        rows.push(r);
+        existingIds.add(r.id);
+      }
+    }
+  } else {
+    const where = includeDeleted ? undefined : ne(schema.agentSessions.status, 'deleted');
+    const q = baseQuery()
+      .where(where)
+      .orderBy(desc(schema.agentSessions.createdAt));
+    rows = limit ? q.limit(limit).all() : q.all();
   }
-
   const liveStates = await getSessionLiveStates();
 
+  // Pre-fetch all machines and harness configs to avoid N+1 per-session DB queries
+  const allMachines = db.select().from(schema.machines).all();
+  const machineMap = new Map(allMachines.map(m => [m.id, m]));
+  const allHarnessConfigs = db.select().from(schema.harnessConfigs).all();
+  const harnessConfigMap = new Map(allHarnessConfigs.map(h => [h.id, h]));
+
   const sessions = rows.map((r) => {
-    const live = liveStates[r.session.id];
+    const live = liveStates[r.id];
 
     // Enrich with launcher/machine/harness metadata
     let launcherName: string | null = null;
@@ -324,8 +383,8 @@ agentSessionRoutes.get('/', async (c) => {
     let isRemote = false;
     let isHarness = false;
 
-    if (r.session.launcherId) {
-      const launcher = getLauncher(r.session.launcherId);
+    if (r.launcherId) {
+      const launcher = getLauncher(r.launcherId);
       if (launcher) {
         launcherName = launcher.name;
         launcherHostname = launcher.hostname;
@@ -333,39 +392,56 @@ agentSessionRoutes.get('/', async (c) => {
         isHarness = !!launcher.harness;
         if (launcher.harness?.appPort) harnessAppPort = launcher.harness.appPort;
         if (launcher.machineId) {
-          const machine = db.select().from(schema.machines)
-            .where(eq(schema.machines.id, launcher.machineId)).get();
+          const machine = machineMap.get(launcher.machineId);
           if (machine) machineName = machine.name;
         }
         if (launcher.harnessConfigId) {
-          const harness = db.select().from(schema.harnessConfigs)
-            .where(eq(schema.harnessConfigs.id, launcher.harnessConfigId)).get();
+          const harness = harnessConfigMap.get(launcher.harnessConfigId);
           if (harness) {
             harnessName = harness.name;
             if (!harnessAppPort && harness.appPort) harnessAppPort = harness.appPort;
           }
         }
       } else {
-        // Launcher disconnected — try to resolve from DB
-        if (r.session.machineId) {
-          const machine = db.select().from(schema.machines)
-            .where(eq(schema.machines.id, r.session.machineId)).get();
+        // Launcher disconnected — try to resolve from pre-fetched map
+        if (r.machineId) {
+          const machine = machineMap.get(r.machineId);
           if (machine) { machineName = machine.name; isRemote = machine.type !== 'local'; }
         }
       }
     }
 
     return {
-      ...r.session,
+      id: r.id,
+      feedbackId: r.feedbackId,
+      agentEndpointId: r.agentEndpointId,
+      permissionProfile: r.permissionProfile,
+      parentSessionId: r.parentSessionId,
+      status: r.status,
+      pid: r.pid,
+      exitCode: r.exitCode,
+      outputBytes: r.outputBytes,
+      lastOutputSeq: r.lastOutputSeq,
+      lastInputSeq: r.lastInputSeq,
+      tmuxSessionName: r.tmuxSessionName,
+      launcherId: r.launcherId,
+      machineId: r.machineId,
+      claudeSessionId: r.claudeSessionId,
+      companionSessionId: r.companionSessionId,
+      cwd: r.cwd || null,
+      spriteConfigId: r.spriteConfigId,
+      spriteExecSessionId: r.spriteExecSessionId,
+      createdAt: r.createdAt,
+      startedAt: r.startedAt,
+      completedAt: r.completedAt,
       feedbackTitle: r.feedbackTitle || null,
       agentName: r.agentName || null,
       appId: r.feedbackAppId || r.agentAppId || null,
-      inputState: live?.inputState || (r.session.status === 'running' ? 'active' : null),
+      inputState: live?.inputState || (r.status === 'running' ? 'active' : null),
       paneTitle: live?.paneTitle || null,
       paneCommand: live?.paneCommand || null,
       panePath: live?.panePath || null,
-      cwd: r.session.cwd || null,
-      jsonlPath: computeJsonlPath(r.appProjectDir || process.cwd(), r.session.claudeSessionId),
+      jsonlPath: computeJsonlPath(r.appProjectDir || process.cwd(), r.claudeSessionId),
       launcherName,
       launcherHostname,
       machineName,

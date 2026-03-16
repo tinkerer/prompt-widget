@@ -12,9 +12,11 @@ interface SplitPaneProps {
   hideSecond?: boolean;
   fixedFirstSize?: number; // if set, first child uses fixed px instead of flex ratio
   onFixedResize?: (newSize: number) => void; // called when dragging divider with fixedFirstSize
+  firstCollapsed?: boolean;
+  secondCollapsed?: boolean;
 }
 
-export function SplitPane({ direction, ratio, splitId, onRatioChange, first, second, hideSecond, fixedFirstSize, onFixedResize }: SplitPaneProps) {
+export function SplitPane({ direction, ratio, splitId, onRatioChange, first, second, hideSecond, fixedFirstSize, onFixedResize, firstCollapsed, secondCollapsed }: SplitPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
 
@@ -61,9 +63,15 @@ export function SplitPane({ direction, ratio, splitId, onRatioChange, first, sec
   const effectiveRatio = hideSecond ? 1 : ratio;
   const dividerEnabled = fixedFirstSize != null ? !!onFixedResize : true;
 
-  const firstStyle = fixedFirstSize != null
-    ? { width: `${fixedFirstSize}px`, flexShrink: 0, minHeight: 0, overflow: 'hidden' as const }
-    : { flex: effectiveRatio, minWidth: 0, minHeight: 0, overflow: 'hidden' as const };
+  const collapsedStyle = { flex: '0 0 auto' as any, minWidth: 0, minHeight: 0, overflow: 'hidden' as const };
+  const firstStyle = firstCollapsed
+    ? collapsedStyle
+    : fixedFirstSize != null
+      ? { width: `${fixedFirstSize}px`, flexShrink: 0, minHeight: 0, overflow: 'hidden' as const }
+      : { flex: effectiveRatio, minWidth: 0, minHeight: 0, overflow: 'hidden' as const };
+  const secondStyle = secondCollapsed
+    ? collapsedStyle
+    : { flex: fixedFirstSize != null ? 1 : (1 - effectiveRatio), minWidth: 0, minHeight: 0, overflow: 'hidden' as const };
 
   return (
     <div
@@ -87,7 +95,7 @@ export function SplitPane({ direction, ratio, splitId, onRatioChange, first, sec
             onMouseDown={dividerEnabled ? onDividerMouseDown : undefined}
             style={!dividerEnabled ? { cursor: 'default' } : undefined}
           />
-          <div class="pane-split-child" style={{ flex: fixedFirstSize != null ? 1 : (1 - effectiveRatio), minWidth: 0, minHeight: 0, overflow: 'hidden' as const }}>
+          <div class="pane-split-child" style={secondStyle}>
             {second}
           </div>
         </>

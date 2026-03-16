@@ -330,8 +330,8 @@ export function startTabDrag(e: MouseEvent, config: TabDragConfig): void {
         removeTabFromLeaf(srcLeafId, config.sessionId);
         return;
       }
-      // Drop into empty space — pop out to floating panel
-      if (!dropTarget && !hadReorderIndicator) {
+      // Drop into empty space or same position in same tab group — pop out to floating panel
+      if (!dropTarget) {
         removeTabFromLeaf(srcLeafId, config.sessionId);
         popOutTab(config.sessionId);
         return;

@@ -1,33 +1,21 @@
 import { useCallback } from 'preact/hooks';
 import type { PaneNode } from '../lib/pane-tree.js';
-import { setSplitRatio, SIDEBAR_LEAF_ID, PAGE_LEAF_ID, SESSIONS_LEAF_ID } from '../lib/pane-tree.js';
+import { setSplitRatio, SIDEBAR_LEAF_ID, SESSIONS_LEAF_ID } from '../lib/pane-tree.js';
 import { sidebarWidth, persistPanelState } from '../lib/sessions.js';
 import { SplitPane } from './SplitPane.js';
 import { LeafPane } from './LeafPane.js';
 
 interface PaneTreeProps {
   node: PaneNode;
-  sidebarContent?: preact.ComponentChildren;
-  pageContent?: preact.ComponentChildren;
 }
 
-export function PaneTree({ node, sidebarContent, pageContent }: PaneTreeProps) {
+export function PaneTree({ node }: PaneTreeProps) {
   const handleSidebarResize = useCallback((newSize: number) => {
     sidebarWidth.value = Math.max(140, Math.min(newSize, 600));
     persistPanelState();
   }, []);
 
   if (node.type === 'leaf') {
-    if (node.id === SIDEBAR_LEAF_ID && sidebarContent) {
-      return <>{sidebarContent}</>;
-    }
-    if (node.id === PAGE_LEAF_ID && pageContent) {
-      return (
-        <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', overflow: 'hidden' }}>
-          {pageContent}
-        </div>
-      );
-    }
     return <LeafPane leaf={node} />;
   }
 
@@ -39,9 +27,14 @@ export function PaneTree({ node, sidebarContent, pageContent }: PaneTreeProps) {
     node.children[1].tabs.length === 0;
 
   // Root split uses sidebar's pixel width instead of ratio
-  const isSidebarSplit = node.id === 'root-split' &&
-    node.children[0].type === 'leaf' &&
-    node.children[0].id === SIDEBAR_LEAF_ID;
+  const firstChild = node.children[0];
+  const isSidebarSplit = node.id === 'root-split' && (
+    (firstChild.type === 'leaf' && firstChild.id === SIDEBAR_LEAF_ID) ||
+    (firstChild.type === 'split' && firstChild.id === 'sidebar-split')
+  );
+
+  const isCollapsed = (child: typeof node.children[0]) =>
+    child.type === 'leaf' && child.singleton && !!child.collapsed;
 
   return (
     <SplitPane
@@ -52,8 +45,10 @@ export function PaneTree({ node, sidebarContent, pageContent }: PaneTreeProps) {
       hideSecond={hideSecond}
       fixedFirstSize={isSidebarSplit ? sidebarWidth.value : undefined}
       onFixedResize={isSidebarSplit ? handleSidebarResize : undefined}
-      first={<PaneTree node={node.children[0]} sidebarContent={sidebarContent} pageContent={pageContent} />}
-      second={<PaneTree node={node.children[1]} sidebarContent={sidebarContent} pageContent={pageContent} />}
+      firstCollapsed={isCollapsed(node.children[0])}
+      secondCollapsed={isCollapsed(node.children[1])}
+      first={<PaneTree node={node.children[0]} />}
+      second={<PaneTree node={node.children[1]} />}
     />
   );
 }

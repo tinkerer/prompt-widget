@@ -2,20 +2,25 @@ import { useRef, useCallback, useEffect } from 'preact/hooks';
 import { signal } from '@preact/signals';
 import { type ViewMode } from './SessionViewToggle.js';
 import type { LeafNode } from '../lib/pane-tree.js';
+import { PopupMenu } from './PopupMenu.js';
 import {
   setActiveTab,
   setFocusedLeaf,
   focusedLeafId,
   reorderTabInLeaf,
+  removeTabFromLeaf,
   splitLeaf,
   mergeLeaf,
+  toggleLeafCollapsed,
   SIDEBAR_LEAF_ID,
   PAGE_LEAF_ID,
   SESSIONS_LEAF_ID,
+  CONTROLBAR_LEAF_ID,
 } from '../lib/pane-tree.js';
 import { renderTabContent } from './PaneContent.js';
 import {
   allSessions,
+  sessionMapComputed,
   exitedSessions,
   getSessionLabel,
   setSessionLabel,
@@ -48,11 +53,14 @@ import {
   buildTmuxAttachCmd,
   hotkeyMenuOpen,
   getWorktreeLabel,
+  activePanelId,
+  popInPickerSessionId,
+  popBackInToLeaf,
 } from '../lib/sessions.js';
 import { startTabDrag } from '../lib/tab-drag.js';
 import { ctrlShiftHeld } from '../lib/shortcuts.js';
 import { showHotkeyHints, popoutMode, type PopoutMode } from '../lib/settings.js';
-import { navigate, selectedAppId } from '../lib/state.js';
+import { navigate, selectedAppId, applications, appFeedbackCounts } from '../lib/state.js';
 import { api } from '../lib/api.js';
 import { copyWithTooltip } from '../lib/clipboard.js';
 import { useState } from 'preact/hooks';
@@ -106,6 +114,7 @@ function TabBadge({ tabNum }: { tabNum: number }) {
 function JsonlFileDropdown({ sessionId, sess }: { sessionId: string; sess: any }) {
   const [files, setFiles] = useState<JsonlFileInfo[]>([]);
   const [claudeUuid, setClaudeUuid] = useState<string | null>(null);
+  const triggerRef = useRef<HTMLSpanElement>(null);
   const isOpen = jsonlDropdownOpen.value === sessionId;
   const selectedFile = getJsonlSelectedFile(sessionId);
 
@@ -126,23 +135,12 @@ function JsonlFileDropdown({ sessionId, sess }: { sessionId: string; sess: any }
     return () => clearInterval(interval);
   }, [sessionId]);
 
-  useEffect(() => {
-    if (!isOpen) return;
-    const close = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      if (!target.closest('.jsonl-file-dropdown')) {
-        jsonlDropdownOpen.value = null;
-      }
-    };
-    document.addEventListener('click', close);
-    return () => document.removeEventListener('click', close);
-  }, [isOpen]);
-
   const shortUuid = claudeUuid ? claudeUuid.slice(0, 8) : sessionId.slice(-6);
 
   return (
     <div class="id-dropdown-wrapper jsonl-file-dropdown">
       <span
+        ref={triggerRef}
         class="tmux-id-label"
         onClick={() => { jsonlDropdownOpen.value = isOpen ? null : sessionId; }}
         title={claudeUuid ? `Claude Session: ${claudeUuid}` : undefined}
@@ -155,19 +153,19 @@ function JsonlFileDropdown({ sessionId, sess }: { sessionId: string; sess: any }
         </span>
       )}
       {isOpen && files.length > 0 && (
-        <div class="id-dropdown-menu jsonl-file-menu" onClick={() => { jsonlDropdownOpen.value = null; }}>
+        <PopupMenu anchorRef={triggerRef} onClose={() => { jsonlDropdownOpen.value = null; }} className="jsonl-file-menu">
           <button
-            class={!selectedFile ? 'active' : ''}
-            onClick={() => setJsonlSelectedFile(sessionId, null)}
+            class={`popup-menu-item${!selectedFile ? ' active' : ''}`}
+            onClick={() => { setJsonlSelectedFile(sessionId, null); jsonlDropdownOpen.value = null; }}
           >
             {!selectedFile ? '\u2713 ' : ''}All (merged) — {files.length} file{files.length !== 1 ? 's' : ''}
           </button>
-          <div class="jsonl-file-divider" />
+          <div class="popup-menu-divider" />
           {files.map(f => (
             <button
               key={f.id}
-              class={selectedFile === f.id ? 'active' : ''}
-              onClick={() => setJsonlSelectedFile(sessionId, f.id)}
+              class={`popup-menu-item${selectedFile === f.id ? ' active' : ''}`}
+              onClick={() => { setJsonlSelectedFile(sessionId, f.id); jsonlDropdownOpen.value = null; }}
               title={`${f.type}: ${f.claudeSessionId}`}
             >
               {selectedFile === f.id ? '\u2713 ' : ''}
@@ -177,7 +175,7 @@ function JsonlFileDropdown({ sessionId, sess }: { sessionId: string; sess: any }
               {f.label}
             </button>
           ))}
-        </div>
+        </PopupMenu>
       )}
     </div>
   );
@@ -194,6 +192,7 @@ function PaneHeader({
   exited: Set<string>;
   leafId: string;
 }) {
+  const idMenuTriggerRef = useRef<HTMLSpanElement>(null);
   const isJsonlTab = sessionId?.startsWith('jsonl:') || false;
   const isFeedbackTab = sessionId?.startsWith('feedback:') || false;
   const isIframeTab = sessionId?.startsWith('iframe:') || false;
@@ -292,29 +291,30 @@ function PaneHeader({
         <>
           <div class="id-dropdown-wrapper">
             <span
+              ref={idMenuTriggerRef}
               class="tmux-id-label"
               onClick={() => { idMenuOpen.value = idMenuOpen.value === sessionId ? null : sessionId; }}
             >
               pw-{sessionId.slice(-6)} <span class="id-dropdown-caret">{'\u25BE'}</span>
             </span>
             {idMenuOpen.value === sessionId && (
-              <div class="id-dropdown-menu" onClick={() => { idMenuOpen.value = null; }}>
+              <PopupMenu anchorRef={idMenuTriggerRef} onClose={() => { idMenuOpen.value = null; }}>
                 <div class="id-submenu-group" onClick={(e: any) => e.stopPropagation()}>
                   <div class="id-submenu-trigger">Copy</div>
                   <div class="id-submenu">
-                    <button onClick={(e) => { idMenuOpen.value = null; copyWithTooltip(sessionId, e as any); }}>
+                    <button class="popup-menu-item" onClick={(e) => { idMenuOpen.value = null; copyWithTooltip(sessionId, e as any); }}>
                       Session ID <kbd>C</kbd>
                     </button>
-                    <button onClick={(e) => { idMenuOpen.value = null; copyWithTooltip(buildTmuxAttachCmd(sessionId, sessionMap.get(sessionId)), e as any); }}>
+                    <button class="popup-menu-item" onClick={(e) => { idMenuOpen.value = null; copyWithTooltip(buildTmuxAttachCmd(sessionId, sessionMap.get(sessionId)), e as any); }}>
                       Tmux command <kbd>T</kbd>
                     </button>
                     {sess?.jsonlPath && (
-                      <button onClick={(e) => { idMenuOpen.value = null; copyWithTooltip(sess.jsonlPath, e as any); }}>
+                      <button class="popup-menu-item" onClick={(e) => { idMenuOpen.value = null; copyWithTooltip(sess.jsonlPath, e as any); }}>
                         JSONL path <kbd>J</kbd>
                       </button>
                     )}
                     {sess?.feedbackId && (
-                      <button onClick={(e) => { idMenuOpen.value = null; copyWithTooltip(sess.feedbackId, e as any); }}>
+                      <button class="popup-menu-item" onClick={(e) => { idMenuOpen.value = null; copyWithTooltip(sess.feedbackId, e as any); }}>
                         Feedback ID <kbd>D</kbd>
                       </button>
                     )}
@@ -327,7 +327,7 @@ function PaneHeader({
                       const companions = getCompanions(sessionId);
                       const jsonlActive = companions.includes('jsonl');
                       return (
-                        <button onClick={() => { idMenuOpen.value = null; toggleCompanion(sessionId, 'jsonl'); }}>
+                        <button class="popup-menu-item" onClick={() => { idMenuOpen.value = null; toggleCompanion(sessionId, 'jsonl'); }}>
                           {jsonlActive ? '\u2713 ' : ''}JSONL <kbd>L</kbd>
                         </button>
                       );
@@ -336,7 +336,7 @@ function PaneHeader({
                       const companions = getCompanions(sessionId);
                       const fbActive = companions.includes('feedback');
                       return (
-                        <button onClick={() => { idMenuOpen.value = null; toggleCompanion(sessionId, 'feedback'); }}>
+                        <button class="popup-menu-item" onClick={() => { idMenuOpen.value = null; toggleCompanion(sessionId, 'feedback'); }}>
                           {fbActive ? '\u2713 ' : ''}Feedback <kbd>F</kbd>
                         </button>
                       );
@@ -345,7 +345,7 @@ function PaneHeader({
                       const companions = getCompanions(sessionId);
                       const iframeActive = companions.includes('iframe');
                       return (
-                        <button onClick={() => { idMenuOpen.value = null; toggleCompanion(sessionId, 'iframe'); }}>
+                        <button class="popup-menu-item" onClick={() => { idMenuOpen.value = null; toggleCompanion(sessionId, 'iframe'); }}>
                           {iframeActive ? '\u2713 ' : ''}Page iframe <kbd>I</kbd>
                         </button>
                       );
@@ -354,7 +354,7 @@ function PaneHeader({
                       const companions = getCompanions(sessionId);
                       const termActive = companions.includes('terminal');
                       return (
-                        <button onClick={() => {
+                        <button class="popup-menu-item" onClick={() => {
                           if (termActive) {
                             idMenuOpen.value = null;
                             toggleCompanion(sessionId, 'terminal');
@@ -367,14 +367,14 @@ function PaneHeader({
                         </button>
                       );
                     })()}
-                    <button onClick={() => {
+                    <button class="popup-menu-item" onClick={() => {
                       idMenuOpen.value = null;
                       termPickerOpen.value = { kind: 'url' };
                     }}>
                       Iframe... <kbd>U</kbd>
                     </button>
                     {sess?.isHarness && sess?.harnessAppPort && (
-                      <button onClick={() => {
+                      <button class="popup-menu-item" onClick={() => {
                         const host = sess.isRemote && sess.launcherHostname ? sess.launcherHostname : 'localhost';
                         openUrlCompanion(`http://${host}:${sess.harnessAppPort}`);
                         idMenuOpen.value = null;
@@ -387,15 +387,15 @@ function PaneHeader({
                 <div class="id-submenu-group" onClick={(e: any) => e.stopPropagation()}>
                   <div class="id-submenu-trigger">Open In</div>
                   <div class="id-submenu">
-                    <button onClick={() => { idMenuOpen.value = null; executePopout(sessionId, 'panel'); }}>Panel <kbd>P</kbd></button>
-                    <button onClick={() => { idMenuOpen.value = null; executePopout(sessionId, 'window'); }}>Window <kbd>W</kbd></button>
-                    <button onClick={() => { idMenuOpen.value = null; executePopout(sessionId, 'tab'); }}>Browser Tab <kbd>B</kbd></button>
+                    <button class="popup-menu-item" onClick={() => { idMenuOpen.value = null; executePopout(sessionId, 'panel'); }}>Panel <kbd>P</kbd></button>
+                    <button class="popup-menu-item" onClick={() => { idMenuOpen.value = null; executePopout(sessionId, 'window'); }}>Window <kbd>W</kbd></button>
+                    <button class="popup-menu-item" onClick={() => { idMenuOpen.value = null; executePopout(sessionId, 'tab'); }}>Browser Tab <kbd>B</kbd></button>
                     {!isExited && (
-                      <button onClick={() => { idMenuOpen.value = null; executePopout(sessionId, 'terminal'); }}>Terminal.app <kbd>A</kbd></button>
+                      <button class="popup-menu-item" onClick={() => { idMenuOpen.value = null; executePopout(sessionId, 'terminal'); }}>Terminal.app <kbd>A</kbd></button>
                     )}
                   </div>
                 </div>
-              </div>
+              </PopupMenu>
             )}
           </div>
           {feedbackPath && (
@@ -438,9 +438,40 @@ function PaneHeader({
   );
 }
 
+// --- Singleton handle label ---
+
+function getSingletonLabel(sid: string): string {
+  if (sid === 'view:nav') return 'Prompt Widget';
+  if (sid === 'view:sessions-list') return 'Sessions';
+  if (sid === 'view:terminals') return 'Terminals';
+  if (sid === 'view:files') return 'Files';
+  if (sid === 'view:controlbar') return 'Control Bar';
+  if (sid === 'view:page') return 'Page';
+  if (sid === 'view:feedback') return 'Feedback';
+  if (sid === 'view:aggregate') return 'Aggregate';
+  if (sid === 'view:sessions-page') return 'Sessions';
+  if (sid === 'view:live') return 'Live';
+  return getTabLabel(sid, new Map());
+}
+
 // --- Tab label helper ---
 
 function getTabLabel(sid: string, sessionMap: Map<string, any>): string {
+  // View tabs
+  if (sid === 'view:page') return 'Page';
+  if (sid === 'view:controlbar') return 'Control Bar';
+  if (sid === 'view:sessions-list') return 'Sessions';
+  if (sid === 'view:terminals') return 'Terminals';
+  if (sid === 'view:files') return 'Files';
+  if (sid === 'view:nav') return 'Nav';
+  if (sid === 'view:feedback') return 'Feedback';
+  if (sid === 'view:aggregate') return 'Aggregate';
+  if (sid === 'view:sessions-page') return 'Sessions';
+  if (sid === 'view:live') return 'Live';
+  if (sid.startsWith('view:files:')) return 'Files';
+  if (sid.startsWith('view:git:')) return 'Git Changes';
+  if (sid.startsWith('view:')) return sid.slice(5);
+
   const isJsonl = sid.startsWith('jsonl:');
   const isFeedback = sid.startsWith('feedback:');
   const isIframe = sid.startsWith('iframe:');
@@ -487,20 +518,25 @@ interface LeafPaneProps {
 
 export function LeafPane({ leaf }: LeafPaneProps) {
   const tabsRef = useRef<HTMLDivElement>(null);
-  const sessions = allSessions.value;
-  const sessionMap = new Map(sessions.map((s: any) => [s.id, s]));
-  const exited = exitedSessions.value;
+  // Only subscribe to session signals if this leaf has non-view tabs
+  const hasSessionTabs = leaf.tabs.some(t => !t.startsWith('view:'));
+  const sessionMap = hasSessionTabs ? sessionMapComputed.value : new Map<string, any>();
+  const exited = hasSessionTabs ? exitedSessions.value : new Set<string>();
   const isFocused = focusedLeafId.value === leaf.id;
-  const globalSessions = allNumberedSessions();
+  const globalSessions = hasSessionTabs ? allNumberedSessions() : [];
   const activeId = leaf.activeTabId;
 
   const handleActivate = useCallback((sid: string) => {
     setActiveTab(leaf.id, sid);
     setFocusedLeaf(leaf.id);
-    openSession(sid);
+    if (!sid.startsWith('view:')) openSession(sid);
   }, [leaf.id]);
 
   const handleClose = useCallback((sid: string) => {
+    if (sid.startsWith('view:')) {
+      removeTabFromLeaf(leaf.id, sid);
+      return;
+    }
     closeTab(sid);
   }, [leaf.id]);
 
@@ -508,6 +544,7 @@ export function LeafPane({ leaf }: LeafPaneProps) {
     if (focusedLeafId.value !== leaf.id) {
       setFocusedLeaf(leaf.id);
     }
+    activePanelId.value = null;
   }, [leaf.id]);
 
   // Auto-scroll active tab into view
@@ -528,13 +565,6 @@ export function LeafPane({ leaf }: LeafPaneProps) {
     document.addEventListener('click', close);
     return () => document.removeEventListener('click', close);
   }, [statusMenuOpen.value]);
-
-  useEffect(() => {
-    if (!idMenuOpen.value) return;
-    const close = () => { idMenuOpen.value = null; };
-    document.addEventListener('click', close);
-    return () => document.removeEventListener('click', close);
-  }, [idMenuOpen.value]);
 
   useEffect(() => {
     if (!companionIdMenuOpen.value) return;
@@ -637,7 +667,128 @@ export function LeafPane({ leaf }: LeafPaneProps) {
         class={`pane-leaf pane-leaf-empty${isFocused ? ' pane-leaf-focused' : ''}`}
         data-leaf-id={leaf.id}
         onMouseDown={handleMouseDown}
-      />
+        style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px', width: '100%', height: '100%' }}
+      >
+        <span
+          style={{ opacity: 0.4, fontSize: '24px', cursor: 'pointer' }}
+          onClick={(e) => { e.stopPropagation(); setFocusedLeaf(leaf.id); termPickerOpen.value = { kind: 'new' }; }}
+          title="Add a tab"
+        >+</span>
+        <span
+          style={{ opacity: 0.4, fontSize: '20px', cursor: 'pointer' }}
+          onClick={(e) => { e.stopPropagation(); mergeLeaf(leaf.id); }}
+          title="Close pane"
+        >&times;</span>
+        {popInPickerSessionId.value && (
+          <div
+            class="pop-in-picker-overlay"
+            onClick={(e) => {
+              e.stopPropagation();
+              const pickSid = popInPickerSessionId.value!;
+              popInPickerSessionId.value = null;
+              popBackInToLeaf(pickSid, leaf.id);
+            }}
+          >
+            <span class="pop-in-picker-label">Drop here</span>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (leaf.tabs.length === 1 && (leaf.singleton || leaf.tabs[0].startsWith('view:'))) {
+    const sid = leaf.tabs[0];
+    const label = getSingletonLabel(sid);
+    const collapsed = !!leaf.collapsed;
+
+    // Compute count suffix and extra info for sidebar/page views
+    let countSuffix = '';
+    let extraBadges: any = null;
+    let plusAction: (() => void) | null = null;
+    let appPrefix = '';
+    const appId = selectedAppId.value;
+    const app = appId ? applications.value.find((a: any) => a.id === appId) : null;
+    if (sid === 'view:sessions-list') {
+      const allSess = allSessions.value;
+      const agents = allSess.filter((s: any) => s.permissionProfile !== 'plain' && s.status !== 'deleted');
+      const running = allSess.filter((s: any) => s.status === 'running' && s.permissionProfile !== 'plain').length;
+      const waiting = allSess.filter((s: any) => s.status === 'running' && sessionInputStates.value.get(s.id) === 'waiting').length;
+      countSuffix = ` (${agents.length})`;
+      extraBadges = (
+        <>
+          {running > 0 && <span class="sidebar-running-badge">{running} running</span>}
+          {waiting > 0 && <span class="sidebar-waiting-badge">{waiting} waiting</span>}
+        </>
+      );
+      plusAction = () => { termPickerOpen.value = { kind: 'claude' }; };
+    } else if (sid === 'view:terminals') {
+      const terminals = allSessions.value.filter((s: any) => s.permissionProfile === 'plain' && s.status !== 'deleted');
+      countSuffix = ` (${terminals.length})`;
+      plusAction = () => { termPickerOpen.value = { kind: 'new' }; };
+    } else if (sid === 'view:feedback') {
+      if (app) appPrefix = `${app.name} \u2014 `;
+      const count = appId ? (appFeedbackCounts.value[appId] || 0) : 0;
+      if (count > 0) countSuffix = ` (${count})`;
+    } else if (sid === 'view:aggregate') {
+      if (app) appPrefix = `${app.name} \u2014 `;
+    } else if (sid === 'view:sessions-page' || sid === 'view:live') {
+      if (app) appPrefix = `${app.name} \u2014 `;
+    }
+
+    return (
+      <div
+        class={`pane-leaf pane-leaf-singleton${isFocused ? ' pane-leaf-focused' : ''}${collapsed ? ' pane-leaf-collapsed' : ''}`}
+        data-leaf-id={leaf.id}
+        onMouseDown={handleMouseDown}
+        style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', overflow: 'hidden' }}
+      >
+        <div
+          class="singleton-handle"
+          onMouseDown={(e: MouseEvent) => {
+            if ((e.target as HTMLElement).closest('button, .singleton-collapse-icon')) return;
+            startTabDrag(e, {
+              sessionId: sid,
+              source: { type: 'leaf', leafId: leaf.id },
+              label: label || sid,
+              onClickFallback: () => {},
+            });
+          }}
+        >
+          <span
+            class={`singleton-collapse-icon${collapsed ? '' : ' expanded'}`}
+            onClick={(e) => { e.stopPropagation(); toggleLeafCollapsed(leaf.id); }}
+            title={collapsed ? 'Expand' : 'Collapse'}
+          >{'\u25B8'}</span>
+          <span class="singleton-label">{appPrefix}{label}{countSuffix}</span>
+          {extraBadges}
+          <span style={{ flex: 1 }} />
+          {plusAction && (
+            <button
+              class="sidebar-new-terminal-btn"
+              onClick={(e) => { e.stopPropagation(); plusAction!(); }}
+              title={sid === 'view:sessions-list' ? 'New Claude session (g c)' : 'New terminal (g t)'}
+            >+</button>
+          )}
+        </div>
+        {!collapsed && (
+          <div class="pane-leaf-body">
+            {renderTabContent(sid, true, sessionMap)}
+          </div>
+        )}
+        {popInPickerSessionId.value && (
+          <div
+            class="pop-in-picker-overlay"
+            onClick={(e) => {
+              e.stopPropagation();
+              const pickSid = popInPickerSessionId.value!;
+              popInPickerSessionId.value = null;
+              popBackInToLeaf(pickSid, leaf.id);
+            }}
+          >
+            <span class="pop-in-picker-label">Drop here</span>
+          </div>
+        )}
+      </div>
     );
   }
 
@@ -655,17 +806,18 @@ export function LeafPane({ leaf }: LeafPaneProps) {
           onWheel={(e) => { const d = (e as WheelEvent).deltaX || (e as WheelEvent).deltaY; if (d) { e.preventDefault(); (e.currentTarget as HTMLElement).scrollLeft += d; } }}
         >
           {leaf.tabs.map((sid) => {
+            const isView = sid.startsWith('view:');
             const isJsonl = sid.startsWith('jsonl:');
             const isFeedback = sid.startsWith('feedback:');
             const isIframe = sid.startsWith('iframe:');
             const isTerminal = sid.startsWith('terminal:');
             const isIsolate = sid.startsWith('isolate:');
             const isUrl = sid.startsWith('url:');
-            const isCompanion = isJsonl || isFeedback || isIframe || isTerminal || isIsolate || isUrl;
+            const isCompanion = isView || isJsonl || isFeedback || isIframe || isTerminal || isIsolate || isUrl;
             const realSid = isCompanion ? sid.slice(sid.indexOf(':') + 1) : sid;
             const isActive = sid === leaf.activeTabId;
             const isExited = exited.has(realSid);
-            const sess = (isIsolate || isUrl) ? null : sessionMap.get(realSid);
+            const sess = (isView || isIsolate || isUrl) ? null : sessionMap.get(realSid);
             const isPlain = !isCompanion && sess?.permissionProfile === 'plain';
             const inputState = !isExited && !isCompanion ? (sessionInputStates.value.get(sid) || null) : null;
             const label = getTabLabel(sid, sessionMap);
@@ -752,7 +904,7 @@ export function LeafPane({ leaf }: LeafPaneProps) {
             title="Split right (Ctrl+Shift+&quot;)"
             onClick={(e) => {
               e.stopPropagation();
-              splitLeaf(leaf.id, 'horizontal');
+              splitLeaf(leaf.id, 'horizontal', 'second', [], 0.5, true);
             }}
           >{'\u2502'}</button>
           <button
@@ -760,10 +912,10 @@ export function LeafPane({ leaf }: LeafPaneProps) {
             title="Split down (Ctrl+Shift+-)"
             onClick={(e) => {
               e.stopPropagation();
-              splitLeaf(leaf.id, 'vertical');
+              splitLeaf(leaf.id, 'vertical', 'second', [], 0.5, true);
             }}
           >{'\u2500'}</button>
-          {leaf.id !== SIDEBAR_LEAF_ID && leaf.id !== PAGE_LEAF_ID && leaf.id !== SESSIONS_LEAF_ID && (
+          {leaf.id !== SIDEBAR_LEAF_ID && leaf.id !== PAGE_LEAF_ID && leaf.id !== SESSIONS_LEAF_ID && leaf.id !== CONTROLBAR_LEAF_ID && (
             <button
               class="terminal-collapse-btn"
               title="Close pane (Ctrl+Shift+Backspace)"
@@ -810,10 +962,10 @@ export function LeafPane({ leaf }: LeafPaneProps) {
                 Pop out
               </button>
             )}
-            <button onClick={() => { statusMenuOpen.value = null; splitLeaf(leaf.id, 'horizontal'); }}>
+            <button onClick={() => { statusMenuOpen.value = null; splitLeaf(leaf.id, 'horizontal', 'second', [], 0.5, true); }}>
               Split Right {showHotkeyHints.value && <kbd>{'\u2303\u21E7'}"</kbd>}
             </button>
-            <button onClick={() => { statusMenuOpen.value = null; splitLeaf(leaf.id, 'vertical'); }}>
+            <button onClick={() => { statusMenuOpen.value = null; splitLeaf(leaf.id, 'vertical', 'second', [], 0.5, true); }}>
               Split Down {showHotkeyHints.value && <kbd>{'\u2303\u21E7'}-</kbd>}
             </button>
             {menuExited && (
@@ -892,17 +1044,32 @@ export function LeafPane({ leaf }: LeafPaneProps) {
         );
       })()}
 
-      <PaneHeader
-        sessionId={activeId}
-        sessionMap={sessionMap}
-        exited={exited}
-        leafId={leaf.id}
-      />
+      {activeId && !activeId.startsWith('view:') && (
+        <PaneHeader
+          sessionId={activeId}
+          sessionMap={sessionMap}
+          exited={exited}
+          leafId={leaf.id}
+        />
+      )}
       <div class="pane-leaf-body">
         {leaf.tabs.map((sid) =>
           renderTabContent(sid, sid === leaf.activeTabId, sessionMap, (code, text) => markSessionExited(sid, code, text))
         )}
       </div>
+      {popInPickerSessionId.value && (
+        <div
+          class="pop-in-picker-overlay"
+          onClick={(e) => {
+            e.stopPropagation();
+            const sid = popInPickerSessionId.value!;
+            popInPickerSessionId.value = null;
+            popBackInToLeaf(sid, leaf.id);
+          }}
+        >
+          <span class="pop-in-picker-label">Drop here</span>
+        </div>
+      )}
     </div>
   );
 }

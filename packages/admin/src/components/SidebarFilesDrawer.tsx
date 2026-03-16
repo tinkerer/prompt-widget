@@ -31,6 +31,8 @@ export function SidebarFilesDrawer({ appId, open, onToggle }: Props) {
   const [tab, setTab] = useState<'files' | 'changes'>('files');
   const [projectDir, setProjectDir] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [allExpanded, setAllExpanded] = useState(false);
+  const treeControlsRef = useRef<{ expandAll: () => void; collapseAll: () => void } | null>(null);
 
   useEffect(() => {
     if (!appId) { setProjectDir(null); return; }
@@ -42,23 +44,32 @@ export function SidebarFilesDrawer({ appId, open, onToggle }: Props) {
 
   return (
     <div class="sidebar-files-drawer" style={{ display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden', flex: open && appId ? 1 : 'none' }}>
-      <div class="sidebar-files-header" onClick={appId ? onToggle : undefined} style={!appId ? { opacity: 0.4, cursor: 'default' } : undefined}>
-        <span class={`sessions-chevron ${open && appId ? 'expanded' : ''}`}>{'\u25B8'}</span>
-        Files
-        <div style={{ flex: 1 }} />
-        {open && (
-          <div class="sidebar-files-tab-switcher" onClick={(e) => e.stopPropagation()}>
-            <button class={tab === 'files' ? 'active' : ''} onClick={() => setTab('files')}>{'\u{1F4C1}'}</button>
-            <button class={tab === 'changes' ? 'active' : ''} onClick={() => setTab('changes')}>{'\u{1F504}'}</button>
-          </div>
+      <div class="sidebar-files-header">
+        {tab === 'files' && open && appId && (
+          <button
+            class="sidebar-file-tree-toggle"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (allExpanded) treeControlsRef.current?.collapseAll();
+              else treeControlsRef.current?.expandAll();
+            }}
+            title={allExpanded ? 'Collapse all' : 'Expand all'}
+          >
+            {allExpanded ? '\u25BC' : '\u25B6'} All
+          </button>
         )}
+        <div style={{ flex: 1 }} />
+        <div class="sidebar-files-tab-switcher" onClick={(e) => e.stopPropagation()}>
+          <button class={tab === 'files' ? 'active' : ''} onClick={() => setTab('files')}>{'\u{1F4C1}'}</button>
+          <button class={tab === 'changes' ? 'active' : ''} onClick={() => setTab('changes')}>{'\u{1F504}'}</button>
+        </div>
       </div>
       {open && appId && (
         <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
           {error ? (
             <div style={{ padding: '8px 12px', color: '#e06c75', fontSize: '12px' }}>{error}</div>
           ) : tab === 'files' ? (
-            <SidebarFileTree appId={appId} projectDir={projectDir} />
+            <SidebarFileTree appId={appId} projectDir={projectDir} controlsRef={treeControlsRef} onAllExpandedChange={setAllExpanded} />
           ) : (
             <SidebarGitChanges appId={appId} projectDir={projectDir} />
           )}
@@ -68,7 +79,14 @@ export function SidebarFilesDrawer({ appId, open, onToggle }: Props) {
   );
 }
 
-function SidebarFileTree({ appId, projectDir }: { appId: string; projectDir: string | null }) {
+interface SidebarFileTreeProps {
+  appId: string;
+  projectDir: string | null;
+  controlsRef: { current: { expandAll: () => void; collapseAll: () => void } | null };
+  onAllExpandedChange: (v: boolean) => void;
+}
+
+function SidebarFileTree({ appId, projectDir, controlsRef, onAllExpandedChange }: SidebarFileTreeProps) {
   const [currentPath, setCurrentPath] = useState('.');
   const [entries, setEntries] = useState<Entry[]>([]);
   const [expandedDirs, setExpandedDirs] = useState<Map<string, Entry[]>>(new Map());
@@ -140,12 +158,16 @@ function SidebarFileTree({ appId, projectDir }: { appId: string; projectDir: str
     }
     setExpandedDirs(newExpanded);
     setAllExpanded(true);
+    onAllExpandedChange(true);
   }
 
   function collapseAll() {
     setExpandedDirs(new Map());
     setAllExpanded(false);
+    onAllExpandedChange(false);
   }
+
+  controlsRef.current = { expandAll, collapseAll };
 
   function handleFileClick(entryPath: string) {
     if (!projectDir) return;
@@ -182,11 +204,6 @@ function SidebarFileTree({ appId, projectDir }: { appId: string; projectDir: str
 
   return (
     <div class="sidebar-file-tree">
-      <div class="sidebar-file-tree-controls">
-        <button onClick={allExpanded ? collapseAll : expandAll} title={allExpanded ? 'Collapse all' : 'Expand all'}>
-          {allExpanded ? '\u25BC' : '\u25B6'} All
-        </button>
-      </div>
       {loading.has('__root__') ? (
         <div style={{ padding: '8px 12px', color: '#64748b', fontSize: '12px' }}>Loading...</div>
       ) : (

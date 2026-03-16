@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'preact/hooks';
 import { allSessions, paneMruHistory, spawnTerminal, attachTmuxSession, setTerminalCompanionAndOpen, setTerminalCompanion, togglePanelCompanion, loadAllSessions, openSession, openIsolateCompanion, openUrlCompanion } from '../lib/sessions.js';
-import { selectedAppId } from '../lib/state.js';
+import { selectedAppId, applications } from '../lib/state.js';
 import { getIsolateNames, getIsolateEntry } from '../lib/isolate.js';
 import { cachedTargets, ensureTargetsLoaded, refreshTargets } from './DispatchTargetSelect.js';
 import { api } from '../lib/api.js';
+import { addTabToLeaf, focusedLeafId, resetLayout, findLeafWithTab } from '../lib/pane-tree.js';
 
 export type TerminalPickerMode =
   | { kind: 'companion'; sessionId: string; panelId?: string }
@@ -357,7 +358,51 @@ export function TerminalPicker({ mode, onClose }: Props) {
     });
   }
 
-  // 8. Open URL iframe
+  // 8. View tabs (sidebar views)
+  const viewItems: { id: string; label: string; icon: string }[] = [
+    { id: 'view:feedback', label: 'Feedback', icon: '\u{1F4AC}' },
+    { id: 'view:aggregate', label: 'Aggregate', icon: '\u{1F4CA}' },
+    { id: 'view:sessions-page', label: 'Sessions Page', icon: '\u{1F4CB}' },
+    { id: 'view:live', label: 'Live Connections', icon: '\u{1F4E1}' },
+    { id: 'view:page', label: 'Page (Router)', icon: '\u{1F4C4}' },
+    { id: 'view:controlbar', label: 'Control Bar', icon: '\u{1F39B}\uFE0F' },
+    { id: 'view:nav', label: 'Sidebar Nav', icon: '\u{1F4CB}' },
+    { id: 'view:sessions-list', label: 'Sessions List', icon: '\u{26A1}' },
+    { id: 'view:terminals', label: 'Terminals', icon: '\u{1F5A5}\uFE0F' },
+    { id: 'view:files', label: 'Files', icon: '\u{1F4C2}' },
+  ];
+  // Add per-app file/git views
+  for (const app of applications.value) {
+    viewItems.push({ id: `view:files:${app.id}`, label: `Files: ${app.name}`, icon: '\u{1F4C2}' });
+    viewItems.push({ id: `view:git:${app.id}`, label: `Git: ${app.name}`, icon: '\u{1F500}' });
+  }
+  for (const vi of viewItems) {
+    const alreadyOpen = !!findLeafWithTab(vi.id);
+    items.push({
+      id: `view:${vi.id}`,
+      category: 'Views',
+      icon: vi.icon,
+      title: vi.label,
+      subtitle: alreadyOpen ? 'Already open — will focus' : 'Add to current pane',
+      action: () => {
+        const leafId = focusedLeafId.value;
+        if (leafId) addTabToLeaf(leafId, vi.id, true);
+        onClose();
+      },
+    });
+  }
+
+  // 9. Layout management
+  items.push({
+    id: '__reset_layout__',
+    category: 'Layout',
+    icon: '\u{1F504}',
+    title: 'Reset Layout',
+    subtitle: 'Restore default sidebar, nav, and sessions',
+    action: () => { resetLayout(); onClose(); },
+  });
+
+  // 10. Open URL iframe
   items.push({
     id: '__open_url__',
     category: 'Iframe',
@@ -393,7 +438,7 @@ export function TerminalPicker({ mode, onClose }: Props) {
   const harnessTmuxCategories = harnesses
     .filter(h => remoteTmux.has(h.launcherId))
     .map(h => `${h.name} Tmux`);
-  const categoryOrder = ['New', 'Remote Machines', ...remoteTmuxCategories, 'Harnesses', ...harnessTmuxCategories, 'Sprites', 'Recent', 'Open Terminals', 'Tmux Sessions', 'Isolated Components', 'Iframe'];
+  const categoryOrder = ['Layout', 'Views', 'New', 'Remote Machines', ...remoteTmuxCategories, 'Harnesses', ...harnessTmuxCategories, 'Sprites', 'Recent', 'Open Terminals', 'Tmux Sessions', 'Isolated Components', 'Iframe'];
   for (const cat of categoryOrder) {
     if (cat === 'Iframe' && urlItem) continue;
     const catItems = filtered.filter(i => i.category === cat);

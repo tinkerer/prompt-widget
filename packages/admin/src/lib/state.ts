@@ -34,6 +34,11 @@ export async function loadApplications() {
     const apps = await timed('apps:list', () => api.getApplications());
     applications.value = apps;
 
+    // Auto-select first app if none selected
+    if (!selectedAppId.value && apps.length > 0) {
+      selectedAppId.value = apps[0].id;
+    }
+
     // Defer feedback counts so visible page content loads first
     requestAnimationFrame(() => {
       loadFeedbackCounts(apps);
@@ -72,13 +77,23 @@ export function clearToken() {
   isAuthenticated.value = false;
 }
 
+function extractAppIdFromRoute(route: string): string | null {
+  const m = route.match(/^\/app\/([^/]+)\//);
+  return m ? m[1] : null;
+}
+
 export function navigate(path: string) {
   window.location.hash = path;
   currentRoute.value = path;
+  const appId = extractAppIdFromRoute(path);
+  if (appId) selectedAppId.value = appId;
 }
 
 window.addEventListener('hashchange', () => {
-  currentRoute.value = window.location.hash.slice(1) || '/';
+  const route = window.location.hash.slice(1) || '/';
+  currentRoute.value = route;
+  const appId = extractAppIdFromRoute(route);
+  if (appId) selectedAppId.value = appId;
 });
 
 // Embed postMessage bridge
