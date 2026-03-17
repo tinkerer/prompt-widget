@@ -117,7 +117,7 @@ export function SidebarNavView() {
                     onClick={(e) => { e.preventDefault(); navigate(`/app/${app.id}/feedback`); }}
                   >
                     {'\u{1F4CB}'} Feedback
-                    {fbCounts[app.id] > 0 && <span class="sidebar-count">{fbCounts[app.id]}</span>}
+                    {fbCounts[app.id]?.total > 0 && <span class="sidebar-count">{fbCounts[app.id].total}</span>}
                   </a>
                   <a
                     href={`#/app/${app.id}/aggregate`}

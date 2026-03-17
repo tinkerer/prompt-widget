@@ -61,7 +61,7 @@ import {
   termPickerOpen,
 } from '../lib/sessions.js';
 import { startTabDrag } from '../lib/tab-drag.js';
-import { ctrlShiftHeld } from '../lib/shortcuts.js';
+import { ctrlShiftHeld, stickyModeActive } from '../lib/shortcuts.js';
 import { navigate, selectedAppId } from '../lib/state.js';
 import { showHotkeyHints } from '../lib/settings.js';
 import { api } from '../lib/api.js';
@@ -200,8 +200,8 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
         : { position: 'fixed' as const, right: 0, top: panelTop, width: panel.dockedWidth, height: panel.dockedHeight, zIndex: panelZIdx }
     : { position: 'fixed' as const, left: panel.floatingRect.x, top: panel.floatingRect.y, width: panel.floatingRect.w, height: isMinimized ? 34 : panel.floatingRect.h, zIndex: panelZIdx };
 
-  const onHeaderDragStart = useCallback((e: MouseEvent) => {
-    if ((e.target as HTMLElement).closest('button, select, a, .id-dropdown-wrapper, .session-status-dot')) return;
+  const onHeaderDragStart = useCallback((e: MouseEvent, force?: boolean) => {
+    if (!force && (e.target as HTMLElement).closest('button, select, a, .id-dropdown-wrapper, .session-status-dot')) return;
     e.preventDefault();
     dragging.current = true;
     dragMoved.current = false;
@@ -441,11 +441,21 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
       )}
       <div
         ref={wrapperRef}
-        class={`${docked ? `popout-docked${isLeftDocked ? ' docked-left' : ''}` : 'popout-floating'}${isMinimized ? ' minimized' : ''}${isFocused ? ' panel-focused' : ''}${isActive ? ' panel-active' : ''}${panel.alwaysOnTop ? ' always-on-top' : ''}`}
+        class={`${docked ? `popout-docked${isLeftDocked ? ' docked-left' : ''}` : 'popout-floating'}${isMinimized ? ' minimized' : ''}${isFocused ? ' panel-focused' : ''}${isActive ? ' panel-active' : ''}${panel.alwaysOnTop ? ' always-on-top' : ''}${stickyModeActive.value ? ' move-mode' : ''}`}
         style={panelStyle}
         data-panel-id={panel.id}
-        onMouseDown={() => { activePanelId.value = panel.id; bringToFront(panel.id); setFocusedLeaf(null); if (panel.activeSessionId) focusSessionTerminal(panel.activeSessionId); }}
+        onMouseDown={(e) => {
+          activePanelId.value = panel.id; bringToFront(panel.id); setFocusedLeaf(null);
+          if (panel.activeSessionId) focusSessionTerminal(panel.activeSessionId);
+          if (stickyModeActive.value) {
+            e.stopPropagation();
+            onHeaderDragStart(e as any, true);
+          }
+        }}
       >
+      {stickyModeActive.value && (
+        <div class="move-mode-overlay" onMouseDown={(e) => { e.stopPropagation(); onHeaderDragStart(e as any, true); }} />
+      )}
       {ids.length === 1 ? (
       <div class="popout-tab-bar popout-singleton-bar" onMouseDown={onHeaderDragStart} onDblClick={() => {
         if (!docked) { updatePanel(panel.id, { minimized: !panel.minimized }); persistPopoutState(); }
@@ -582,87 +592,86 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
           ))}
         </div>
         <div class="popout-window-controls">
-          <div class="window-menu-wrapper">
-            <button
-              class="btn-window-menu"
-              onClick={(e) => { e.stopPropagation(); popoutWindowMenuOpen.value = popoutWindowMenuOpen.value === panel.id ? null : panel.id; }}
-              title="Window options"
-            >
-              {'\u2261'}
-            </button>
-            {popoutWindowMenuOpen.value === panel.id && (
-              <div class="window-menu" onClick={(e) => e.stopPropagation()}>
-                {activeId && (
-                  <button onClick={() => { popoutWindowMenuOpen.value = null; popBackIn(activeId); }}>
-                    {'\u2B05'} Pop in <kbd>S</kbd>
-                  </button>
-                )}
-                <button onClick={() => { popoutWindowMenuOpen.value = null; toggleAlwaysOnTop(panel.id); }}>
-                  {panel.alwaysOnTop ? '\u2713 ' : ''}{'\u{1F4CC}'} Pin on top <kbd>W</kbd>
+          <button
+            ref={windowMenuBtnRef}
+            class="btn-window-menu"
+            onClick={(e) => { e.stopPropagation(); popoutWindowMenuOpen.value = popoutWindowMenuOpen.value === panel.id ? null : panel.id; }}
+            title="Window options"
+          >
+            {'\u2261'}
+          </button>
+          {popoutWindowMenuOpen.value === panel.id && (
+            <PopupMenu anchorRef={windowMenuBtnRef} onClose={() => { popoutWindowMenuOpen.value = null; }} className="window-menu" align="right">
+              {activeId && (
+                <button class="popup-menu-item" onClick={() => { popoutWindowMenuOpen.value = null; popBackIn(activeId); }}>
+                  {'\u2B05'} Pop in <kbd>S</kbd>
                 </button>
-                {!docked && (
-                  <button onClick={() => { popoutWindowMenuOpen.value = null; updatePanel(panel.id, { minimized: !panel.minimized }); persistPopoutState(); }}>
-                    {isMinimized ? '\u25A1 Restore' : '\u2212 Minimize'} <kbd>Space</kbd>
-                  </button>
-                )}
-                {!docked && (
-                  <button onClick={() => {
-                    popoutWindowMenuOpen.value = null;
-                    if (panel.maximized) {
-                      if (panel.preMaximizeRect) {
-                        updatePanel(panel.id, { maximized: false, floatingRect: panel.preMaximizeRect, preMaximizeRect: undefined });
-                      } else {
-                        updatePanel(panel.id, { maximized: false });
-                      }
+              )}
+              <button class="popup-menu-item" onClick={() => { popoutWindowMenuOpen.value = null; toggleAlwaysOnTop(panel.id); }}>
+                {panel.alwaysOnTop ? '\u2713 ' : ''}{'\u{1F4CC}'} Pin on top <kbd>W</kbd>
+              </button>
+              {!docked && (
+                <button class="popup-menu-item" onClick={() => { popoutWindowMenuOpen.value = null; updatePanel(panel.id, { minimized: !panel.minimized }); persistPopoutState(); }}>
+                  {isMinimized ? '\u25A1 Restore' : '\u2212 Minimize'} <kbd>Space</kbd>
+                </button>
+              )}
+              {!docked && (
+                <button class="popup-menu-item" onClick={() => {
+                  popoutWindowMenuOpen.value = null;
+                  if (panel.maximized) {
+                    if (panel.preMaximizeRect) {
+                      updatePanel(panel.id, { maximized: false, floatingRect: panel.preMaximizeRect, preMaximizeRect: undefined });
                     } else {
-                      updatePanel(panel.id, {
-                        maximized: true,
-                        minimized: false,
-                        preMaximizeRect: { ...panel.floatingRect },
-                        floatingRect: { x: 0, y: 40, w: window.innerWidth, h: window.innerHeight - 40 },
-                      });
+                      updatePanel(panel.id, { maximized: false });
+                    }
+                  } else {
+                    updatePanel(panel.id, {
+                      maximized: true,
+                      minimized: false,
+                      preMaximizeRect: { ...panel.floatingRect },
+                      floatingRect: { x: 0, y: 40, w: window.innerWidth, h: window.innerHeight - 40 },
+                    });
+                  }
+                  persistPopoutState();
+                }}>
+                  {panel.maximized ? '\u25A3 Restore size' : '\u25A1 Maximize'} <kbd>M</kbd>
+                </button>
+              )}
+              <div class="window-menu-separator" />
+              <div class="window-menu-dock-row">
+                <button
+                  class={isLeftDocked ? 'dock-active' : ''}
+                  onClick={() => {
+                    popoutWindowMenuOpen.value = null;
+                    if (isLeftDocked) {
+                      updatePanel(panel.id, { docked: false, minimized: false, grabY: 0 });
+                    } else {
+                      updatePanel(panel.id, { docked: true, dockedSide: 'left', dockedTopOffset: 0, minimized: false, grabY: 0, dockedHeight: docked ? panel.dockedHeight : panel.floatingRect.h, dockedWidth: docked ? panel.dockedWidth : panel.floatingRect.w });
                     }
                     persistPopoutState();
-                  }}>
-                    {panel.maximized ? '\u25A3 Restore size' : '\u25A1 Maximize'} <kbd>M</kbd>
-                  </button>
-                )}
-                <div class="window-menu-separator" />
-                <div class="window-menu-dock-row">
-                  <button
-                    class={isLeftDocked ? 'dock-active' : ''}
-                    onClick={() => {
-                      popoutWindowMenuOpen.value = null;
-                      if (isLeftDocked) {
-                        updatePanel(panel.id, { docked: false, minimized: false, grabY: 0 });
-                      } else {
-                        updatePanel(panel.id, { docked: true, dockedSide: 'left', dockedTopOffset: 0, minimized: false, grabY: 0, dockedHeight: docked ? panel.dockedHeight : panel.floatingRect.h, dockedWidth: docked ? panel.dockedWidth : panel.floatingRect.w });
-                      }
-                      persistPopoutState();
-                      window.dispatchEvent(new Event('resize'));
-                    }}
-                  >
-                    {'\u25C0'} Left <kbd>A</kbd>
-                  </button>
-                  <button
-                    class={docked && !isLeftDocked ? 'dock-active' : ''}
-                    onClick={() => {
-                      popoutWindowMenuOpen.value = null;
-                      if (docked && !isLeftDocked) {
-                        updatePanel(panel.id, { docked: false, minimized: false, grabY: 0 });
-                      } else {
-                        updatePanel(panel.id, { docked: true, dockedSide: 'right', dockedTopOffset: 0, minimized: false, grabY: 0, dockedHeight: docked ? panel.dockedHeight : panel.floatingRect.h, dockedWidth: docked ? panel.dockedWidth : panel.floatingRect.w });
-                      }
-                      persistPopoutState();
-                      window.dispatchEvent(new Event('resize'));
-                    }}
-                  >
-                    Right {'\u25B6'} <kbd>D</kbd>
-                  </button>
-                </div>
+                    window.dispatchEvent(new Event('resize'));
+                  }}
+                >
+                  {'\u25C0'} Left <kbd>A</kbd>
+                </button>
+                <button
+                  class={docked && !isLeftDocked ? 'dock-active' : ''}
+                  onClick={() => {
+                    popoutWindowMenuOpen.value = null;
+                    if (docked && !isLeftDocked) {
+                      updatePanel(panel.id, { docked: false, minimized: false, grabY: 0 });
+                    } else {
+                      updatePanel(panel.id, { docked: true, dockedSide: 'right', dockedTopOffset: 0, minimized: false, grabY: 0, dockedHeight: docked ? panel.dockedHeight : panel.floatingRect.h, dockedWidth: docked ? panel.dockedWidth : panel.floatingRect.w });
+                    }
+                    persistPopoutState();
+                    window.dispatchEvent(new Event('resize'));
+                  }}
+                >
+                  Right {'\u25B6'} <kbd>D</kbd>
+                </button>
               </div>
-            )}
-          </div>
+            </PopupMenu>
+          )}
           <button class="btn-close-panel" onClick={() => { updatePanel(panel.id, { visible: false }); persistPopoutState(); }} title="Hide panel">&times;</button>
         </div>
       </div>
@@ -751,111 +760,32 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
             );
           })}
         </div>
-        <span style="flex:1;min-width:40px" />
-        <div class="popout-window-controls">
-          <div class="window-menu-wrapper">
-            <button
-              class="btn-window-menu"
-              onClick={(e) => { e.stopPropagation(); popoutWindowMenuOpen.value = popoutWindowMenuOpen.value === panel.id ? null : panel.id; }}
-              title="Window options"
-            >
-              {'\u2261'}
-            </button>
-            {popoutWindowMenuOpen.value === panel.id && (
-              <div class="window-menu" onClick={(e) => e.stopPropagation()}>
-                {activeId && (
-                  <button onClick={() => { popoutWindowMenuOpen.value = null; popBackIn(activeId); }}>
-                    {'\u2B05'} Pop in <kbd>S</kbd>
-                  </button>
-                )}
-                <button onClick={() => { popoutWindowMenuOpen.value = null; toggleAlwaysOnTop(panel.id); }}>
-                  {panel.alwaysOnTop ? '\u2713 ' : ''}{'\u{1F4CC}'} Pin on top <kbd>W</kbd>
-                </button>
-                {!docked && (
-                  <button onClick={() => { popoutWindowMenuOpen.value = null; updatePanel(panel.id, { minimized: !panel.minimized }); persistPopoutState(); }}>
-                    {isMinimized ? '\u25A1 Restore' : '\u2212 Minimize'} <kbd>Space</kbd>
-                  </button>
-                )}
-                {!docked && (
-                  <button onClick={() => {
-                    popoutWindowMenuOpen.value = null;
-                    if (panel.maximized) {
-                      if (panel.preMaximizeRect) {
-                        updatePanel(panel.id, { maximized: false, floatingRect: panel.preMaximizeRect, preMaximizeRect: undefined });
-                      } else {
-                        updatePanel(panel.id, { maximized: false });
-                      }
-                    } else {
-                      updatePanel(panel.id, {
-                        maximized: true,
-                        minimized: false,
-                        preMaximizeRect: { ...panel.floatingRect },
-                        floatingRect: { x: 0, y: 40, w: window.innerWidth, h: window.innerHeight - 40 },
-                      });
-                    }
-                    persistPopoutState();
-                  }}>
-                    {panel.maximized ? '\u25A3 Restore size' : '\u25A1 Maximize'} <kbd>M</kbd>
-                  </button>
-                )}
-                <div class="window-menu-separator" />
-                <div class="window-menu-dock-row">
-                  <button
-                    class={isLeftDocked ? 'dock-active' : ''}
-                    onClick={() => {
-                      popoutWindowMenuOpen.value = null;
-                      if (isLeftDocked) {
-                        updatePanel(panel.id, { docked: false, minimized: false, grabY: 0 });
-                      } else {
-                        updatePanel(panel.id, { docked: true, dockedSide: 'left', dockedTopOffset: 0, minimized: false, grabY: 0, dockedHeight: docked ? panel.dockedHeight : panel.floatingRect.h, dockedWidth: docked ? panel.dockedWidth : panel.floatingRect.w });
-                      }
-                      persistPopoutState();
-                      window.dispatchEvent(new Event('resize'));
-                    }}
-                  >
-                    {'\u25C0'} Left <kbd>A</kbd>
-                  </button>
-                  <button
-                    class={docked && !isLeftDocked ? 'dock-active' : ''}
-                    onClick={() => {
-                      popoutWindowMenuOpen.value = null;
-                      if (docked && !isLeftDocked) {
-                        updatePanel(panel.id, { docked: false, minimized: false, grabY: 0 });
-                      } else {
-                        updatePanel(panel.id, { docked: true, dockedSide: 'right', dockedTopOffset: 0, minimized: false, grabY: 0, dockedHeight: docked ? panel.dockedHeight : panel.floatingRect.h, dockedWidth: docked ? panel.dockedWidth : panel.floatingRect.w });
-                      }
-                      persistPopoutState();
-                      window.dispatchEvent(new Event('resize'));
-                    }}
-                  >
-                    Right {'\u25B6'} <kbd>D</kbd>
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-          <button class="btn-close-panel" onClick={() => { updatePanel(panel.id, { visible: false }); persistPopoutState(); }} title="Hide panel">&times;</button>
-        </div>
       </div>
-      <div class="popout-header">
+      <div class="popout-header" onMouseDown={onHeaderDragStart} onDblClick={() => {
+        if (!docked) {
+          updatePanel(panel.id, { minimized: !panel.minimized });
+          persistPopoutState();
+        }
+      }}>
         {activeId && (
-          <div class="id-dropdown-wrapper">
+          <>
             <span
+              ref={idMenuBtnRef2}
               class="tmux-id-label"
               onClick={(e) => { e.stopPropagation(); popoutIdMenuOpen.value = showIdMenu ? null : activeId; }}
             >
               pw-{activeId.slice(-6)} <span class="id-dropdown-caret">{'\u25BE'}</span>
             </span>
             {showIdMenu && (
-              <div class="id-dropdown-menu" onClick={() => { popoutIdMenuOpen.value = null; }}>
-                <button onClick={(e) => { e.stopPropagation(); popoutIdMenuOpen.value = null; copyWithTooltip(activeId, e as any); }}>
+              <PopupMenu anchorRef={idMenuBtnRef2} onClose={() => { popoutIdMenuOpen.value = null; }} className="id-dropdown-menu">
+                <button class="popup-menu-item" onClick={(e) => { e.stopPropagation(); popoutIdMenuOpen.value = null; copyWithTooltip(activeId, e as any); }}>
                   Copy {activeId} <kbd>C</kbd>
                 </button>
-                <button onClick={(e) => { e.stopPropagation(); popoutIdMenuOpen.value = null; copyWithTooltip(buildTmuxAttachCmd(activeId, sessionMap.get(activeId)), e as any); }}>
+                <button class="popup-menu-item" onClick={(e) => { e.stopPropagation(); popoutIdMenuOpen.value = null; copyWithTooltip(buildTmuxAttachCmd(activeId, sessionMap.get(activeId)), e as any); }}>
                   Copy tmux command <kbd>T</kbd>
                 </button>
                 {session?.jsonlPath && (
-                  <button onClick={(e) => { e.stopPropagation(); popoutIdMenuOpen.value = null; copyWithTooltip(session.jsonlPath, e as any); }}>
+                  <button class="popup-menu-item" onClick={(e) => { e.stopPropagation(); popoutIdMenuOpen.value = null; copyWithTooltip(session.jsonlPath, e as any); }}>
                     Copy JSONL path <kbd>J</kbd>
                   </button>
                 )}
@@ -863,7 +793,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
                   const panelRight = panel.rightPaneTabs || [];
                   const jsonlActive = panelRight.includes(companionTabId(activeId, 'jsonl')) && panel.splitEnabled;
                   return (
-                    <button onClick={() => { popoutIdMenuOpen.value = null; togglePanelCompanion(panel.id, activeId, 'jsonl'); }}>
+                    <button class="popup-menu-item" onClick={() => { popoutIdMenuOpen.value = null; togglePanelCompanion(panel.id, activeId, 'jsonl'); }}>
                       {jsonlActive ? '\u2713 ' : ''}JSONL companion <kbd>L</kbd>
                     </button>
                   );
@@ -872,7 +802,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
                   const panelRight = panel.rightPaneTabs || [];
                   const fbActive = panelRight.includes(companionTabId(activeId, 'feedback')) && panel.splitEnabled;
                   return (
-                    <button onClick={() => { popoutIdMenuOpen.value = null; togglePanelCompanion(panel.id, activeId, 'feedback'); }}>
+                    <button class="popup-menu-item" onClick={() => { popoutIdMenuOpen.value = null; togglePanelCompanion(panel.id, activeId, 'feedback'); }}>
                       {fbActive ? '\u2713 ' : ''}Feedback companion <kbd>F</kbd>
                     </button>
                   );
@@ -881,7 +811,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
                   const panelRight = panel.rightPaneTabs || [];
                   const iframeActive = panelRight.includes(companionTabId(activeId, 'iframe')) && panel.splitEnabled;
                   return (
-                    <button onClick={() => { popoutIdMenuOpen.value = null; togglePanelCompanion(panel.id, activeId, 'iframe'); }}>
+                    <button class="popup-menu-item" onClick={() => { popoutIdMenuOpen.value = null; togglePanelCompanion(panel.id, activeId, 'iframe'); }}>
                       {iframeActive ? '\u2713 ' : ''}Page iframe <kbd>I</kbd>
                     </button>
                   );
@@ -890,7 +820,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
                   const panelRight = panel.rightPaneTabs || [];
                   const termActive = panelRight.includes(companionTabId(activeId, 'terminal')) && panel.splitEnabled;
                   return (
-                    <button onClick={(e: any) => {
+                    <button class="popup-menu-item" onClick={(e: any) => {
                       e.stopPropagation();
                       popoutIdMenuOpen.value = null;
                       if (termActive) {
@@ -904,7 +834,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
                   );
                 })()}
                 {session?.isHarness && session?.harnessAppPort && (
-                  <button onClick={() => {
+                  <button class="popup-menu-item" onClick={() => {
                     const host = session.isRemote && session.launcherHostname ? session.launcherHostname : 'localhost';
                     openUrlCompanion(`http://${host}:${session.harnessAppPort}`);
                     popoutIdMenuOpen.value = null;
@@ -912,16 +842,16 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
                     Open App <kbd>O</kbd>
                   </button>
                 )}
-                <div class="id-dropdown-separator" />
-                <button onClick={() => { popoutIdMenuOpen.value = null; popBackIn(activeId); }}>Pop back to tab bar <kbd>P</kbd></button>
-                <button onClick={() => { popoutIdMenuOpen.value = null; window.open(`#/session/${activeId}`, '_blank', 'width=900,height=600,menubar=no,toolbar=no'); }}>Open in window <kbd>W</kbd></button>
-                <button onClick={() => { popoutIdMenuOpen.value = null; window.open(`#/session/${activeId}`, '_blank'); }}>Open in browser tab <kbd>B</kbd></button>
+                <div class="popup-menu-divider" />
+                <button class="popup-menu-item" onClick={() => { popoutIdMenuOpen.value = null; popBackIn(activeId); }}>Pop back to tab bar <kbd>P</kbd></button>
+                <button class="popup-menu-item" onClick={() => { popoutIdMenuOpen.value = null; window.open(`#/session/${activeId}`, '_blank', 'width=900,height=600,menubar=no,toolbar=no'); }}>Open in window <kbd>W</kbd></button>
+                <button class="popup-menu-item" onClick={() => { popoutIdMenuOpen.value = null; window.open(`#/session/${activeId}`, '_blank'); }}>Open in browser tab <kbd>B</kbd></button>
                 {!isExited && (
-                  <button onClick={() => { popoutIdMenuOpen.value = null; api.openSessionInTerminal(activeId).catch(() => {}); }}>Open in Terminal.app <kbd>A</kbd></button>
+                  <button class="popup-menu-item" onClick={() => { popoutIdMenuOpen.value = null; api.openSessionInTerminal(activeId).catch(() => {}); }}>Open in Terminal.app <kbd>A</kbd></button>
                 )}
-              </div>
+              </PopupMenu>
             )}
-          </div>
+          </>
         )}
         {feedbackPath && (
           <a
@@ -954,6 +884,89 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
           ) : (
             <button class="btn-kill" onClick={() => killSession(activeId)} title="Kill">Kill</button>
           ))}
+        </div>
+        <div class="popout-window-controls">
+          <button
+            ref={windowMenuBtnRef2}
+            class="btn-window-menu"
+            onClick={(e) => { e.stopPropagation(); popoutWindowMenuOpen.value = popoutWindowMenuOpen.value === panel.id ? null : panel.id; }}
+            title="Window options"
+          >
+            {'\u2261'}
+          </button>
+          {popoutWindowMenuOpen.value === panel.id && (
+            <PopupMenu anchorRef={windowMenuBtnRef2} onClose={() => { popoutWindowMenuOpen.value = null; }} className="window-menu" align="right">
+              {activeId && (
+                <button class="popup-menu-item" onClick={() => { popoutWindowMenuOpen.value = null; popBackIn(activeId); }}>
+                  {'\u2B05'} Pop in <kbd>S</kbd>
+                </button>
+              )}
+              <button class="popup-menu-item" onClick={() => { popoutWindowMenuOpen.value = null; toggleAlwaysOnTop(panel.id); }}>
+                {panel.alwaysOnTop ? '\u2713 ' : ''}{'\u{1F4CC}'} Pin on top <kbd>W</kbd>
+              </button>
+              {!docked && (
+                <button class="popup-menu-item" onClick={() => { popoutWindowMenuOpen.value = null; updatePanel(panel.id, { minimized: !panel.minimized }); persistPopoutState(); }}>
+                  {isMinimized ? '\u25A1 Restore' : '\u2212 Minimize'} <kbd>Space</kbd>
+                </button>
+              )}
+              {!docked && (
+                <button class="popup-menu-item" onClick={() => {
+                  popoutWindowMenuOpen.value = null;
+                  if (panel.maximized) {
+                    if (panel.preMaximizeRect) {
+                      updatePanel(panel.id, { maximized: false, floatingRect: panel.preMaximizeRect, preMaximizeRect: undefined });
+                    } else {
+                      updatePanel(panel.id, { maximized: false });
+                    }
+                  } else {
+                    updatePanel(panel.id, {
+                      maximized: true,
+                      minimized: false,
+                      preMaximizeRect: { ...panel.floatingRect },
+                      floatingRect: { x: 0, y: 40, w: window.innerWidth, h: window.innerHeight - 40 },
+                    });
+                  }
+                  persistPopoutState();
+                }}>
+                  {panel.maximized ? '\u25A3 Restore size' : '\u25A1 Maximize'} <kbd>M</kbd>
+                </button>
+              )}
+              <div class="window-menu-separator" />
+              <div class="window-menu-dock-row">
+                <button
+                  class={isLeftDocked ? 'dock-active' : ''}
+                  onClick={() => {
+                    popoutWindowMenuOpen.value = null;
+                    if (isLeftDocked) {
+                      updatePanel(panel.id, { docked: false, minimized: false, grabY: 0 });
+                    } else {
+                      updatePanel(panel.id, { docked: true, dockedSide: 'left', dockedTopOffset: 0, minimized: false, grabY: 0, dockedHeight: docked ? panel.dockedHeight : panel.floatingRect.h, dockedWidth: docked ? panel.dockedWidth : panel.floatingRect.w });
+                    }
+                    persistPopoutState();
+                    window.dispatchEvent(new Event('resize'));
+                  }}
+                >
+                  {'\u25C0'} Left <kbd>A</kbd>
+                </button>
+                <button
+                  class={docked && !isLeftDocked ? 'dock-active' : ''}
+                  onClick={() => {
+                    popoutWindowMenuOpen.value = null;
+                    if (docked && !isLeftDocked) {
+                      updatePanel(panel.id, { docked: false, minimized: false, grabY: 0 });
+                    } else {
+                      updatePanel(panel.id, { docked: true, dockedSide: 'right', dockedTopOffset: 0, minimized: false, grabY: 0, dockedHeight: docked ? panel.dockedHeight : panel.floatingRect.h, dockedWidth: docked ? panel.dockedWidth : panel.floatingRect.w });
+                    }
+                    persistPopoutState();
+                    window.dispatchEvent(new Event('resize'));
+                  }}
+                >
+                  Right {'\u25B6'} <kbd>D</kbd>
+                </button>
+              </div>
+            </PopupMenu>
+          )}
+          <button class="btn-close-panel" onClick={() => { updatePanel(panel.id, { visible: false }); persistPopoutState(); }} title="Hide panel">&times;</button>
         </div>
       </div>
       </>
@@ -1027,6 +1040,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
                       return (
                         <button
                           key={sid}
+                          ref={isActive && hasCopyId ? companionMenuBtnRef : undefined}
                           class={`popout-tab ${isActive ? 'active' : ''}`}
                           onClick={() => {
                             if (isActive && hasCopyId) {
@@ -1044,17 +1058,17 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
                     })}
                   </div>
                   {showCompMenu && activeTermId && (
-                    <div class="id-dropdown-menu companion-dropdown" onClick={() => { companionMenuOpen.value = null; }}>
-                      <button onClick={(e: any) => { e.stopPropagation(); companionMenuOpen.value = null; copyWithTooltip(activeTermId, e); }}>
+                    <PopupMenu anchorRef={companionMenuBtnRef} onClose={() => { companionMenuOpen.value = null; }} className="companion-dropdown">
+                      <button class="popup-menu-item" onClick={(e: any) => { e.stopPropagation(); companionMenuOpen.value = null; copyWithTooltip(activeTermId, e); }}>
                         Copy ID: {activeTermId.slice(-8)}
                       </button>
-                      <button onClick={(e: any) => { e.stopPropagation(); companionMenuOpen.value = null; copyWithTooltip(buildTmuxAttachCmd(activeTermId, termSess), e); }}>
+                      <button class="popup-menu-item" onClick={(e: any) => { e.stopPropagation(); companionMenuOpen.value = null; copyWithTooltip(buildTmuxAttachCmd(activeTermId, termSess), e); }}>
                         Copy tmux command
                       </button>
-                      <button onClick={() => { companionMenuOpen.value = null; api.openSessionInTerminal(activeTermId).catch(() => {}); }}>
+                      <button class="popup-menu-item" onClick={() => { companionMenuOpen.value = null; api.openSessionInTerminal(activeTermId).catch(() => {}); }}>
                         Open in Terminal.app
                       </button>
-                    </div>
+                    </PopupMenu>
                   )}
                   <button
                     class="split-pane-unsplit-btn"

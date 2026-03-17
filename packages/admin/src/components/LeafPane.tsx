@@ -56,8 +56,10 @@ import {
   activePanelId,
   popInPickerSessionId,
   popBackInToLeaf,
+  popBackInToLeafWithSplit,
+  feedbackTitleCache,
 } from '../lib/sessions.js';
-import { startTabDrag } from '../lib/tab-drag.js';
+import { startTabDrag, dragOverLeafZone } from '../lib/tab-drag.js';
 import { ctrlShiftHeld } from '../lib/shortcuts.js';
 import { showHotkeyHints, popoutMode, type PopoutMode } from '../lib/settings.js';
 import { navigate, selectedAppId, applications, appFeedbackCounts } from '../lib/state.js';
@@ -438,20 +440,102 @@ function PaneHeader({
   );
 }
 
-// --- Singleton handle label ---
+// --- Singleton metadata registry ---
+
+interface SingletonMeta {
+  label: string;
+  countSuffix?: () => string;
+  extraBadges?: () => any;
+  appPrefix?: () => string;
+  plusKind: 'new' | 'claude' | 'url';
+}
+
+function getSingletonMeta(sid: string): SingletonMeta {
+  const appId = selectedAppId.value;
+  const app = appId ? applications.value.find((a: any) => a.id === appId) : null;
+
+  switch (sid) {
+    case 'view:sessions-list': {
+      return {
+        label: 'Sessions',
+        plusKind: 'claude',
+        countSuffix: () => {
+          const allSess2 = allSessions.value;
+          const agents = allSess2.filter((s: any) => s.permissionProfile !== 'plain' && s.status !== 'deleted');
+          return ` (${agents.length})`;
+        },
+        extraBadges: () => {
+          const allSess2 = allSessions.value;
+          const running = allSess2.filter((s: any) => s.status === 'running' && s.permissionProfile !== 'plain').length;
+          const waiting = allSess2.filter((s: any) => s.status === 'running' && sessionInputStates.value.get(s.id) === 'waiting').length;
+          return (
+            <>
+              {running > 0 && <span class="sidebar-running-badge">{running} running</span>}
+              {waiting > 0 && <span class="sidebar-waiting-badge">{waiting} waiting</span>}
+            </>
+          );
+        },
+      };
+    }
+    case 'view:terminals':
+      return {
+        label: 'Terminals',
+        plusKind: 'new',
+        countSuffix: () => {
+          const terminals = allSessions.value.filter((s: any) => s.permissionProfile === 'plain' && s.status !== 'deleted');
+          return ` (${terminals.length})`;
+        },
+      };
+    case 'view:feedback':
+      return {
+        label: 'Feedback',
+        plusKind: 'new',
+        appPrefix: () => app ? `${app.name} \u2014 ` : '',
+        countSuffix: () => {
+          const counts = appId ? appFeedbackCounts.value[appId] : null;
+          if (counts && counts.total > 0) {
+            const parts: string[] = [];
+            if (counts.new > 0) parts.push(`${counts.new} new`);
+            if (counts.running > 0) parts.push(`${counts.running} running`);
+            parts.push(`${counts.total} total`);
+            return ` (${parts.join(', ')})`;
+          }
+          return '';
+        },
+      };
+    case 'view:aggregate':
+      return {
+        label: 'Aggregate',
+        plusKind: 'new',
+        appPrefix: () => app ? `${app.name} \u2014 ` : '',
+      };
+    case 'view:sessions-page':
+      return {
+        label: 'Sessions',
+        plusKind: 'new',
+        appPrefix: () => app ? `${app.name} \u2014 ` : '',
+      };
+    case 'view:live':
+      return {
+        label: 'Live',
+        plusKind: 'new',
+        appPrefix: () => app ? `${app.name} \u2014 ` : '',
+      };
+    case 'view:nav':
+      return { label: 'Prompt Widget', plusKind: 'new' };
+    case 'view:files':
+      return { label: 'Files', plusKind: 'new' };
+    case 'view:controlbar':
+      return { label: 'Control Bar', plusKind: 'new' };
+    case 'view:page':
+      return { label: 'Page', plusKind: 'new' };
+    default:
+      return { label: getTabLabel(sid, new Map()), plusKind: 'new' };
+  }
+}
 
 function getSingletonLabel(sid: string): string {
-  if (sid === 'view:nav') return 'Prompt Widget';
-  if (sid === 'view:sessions-list') return 'Sessions';
-  if (sid === 'view:terminals') return 'Terminals';
-  if (sid === 'view:files') return 'Files';
-  if (sid === 'view:controlbar') return 'Control Bar';
-  if (sid === 'view:page') return 'Page';
-  if (sid === 'view:feedback') return 'Feedback';
-  if (sid === 'view:aggregate') return 'Aggregate';
-  if (sid === 'view:sessions-page') return 'Sessions';
-  if (sid === 'view:live') return 'Live';
-  return getTabLabel(sid, new Map());
+  return getSingletonMeta(sid).label;
 }
 
 // --- Tab label helper ---
@@ -471,6 +555,19 @@ function getTabLabel(sid: string, sessionMap: Map<string, any>): string {
   if (sid.startsWith('view:files:')) return 'Files';
   if (sid.startsWith('view:git:')) return 'Git Changes';
   if (sid.startsWith('view:')) return sid.slice(5);
+
+  // Feedback item tabs
+  if (sid.startsWith('fb:')) {
+    const customLabel = getSessionLabel(sid);
+    if (customLabel) return customLabel;
+    const fbId = sid.slice(3);
+    const cached = feedbackTitleCache.value[fbId];
+    if (cached) {
+      const truncated = cached.length > 30 ? cached.slice(0, 30) + '…' : cached;
+      return truncated;
+    }
+    return `FB: ${fbId.slice(-6)}`;
+  }
 
   const isJsonl = sid.startsWith('jsonl:');
   const isFeedback = sid.startsWith('feedback:');
@@ -508,6 +605,64 @@ function getTabLabel(sid: string, sessionMap: Map<string, any>): string {
   }
   const locationPrefix = sess?.isHarness ? '\u{1F4E6}' : sess?.isRemote ? '\u{1F310}' : '';
   return `${locationPrefix ? locationPrefix + ' ' : ''}${sess?.feedbackTitle || sess?.agentName || `Session ${sid.slice(-6)}`}`;
+}
+
+// --- Diagonal drop zone (shown during tab drag) ---
+
+function DiagonalDropZone({ leafId }: { leafId: string }) {
+  const zone = dragOverLeafZone.value;
+  if (!zone || zone.leafId !== leafId) return null;
+  const activeZone = zone.zone;
+  if (activeZone === 'tab') return null;
+  return (
+    <div class="diagonal-drop-zone" style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 90 }}>
+      <div class={`diagonal-zone diagonal-zone-vsplit${activeZone === 'v-split' ? ' active' : ''}`}>
+        <span class="diagonal-zone-label">{'\u2550'} Split Down</span>
+      </div>
+      <div class={`diagonal-zone diagonal-zone-hsplit${activeZone === 'h-split' ? ' active' : ''}`}>
+        <span class="diagonal-zone-label">{'\u2551'} Split Right</span>
+      </div>
+      <div class="diagonal-line" />
+    </div>
+  );
+}
+
+// --- Pop-in picker overlay with diagonal zones ---
+
+function PopInPickerOverlay({ leafId }: { leafId: string }) {
+  const pickSid = popInPickerSessionId.value;
+  if (!pickSid) return null;
+  return (
+    <div class="pop-in-picker-overlay pop-in-picker-zones" onClick={(e) => e.stopPropagation()}>
+      <div
+        class="pop-in-zone pop-in-zone-tab"
+        onClick={() => {
+          popInPickerSessionId.value = null;
+          popBackInToLeaf(pickSid, leafId);
+        }}
+      >
+        <span class="pop-in-zone-label">Add as Tab</span>
+      </div>
+      <div
+        class="pop-in-zone pop-in-zone-vsplit"
+        onClick={() => {
+          popInPickerSessionId.value = null;
+          popBackInToLeafWithSplit(pickSid, leafId, 'vertical');
+        }}
+      >
+        <span class="pop-in-zone-label">{'\u2550'} Split Down</span>
+      </div>
+      <div
+        class="pop-in-zone pop-in-zone-hsplit"
+        onClick={() => {
+          popInPickerSessionId.value = null;
+          popBackInToLeafWithSplit(pickSid, leafId, 'horizontal');
+        }}
+      >
+        <span class="pop-in-zone-label">{'\u2551'} Split Right</span>
+      </div>
+    </div>
+  );
 }
 
 // --- Main component ---
@@ -680,17 +835,7 @@ export function LeafPane({ leaf }: LeafPaneProps) {
           title="Close pane"
         >&times;</span>
         {popInPickerSessionId.value && (
-          <div
-            class="pop-in-picker-overlay"
-            onClick={(e) => {
-              e.stopPropagation();
-              const pickSid = popInPickerSessionId.value!;
-              popInPickerSessionId.value = null;
-              popBackInToLeaf(pickSid, leaf.id);
-            }}
-          >
-            <span class="pop-in-picker-label">Drop here</span>
-          </div>
+          <PopInPickerOverlay leafId={leaf.id} />
         )}
       </div>
     );
@@ -698,42 +843,17 @@ export function LeafPane({ leaf }: LeafPaneProps) {
 
   if (leaf.tabs.length === 1 && (leaf.singleton || leaf.tabs[0].startsWith('view:'))) {
     const sid = leaf.tabs[0];
-    const label = getSingletonLabel(sid);
+    const meta = getSingletonMeta(sid);
+    const label = meta.label;
     const collapsed = !!leaf.collapsed;
+    const countSuffix = meta.countSuffix?.() || '';
+    const extraBadges = meta.extraBadges?.() || null;
+    const appPrefix = meta.appPrefix?.() || '';
 
-    // Compute count suffix and extra info for sidebar/page views
-    let countSuffix = '';
-    let extraBadges: any = null;
-    let plusAction: (() => void) | null = null;
-    let appPrefix = '';
-    const appId = selectedAppId.value;
-    const app = appId ? applications.value.find((a: any) => a.id === appId) : null;
-    if (sid === 'view:sessions-list') {
-      const allSess = allSessions.value;
-      const agents = allSess.filter((s: any) => s.permissionProfile !== 'plain' && s.status !== 'deleted');
-      const running = allSess.filter((s: any) => s.status === 'running' && s.permissionProfile !== 'plain').length;
-      const waiting = allSess.filter((s: any) => s.status === 'running' && sessionInputStates.value.get(s.id) === 'waiting').length;
-      countSuffix = ` (${agents.length})`;
-      extraBadges = (
-        <>
-          {running > 0 && <span class="sidebar-running-badge">{running} running</span>}
-          {waiting > 0 && <span class="sidebar-waiting-badge">{waiting} waiting</span>}
-        </>
-      );
-      plusAction = () => { termPickerOpen.value = { kind: 'claude' }; };
-    } else if (sid === 'view:terminals') {
-      const terminals = allSessions.value.filter((s: any) => s.permissionProfile === 'plain' && s.status !== 'deleted');
-      countSuffix = ` (${terminals.length})`;
-      plusAction = () => { termPickerOpen.value = { kind: 'new' }; };
-    } else if (sid === 'view:feedback') {
-      if (app) appPrefix = `${app.name} \u2014 `;
-      const count = appId ? (appFeedbackCounts.value[appId] || 0) : 0;
-      if (count > 0) countSuffix = ` (${count})`;
-    } else if (sid === 'view:aggregate') {
-      if (app) appPrefix = `${app.name} \u2014 `;
-    } else if (sid === 'view:sessions-page' || sid === 'view:live') {
-      if (app) appPrefix = `${app.name} \u2014 `;
-    }
+    const plusAction = () => {
+      setFocusedLeaf(leaf.id);
+      termPickerOpen.value = { kind: meta.plusKind };
+    };
 
     return (
       <div
@@ -762,31 +882,20 @@ export function LeafPane({ leaf }: LeafPaneProps) {
           <span class="singleton-label">{appPrefix}{label}{countSuffix}</span>
           {extraBadges}
           <span style={{ flex: 1 }} />
-          {plusAction && (
-            <button
-              class="sidebar-new-terminal-btn"
-              onClick={(e) => { e.stopPropagation(); plusAction!(); }}
-              title={sid === 'view:sessions-list' ? 'New Claude session (g c)' : 'New terminal (g t)'}
-            >+</button>
-          )}
+          <button
+            class="sidebar-new-terminal-btn"
+            onClick={(e) => { e.stopPropagation(); plusAction(); }}
+            title="Add tab"
+          >+</button>
         </div>
         {!collapsed && (
-          <div class="pane-leaf-body">
+          <div class="pane-leaf-body" style={{ position: 'relative' }}>
             {renderTabContent(sid, true, sessionMap)}
+            <DiagonalDropZone leafId={leaf.id} />
           </div>
         )}
         {popInPickerSessionId.value && (
-          <div
-            class="pop-in-picker-overlay"
-            onClick={(e) => {
-              e.stopPropagation();
-              const pickSid = popInPickerSessionId.value!;
-              popInPickerSessionId.value = null;
-              popBackInToLeaf(pickSid, leaf.id);
-            }}
-          >
-            <span class="pop-in-picker-label">Drop here</span>
-          </div>
+          <PopInPickerOverlay leafId={leaf.id} />
         )}
       </div>
     );
@@ -797,7 +906,7 @@ export function LeafPane({ leaf }: LeafPaneProps) {
       class={`pane-leaf${isFocused ? ' pane-leaf-focused' : ''}`}
       data-leaf-id={leaf.id}
       onMouseDown={handleMouseDown}
-      style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', overflow: 'hidden' }}
+      style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', overflow: 'hidden', position: 'relative', zIndex: isFocused && activePanelId.value == null ? 1000 : undefined }}
     >
       <div class="terminal-tab-bar">
         <div
@@ -1052,23 +1161,14 @@ export function LeafPane({ leaf }: LeafPaneProps) {
           leafId={leaf.id}
         />
       )}
-      <div class="pane-leaf-body">
+      <div class="pane-leaf-body" style={{ position: 'relative' }}>
         {leaf.tabs.map((sid) =>
           renderTabContent(sid, sid === leaf.activeTabId, sessionMap, (code, text) => markSessionExited(sid, code, text))
         )}
+        <DiagonalDropZone leafId={leaf.id} />
       </div>
       {popInPickerSessionId.value && (
-        <div
-          class="pop-in-picker-overlay"
-          onClick={(e) => {
-            e.stopPropagation();
-            const sid = popInPickerSessionId.value!;
-            popInPickerSessionId.value = null;
-            popBackInToLeaf(sid, leaf.id);
-          }}
-        >
-          <span class="pop-in-picker-label">Drop here</span>
-        </div>
+        <PopInPickerOverlay leafId={leaf.id} />
       )}
     </div>
   );

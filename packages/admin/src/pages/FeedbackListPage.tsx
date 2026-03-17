@@ -2,7 +2,7 @@ import { signal, effect } from '@preact/signals';
 import { useEffect, useRef } from 'preact/hooks';
 import { api } from '../lib/api.js';
 import { navigate, currentRoute } from '../lib/state.js';
-import { openSession, sessionInputStates } from '../lib/sessions.js';
+import { openSession, sessionInputStates, openFeedbackItem, feedbackTitleCache } from '../lib/sessions.js';
 import { openDispatchDialog, dispatchDialogResult } from '../components/DispatchDialog.js';
 import { copyWithTooltip } from '../lib/clipboard.js';
 import { DeletedItemsPanel, trackDeletion } from '../components/DeletedItemsPanel.js';
@@ -335,7 +335,6 @@ export function FeedbackListPage({ appId }: { appId: string }) {
   return (
     <div>
       <div class="page-header">
-        <h2>Feedback ({total.value})</h2>
         <button class="btn btn-sm btn-primary" onClick={() => (showCreateForm.value = !showCreateForm.value)}>
           + New
         </button>
@@ -548,7 +547,10 @@ export function FeedbackListPage({ appId }: { appId: string }) {
                     href={`#${basePath}/${item.id}`}
                     onClick={(e) => {
                       e.preventDefault();
-                      navigate(`${basePath}/${item.id}`);
+                      if (item.title) {
+                        feedbackTitleCache.value = { ...feedbackTitleCache.value, [item.id]: item.title };
+                      }
+                      openFeedbackItem(item.id);
                     }}
                     style="color:var(--pw-primary-text);text-decoration:none;font-weight:500"
                     title={item.title}

@@ -610,13 +610,12 @@ export const treeSessionsLeafHasTabs = computed(() => {
 // --- Main-split ratio auto-adjust ---
 
 export function showSessionsLeaf() {
-  const tree = cloneTree(layoutTree.value);
+  const tree = cloneTree(_batchDepth > 0 && _batchTree ? _batchTree : layoutTree.value);
   // Find the split that directly contains the sessions-leaf
   const parent = findParentSplit(tree.root, SESSIONS_LEAF_ID);
   if (parent && parent.type === 'split' && parent.ratio >= 0.95) {
     parent.ratio = 0.6;
-    layoutTree.value = tree;
-    persist();
+    commitTree(tree);
   }
 }
 
@@ -626,12 +625,13 @@ export function showSessionsLeaf() {
  * Returns the leaf ID to use for adding sessions.
  */
 export function ensureSessionsLeaf(): string {
-  const existing = findLeaf(layoutTree.value.root, SESSIONS_LEAF_ID);
+  const current = _batchDepth > 0 && _batchTree ? _batchTree : layoutTree.value;
+  const existing = findLeaf(current.root, SESSIONS_LEAF_ID);
   if (existing) return SESSIONS_LEAF_ID;
 
   // Sessions leaf doesn't exist — create one by splitting an appropriate leaf.
   // Strategy: find the focused leaf, or any non-sidebar/non-controlbar leaf in the main area.
-  const tree = cloneTree(layoutTree.value);
+  const tree = cloneTree(current);
   const allLeaves = getAllLeaves(tree.root);
   const sidebarIds = new Set([SIDEBAR_LEAF_ID, CONTROLBAR_LEAF_ID, 'sidebar-sessions', 'sidebar-terminals', 'sidebar-files']);
   const mainLeaf = allLeaves.find(l => !sidebarIds.has(l.id)) || allLeaves[0];
@@ -667,12 +667,11 @@ export function ensureSessionsLeaf(): string {
 }
 
 export function hideSessionsLeaf() {
-  const tree = cloneTree(layoutTree.value);
+  const tree = cloneTree(_batchDepth > 0 && _batchTree ? _batchTree : layoutTree.value);
   const parent = findParentSplit(tree.root, SESSIONS_LEAF_ID);
   if (parent && parent.type === 'split') {
     parent.ratio = 1.0;
-    layoutTree.value = tree;
-    persist();
+    commitTree(tree);
   }
 }
 

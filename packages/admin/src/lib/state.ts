@@ -26,7 +26,7 @@ bindRouteSignal(currentRoute);
 export const selectedAppId = signal<string | null>(embedAppId);
 export const applications = signal<any[]>([]);
 export const unlinkedCount = signal(0);
-export const appFeedbackCounts = signal<Record<string, number>>({});
+export const appFeedbackCounts = signal<Record<string, { total: number; new: number; running: number }>>({});
 export const addAppModalOpen = signal(false);
 
 export async function loadApplications() {
@@ -51,16 +51,23 @@ export async function loadApplications() {
 async function loadFeedbackCounts(apps: any[]) {
   try {
     await timed('apps:feedbackCounts', async () => {
-      const counts: Record<string, number> = {};
+      const counts: Record<string, { total: number; new: number; running: number }> = {};
       const results = await Promise.all([
         ...apps.map((app: any) => api.getFeedback({ appId: app.id, limit: 1 })),
+        ...apps.map((app: any) => api.getFeedback({ appId: app.id, status: 'new', limit: 1 })),
+        ...apps.map((app: any) => api.getFeedback({ appId: app.id, dispatchStatus: 'running', limit: 1 })),
         api.getFeedback({ appId: '__unlinked__', limit: 1 }),
       ]);
+      const n = apps.length;
       apps.forEach((app: any, i: number) => {
-        counts[app.id] = results[i].total;
+        counts[app.id] = {
+          total: results[i].total,
+          new: results[n + i].total,
+          running: results[2 * n + i].total,
+        };
       });
       appFeedbackCounts.value = counts;
-      unlinkedCount.value = results[results.length - 1].total;
+      unlinkedCount.value = results[3 * n].total;
     });
   } catch {
     // ignore

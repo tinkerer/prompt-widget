@@ -14,6 +14,7 @@ import { GitChangesView } from './GitChangesView.js';
 import { PageView } from './PageView.js';
 import { ControlBar } from './ControlBar.js';
 import { FeedbackListPage } from '../pages/FeedbackListPage.js';
+import { FeedbackDetailPage } from '../pages/FeedbackDetailPage.js';
 import { AggregatePage } from '../pages/AggregatePage.js';
 import { SessionsPage } from '../pages/SessionsPage.js';
 import { LiveConnectionsPage } from '../pages/LiveConnectionsPage.js';
@@ -23,7 +24,7 @@ import {
   setSessionInputState,
   markSessionExited,
 } from '../lib/sessions.js';
-import { applications, selectedAppId } from '../lib/state.js';
+import { applications, selectedAppId, currentRoute } from '../lib/state.js';
 
 export function renderTabContent(
   sid: string,
@@ -39,7 +40,14 @@ export function renderTabContent(
         {sid === 'view:page' ? (
           <PageView />
         ) : sid === 'view:feedback' ? (
-          (() => { const aid = selectedAppId.value || applications.value[0]?.id; return aid ? <FeedbackListPage appId={aid} /> : <div style={{ padding: 16, color: 'var(--pw-text-muted)' }}>No apps configured</div>; })()
+          (() => {
+            const aid = selectedAppId.value || applications.value[0]?.id;
+            if (!aid) return <div style={{ padding: 16, color: 'var(--pw-text-muted)' }}>No apps configured</div>;
+            const route = currentRoute.value;
+            const detailMatch = route.match(/^\/app\/[^/]+\/feedback\/(.+)$/);
+            if (detailMatch) return <FeedbackDetailPage id={detailMatch[1]} appId={aid} />;
+            return <FeedbackListPage appId={aid} />;
+          })()
         ) : sid === 'view:aggregate' ? (
           (() => { const aid = selectedAppId.value || applications.value[0]?.id; return aid ? <AggregatePage appId={aid} /> : <div style={{ padding: 16, color: 'var(--pw-text-muted)' }}>No apps configured</div>; })()
         ) : sid === 'view:sessions-page' ? (
@@ -67,6 +75,17 @@ export function renderTabContent(
         ) : (
           <div class="companion-error">Unknown view: {sid}</div>
         )}
+      </div>
+    );
+  }
+
+  // Feedback item tabs (fb:<feedbackId>)
+  if (sid.startsWith('fb:')) {
+    const feedbackId = sid.slice(3);
+    const aid = selectedAppId.value || applications.value[0]?.id || null;
+    return (
+      <div key={sid} style={{ display: isVisible ? 'flex' : 'none', width: '100%', flex: 1, minHeight: 0 }}>
+        <FeedbackDetailPage id={feedbackId} appId={aid} embedded />
       </div>
     );
   }

@@ -30,9 +30,13 @@ export function PopupMenu({ anchorRef, onClose, children, align = 'left', classN
   const menuRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
 
+  // Track whether we've done the initial right-align adjustment
+  const [aligned, setAligned] = useState(false);
+
   useLayoutEffect(() => {
     if (!anchorRef.current) return;
     const rect = anchorRef.current.getBoundingClientRect();
+    setAligned(false);
     setPos({
       top: rect.bottom + 4,
       left: align === 'right' ? rect.right : rect.left,
@@ -44,6 +48,7 @@ export function PopupMenu({ anchorRef, onClose, children, align = 'left', classN
     function reposition() {
       if (!anchorRef.current) return;
       const rect = anchorRef.current.getBoundingClientRect();
+      setAligned(false);
       setPos({
         top: rect.bottom + 4,
         left: align === 'right' ? rect.right : rect.left,
@@ -59,11 +64,19 @@ export function PopupMenu({ anchorRef, onClose, children, align = 'left', classN
     const menu = menuRef.current;
     const rect = menu.getBoundingClientRect();
     let { top, left } = pos;
-    if (rect.right > window.innerWidth) {
+
+    // For right-align, shift left so the menu's right edge aligns with anchor's right edge
+    if (align === 'right' && !aligned) {
+      left = pos.left - rect.width;
+      setAligned(true);
+    }
+
+    // Clamp to viewport
+    if (left + rect.width > window.innerWidth) {
       left = Math.max(4, window.innerWidth - rect.width - 4);
     }
+    if (left < 4) left = 4;
     if (rect.bottom > window.innerHeight) {
-      // Flip above anchor
       if (anchorRef.current) {
         const anchorRect = anchorRef.current.getBoundingClientRect();
         top = anchorRect.top - rect.height - 4;
@@ -72,7 +85,7 @@ export function PopupMenu({ anchorRef, onClose, children, align = 'left', classN
     if (top !== pos.top || left !== pos.left) {
       setPos({ top, left });
     }
-  }, [pos]);
+  }, [pos, aligned]);
 
   // Click outside to close
   useEffect(() => {

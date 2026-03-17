@@ -2,7 +2,7 @@ import { signal, effect } from '@preact/signals';
 import { marked } from 'marked';
 import { api } from '../lib/api.js';
 import { navigate } from '../lib/state.js';
-import { openSession, resumeSession } from '../lib/sessions.js';
+import { openSession, resumeSession, feedbackTitleCache } from '../lib/sessions.js';
 import { copyText, copyWithTooltip } from '../lib/clipboard.js';
 import { CropEditor } from '../components/CropEditor.js';
 import { DispatchTargetButton } from '../components/DispatchPicker.js';
@@ -65,6 +65,9 @@ async function load(id: string, appId: string | null) {
   try {
     const fb = await api.getFeedbackById(id);
     feedback.value = fb;
+    if (fb?.title) {
+      feedbackTitleCache.value = { ...feedbackTitleCache.value, [id]: fb.title };
+    }
     const agentsList = await api.getAgents(fb.appId || undefined);
     agents.value = agentsList;
     // Prefer per-app default, then global default, then first agent
@@ -316,7 +319,7 @@ effect(() => {
   return () => document.removeEventListener('paste', handler as EventListener);
 });
 
-export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | null }) {
+export function FeedbackDetailPage({ id, appId, embedded }: { id: string; appId: string | null; embedded?: boolean }) {
   if (lastLoadedId.value !== id) {
     load(id, appId);
   }
@@ -333,10 +336,12 @@ export function FeedbackDetailPage({ id, appId }: { id: string; appId: string | 
     <div>
       <div class="page-header">
         <div>
-          <a href={`#${backPath}`} onClick={(e) => { e.preventDefault(); navigate(backPath); }} style="color:var(--pw-text-muted);text-decoration:none;font-size:13px">
-            &larr; Back to list
-          </a>
-          <h2 style="margin-top:4px">
+          {!embedded && (
+            <a href={`#${backPath}`} onClick={(e) => { e.preventDefault(); navigate(backPath); }} style="color:var(--pw-text-muted);text-decoration:none;font-size:13px">
+              &larr; Back to list
+            </a>
+          )}
+          <h2 style={embedded ? undefined : "margin-top:4px"}>
             <code style="font-size:14px;color:var(--pw-text-faint);background:var(--pw-code-block-bg);padding:2px 6px;border-radius:4px;margin-right:8px;cursor:pointer" title={`Click to copy: ${fb.id}`} onClick={(e) => copyWithTooltip(fb.id, e as any)}>{fb.id.slice(-6)}</code>
             {editingTitle.value ? (
               <input

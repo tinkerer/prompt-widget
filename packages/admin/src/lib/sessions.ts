@@ -951,6 +951,43 @@ export function popBackInToLeaf(sessionId: string, leafId: string) {
   nudgeResize();
 }
 
+export function popBackInToLeafWithSplit(sessionId: string, leafId: string, direction: 'horizontal' | 'vertical') {
+  if (!sessionId) return;
+  const panel = findPanelForSession(sessionId);
+  const isAutoJump = panel?.id === AUTOJUMP_PANEL_ID;
+  if (isAutoJump) {
+    saveAutoJumpDimsForActiveSession();
+  }
+  if (panel) {
+    const remaining = panel.sessionIds.filter((id) => id !== sessionId);
+    if (remaining.length === 0) {
+      removePanel(panel.id);
+    } else {
+      updatePanel(panel.id, {
+        sessionIds: remaining,
+        activeSessionId: panel.activeSessionId === sessionId
+          ? remaining[remaining.length - 1]
+          : panel.activeSessionId,
+      });
+    }
+  }
+  if (!openTabs.value.includes(sessionId)) {
+    openTabs.value = [...openTabs.value, sessionId];
+  }
+  activeTabId.value = sessionId;
+  panelMinimized.value = false;
+  if (isAutoJump) {
+    transferAutoJumpToGlobalPanel(sessionId);
+  }
+
+  splitLeaf(leafId, direction, 'second', [sessionId]);
+
+  persistTabs();
+  persistPopoutState();
+  persistPanelState();
+  nudgeResize();
+}
+
 export function popBackInAll() {
   const allIds: string[] = [];
   for (const panel of popoutPanels.value) {
@@ -1063,6 +1100,14 @@ export function togglePopoutVisibility() {
 export function togglePopOutActive() {
   const active = activeTabId.value;
   if (active) popOutTab(active);
+}
+
+export function bringAllPanelsToFront() {
+  if (popoutPanels.value.length === 0) return;
+  popoutPanels.value = popoutPanels.value.map((p) => ({ ...p, visible: true }));
+  for (const p of popoutPanels.value) bringToFront(p.id);
+  persistPopoutState();
+  nudgeResize();
 }
 
 export const quickDispatchState = signal<Record<string, 'idle' | 'loading' | 'success' | 'error'>>({});
@@ -1289,6 +1334,7 @@ export function openSession(sessionId: string) {
   if (existingLeaf) {
     setActiveTab(existingLeaf.id, sessionId);
     setFocusedLeaf(existingLeaf.id);
+    showSessionsLeaf();
     focusSessionTerminal(sessionId);
     return;
   }
@@ -2285,6 +2331,45 @@ export function openFileCompanion(filePath: string) {
     addTabToLeaf(leafId, tabId, true);
     showSessionsLeaf();
   });
+}
+
+// --- Feedback item tabs ---
+
+export const feedbackTitleCache = signal<Record<string, string>>({});
+
+export function openFeedbackItem(feedbackId: string) {
+  const tabId = `fb:${feedbackId}`;
+
+  // If already in a pane tree leaf, activate it there
+  const existingLeaf = findLeafWithTab(tabId);
+  if (existingLeaf) {
+    setActiveTab(existingLeaf.id, tabId);
+    setFocusedLeaf(existingLeaf.id);
+    showSessionsLeaf();
+    return;
+  }
+
+  // Add to legacy openTabs
+  if (!openTabs.value.includes(tabId)) {
+    openTabs.value = [...openTabs.value, tabId];
+  }
+  persistTabs();
+
+  // Add to pane tree
+  batchTreeOps(() => {
+    const leafId = ensureSessionsLeaf();
+    addTabToLeaf(leafId, tabId, true);
+    showSessionsLeaf();
+  });
+
+  // Pre-fetch title for tab label
+  if (!feedbackTitleCache.value[feedbackId]) {
+    api.getFeedbackById(feedbackId).then((fb: any) => {
+      if (fb?.title) {
+        feedbackTitleCache.value = { ...feedbackTitleCache.value, [feedbackId]: fb.title };
+      }
+    }).catch(() => {});
+  }
 }
 
 export function syncCompanionsToRightPane(newSessionId: string, oldSessionId?: string | null) {

@@ -5851,6 +5851,23 @@ kbd {
   box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.3), 0 8px 32px rgba(0, 0, 0, 0.5);
 }
 
+.popout-floating.move-mode,
+.popout-docked.move-mode {
+  cursor: move;
+  user-select: none;
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.4), 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.move-mode-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 9999;
+  cursor: move;
+  background: rgba(245, 158, 11, 0.08);
+  pointer-events: auto;
+}
+
 /* Shared header for floating + drawer */
 .popout-header {
   height: 28px;
@@ -6123,15 +6140,10 @@ kbd {
   line-height: 1;
 }
 .window-menu {
-  position: absolute;
-  top: 100%;
-  right: 0;
-  margin-top: 4px;
   background: #1e293b;
   border: 1px solid #475569;
   border-radius: 6px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  z-index: 1000;
   min-width: 150px;
   padding: 4px 0;
 }
@@ -8031,6 +8043,109 @@ body.pw-isolate {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   pointer-events: none;
+}
+
+/* Pop-in picker with diagonal zones */
+.pop-in-picker-zones {
+  background: none;
+  border: none;
+  cursor: default;
+  flex-direction: column;
+}
+.pop-in-zone {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.pop-in-zone-tab {
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 22px;
+  background: rgba(99, 102, 241, 0.15);
+  border-bottom: 1px solid rgba(99, 102, 241, 0.3);
+}
+.pop-in-zone-tab:hover {
+  background: rgba(99, 102, 241, 0.35);
+}
+.pop-in-zone-vsplit {
+  top: 22px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  clip-path: polygon(0 0, 0 100%, 100% 100%);
+  background: rgba(34, 197, 94, 0.12);
+}
+.pop-in-zone-vsplit:hover {
+  background: rgba(34, 197, 94, 0.3);
+}
+.pop-in-zone-hsplit {
+  top: 22px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+  background: rgba(59, 130, 246, 0.12);
+}
+.pop-in-zone-hsplit:hover {
+  background: rgba(59, 130, 246, 0.3);
+}
+.pop-in-zone-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  pointer-events: none;
+  opacity: 0.8;
+}
+.pop-in-zone-tab .pop-in-zone-label { color: #6366f1; }
+.pop-in-zone-vsplit .pop-in-zone-label { color: #22c55e; }
+.pop-in-zone-hsplit .pop-in-zone-label { color: #3b82f6; }
+
+/* Diagonal drop zone (shown during tab drag) */
+.diagonal-drop-zone {
+  pointer-events: none;
+}
+.diagonal-zone {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.1s;
+}
+.diagonal-zone-vsplit {
+  clip-path: polygon(0 0, 0 100%, 100% 100%);
+  background: rgba(34, 197, 94, 0.08);
+}
+.diagonal-zone-vsplit.active {
+  background: rgba(34, 197, 94, 0.25);
+}
+.diagonal-zone-hsplit {
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+  background: rgba(59, 130, 246, 0.08);
+}
+.diagonal-zone-hsplit.active {
+  background: rgba(59, 130, 246, 0.25);
+}
+.diagonal-zone-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  pointer-events: none;
+  opacity: 0.7;
+}
+.diagonal-zone-vsplit .diagonal-zone-label { color: #22c55e; }
+.diagonal-zone-hsplit .diagonal-zone-label { color: #3b82f6; }
+.diagonal-line {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(to bottom right, transparent calc(50% - 0.5px), rgba(148, 163, 184, 0.3) 50%, transparent calc(50% + 0.5px));
 }
 .pane-leaf {
   position: relative;

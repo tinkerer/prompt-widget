@@ -1,3 +1,4 @@
+import { signal } from '@preact/signals';
 import {
   openTabs,
   popOutTab,
@@ -24,6 +25,7 @@ import {
   removeTabFromLeaf,
   addTabToLeaf,
   reorderTabInLeaf,
+  splitLeaf,
 } from './pane-tree.js';
 
 export type TabDragSource = 'main' | 'split-left' | 'split-right' | { panelId: string } | { type: 'leaf'; leafId: string };
@@ -34,6 +36,10 @@ export interface TabDragConfig {
   label: string;
   onClickFallback: () => void;
 }
+
+export type LeafDropZone = 'tab' | 'h-split' | 'v-split';
+
+export const dragOverLeafZone = signal<{ leafId: string; zone: LeafDropZone } | null>(null);
 
 const DRAG_THRESHOLD = 6;
 
@@ -52,7 +58,7 @@ export function startTabDrag(e: MouseEvent, config: TabDragConfig): void {
   let dragging = false;
   let ghost: HTMLElement | null = null;
   let sourceTab: HTMLElement | null = (e.currentTarget as HTMLElement);
-  let dropTarget: { type: 'panel'; panelId: string } | { type: 'main' } | { type: 'split-left' } | { type: 'split-right' } | { type: 'popout-split'; panelId: string; pane: 'left' | 'right' } | { type: 'leaf'; leafId: string } | null = null;
+  let dropTarget: { type: 'panel'; panelId: string } | { type: 'main' } | { type: 'split-left' } | { type: 'split-right' } | { type: 'popout-split'; panelId: string; pane: 'left' | 'right' } | { type: 'leaf'; leafId: string; zone: LeafDropZone } | null = null;
   let lastHighlighted: Element | null = null;
   let reorderIndicator: HTMLElement | null = null;
   let reorderInsertBefore: string | null = null;
@@ -74,6 +80,25 @@ export function startTabDrag(e: MouseEvent, config: TabDragConfig): void {
   function sourceIsPanelId(): string | null {
     if (typeof config.source === 'object' && 'panelId' in config.source) return config.source.panelId;
     return null;
+  }
+
+  function computeLeafZone(x: number, y: number, leafEl: HTMLElement): LeafDropZone {
+    // Check if cursor is over the tab bar or singleton handle
+    const tabBar = leafEl.querySelector('.pane-leaf-tabs') as HTMLElement | null;
+    const singletonHandle = leafEl.querySelector('.singleton-handle') as HTMLElement | null;
+    const headerEl = tabBar || singletonHandle;
+    if (headerEl) {
+      const headerRect = headerEl.getBoundingClientRect();
+      if (y >= headerRect.top && y <= headerRect.bottom && x >= headerRect.left && x <= headerRect.right) {
+        return 'tab';
+      }
+    }
+
+    // Diagonal split: relY > relX means lower-left (v-split), else upper-right (h-split)
+    const rect = leafEl.getBoundingClientRect();
+    const relX = (x - rect.left) / rect.width;
+    const relY = (y - rect.top) / rect.height;
+    return relY > relX ? 'v-split' : 'h-split';
   }
 
   function detectDropTarget(x: number, y: number): typeof dropTarget {
@@ -101,7 +126,8 @@ export function startTabDrag(e: MouseEvent, config: TabDragConfig): void {
         const leafId = leafEl.dataset.leafId!;
         const srcLeafId = sourceIsLeaf(config.source);
         if (srcLeafId && srcLeafId === leafId) continue; // same leaf — skip for drop target (reorder handled separately)
-        return { type: 'leaf', leafId };
+        const zone = computeLeafZone(x, y, leafEl);
+        return { type: 'leaf', leafId, zone };
       }
 
       // Check split panes
@@ -134,22 +160,33 @@ export function startTabDrag(e: MouseEvent, config: TabDragConfig): void {
     }
     if (!target) {
       ghost?.classList.remove('will-drop');
+      dragOverLeafZone.value = null;
       return;
     }
     ghost?.classList.add('will-drop');
     if (target.type === 'popout-split') {
+      dragOverLeafZone.value = null;
       const el = document.querySelector(`[data-popout-split-pane="${target.panelId}:${target.pane}"]`);
       if (el) { el.classList.add('drop-target'); lastHighlighted = el; }
     } else if (target.type === 'panel') {
+      dragOverLeafZone.value = null;
       const el = document.querySelector(`[data-panel-id="${target.panelId}"]`);
       if (el) { el.classList.add('drop-target'); lastHighlighted = el; }
     } else if (target.type === 'leaf') {
-      const el = document.querySelector(`[data-leaf-id="${target.leafId}"]`);
-      if (el) { el.classList.add('drop-target'); lastHighlighted = el; }
+      // Update zone signal for DiagonalDropZone component
+      dragOverLeafZone.value = { leafId: target.leafId, zone: target.zone };
+      if (target.zone === 'tab') {
+        // Highlight the tab bar / handle
+        const el = document.querySelector(`[data-leaf-id="${target.leafId}"]`);
+        if (el) { el.classList.add('drop-target'); lastHighlighted = el; }
+      }
+      // For h-split/v-split zones, the DiagonalDropZone handles the visual
     } else if (target.type === 'split-left' || target.type === 'split-right') {
+      dragOverLeafZone.value = null;
       const el = document.querySelector(`[data-split-pane="${target.type}"]`);
       if (el) { el.classList.add('drop-target'); lastHighlighted = el; }
     } else {
+      dragOverLeafZone.value = null;
       const el = document.querySelector('.terminal-tab-bar');
       if (el) { el.classList.add('drop-target'); lastHighlighted = el; }
     }
@@ -265,6 +302,34 @@ export function startTabDrag(e: MouseEvent, config: TabDragConfig): void {
     }
   }
 
+  function handleLeafDrop(targetLeafId: string, zone: LeafDropZone, sessionId: string, srcLeafId: string | null, srcPanelId: string | null) {
+    if (zone === 'tab') {
+      // Add as tab to the target leaf
+      if (srcLeafId) {
+        moveTab(srcLeafId, targetLeafId, sessionId);
+      } else if (srcPanelId) {
+        const panel = findPanelForSession(sessionId);
+        if (panel) splitFromPanel(sessionId);
+        addTabToLeaf(targetLeafId, sessionId, true);
+      } else {
+        closeTab(sessionId);
+        addTabToLeaf(targetLeafId, sessionId, true);
+      }
+    } else {
+      // Split the target leaf
+      const dir = zone === 'h-split' ? 'horizontal' : 'vertical';
+      if (srcLeafId) {
+        removeTabFromLeaf(srcLeafId, sessionId, true);
+      } else if (srcPanelId) {
+        const panel = findPanelForSession(sessionId);
+        if (panel) splitFromPanel(sessionId);
+      } else {
+        closeTab(sessionId);
+      }
+      splitLeaf(targetLeafId, dir, 'second', [sessionId]);
+    }
+  }
+
   function onMove(ev: MouseEvent) {
     const dx = ev.clientX - startX;
     const dy = ev.clientY - startY;
@@ -288,6 +353,7 @@ export function startTabDrag(e: MouseEvent, config: TabDragConfig): void {
     if (ghost) { ghost.remove(); ghost = null; }
     const hadReorderIndicator = !!reorderIndicator;
     removeReorderIndicator();
+    dragOverLeafZone.value = null;
 
     if (!dragging) {
       config.onClickFallback();
@@ -304,14 +370,13 @@ export function startTabDrag(e: MouseEvent, config: TabDragConfig): void {
         reorderTabInLeaf(srcLeafId, config.sessionId, reorderInsertBefore);
         return;
       }
-      // Drop onto another leaf
+      // Drop onto another leaf (zone-aware)
       if (dropTarget?.type === 'leaf') {
-        moveTab(srcLeafId, dropTarget.leafId, config.sessionId);
+        handleLeafDrop(dropTarget.leafId, dropTarget.zone, config.sessionId, srcLeafId, null);
         return;
       }
       // Drop onto a popout panel
       if (dropTarget?.type === 'panel') {
-        // Remove from tree leaf, add to popout panel
         removeTabFromLeaf(srcLeafId, config.sessionId);
         closeTab(config.sessionId);
         moveSessionToPanel(config.sessionId, dropTarget.panelId);
@@ -326,7 +391,6 @@ export function startTabDrag(e: MouseEvent, config: TabDragConfig): void {
       }
       // Drop onto old global terminal bar
       if (dropTarget?.type === 'main' || dropTarget?.type === 'split-left' || dropTarget?.type === 'split-right') {
-        // Move tab to the global openTabs
         removeTabFromLeaf(srcLeafId, config.sessionId);
         return;
       }
@@ -353,9 +417,7 @@ export function startTabDrag(e: MouseEvent, config: TabDragConfig): void {
       if (dropTarget?.type === 'split-right') {
         moveToRightPane(config.sessionId);
       } else if (dropTarget?.type === 'leaf') {
-        // Drop from global panel into a leaf pane
-        closeTab(config.sessionId);
-        addTabToLeaf(dropTarget.leafId, config.sessionId, true);
+        handleLeafDrop(dropTarget.leafId, dropTarget.zone, config.sessionId, null, null);
       } else if (dropTarget?.type === 'popout-split') {
         moveSessionToPanel(config.sessionId, dropTarget.panelId);
         if (dropTarget.pane === 'right') moveToPanelRightPane(dropTarget.panelId, config.sessionId);
@@ -372,8 +434,7 @@ export function startTabDrag(e: MouseEvent, config: TabDragConfig): void {
       if (dropTarget?.type === 'main' || dropTarget?.type === 'split-left') {
         moveToLeftPane(config.sessionId);
       } else if (dropTarget?.type === 'leaf') {
-        closeTab(config.sessionId);
-        addTabToLeaf(dropTarget.leafId, config.sessionId, true);
+        handleLeafDrop(dropTarget.leafId, dropTarget.zone, config.sessionId, null, null);
       } else if (dropTarget?.type === 'popout-split') {
         moveSessionToPanel(config.sessionId, dropTarget.panelId);
         if (dropTarget.pane === 'right') moveToPanelRightPane(dropTarget.panelId, config.sessionId);
@@ -393,13 +454,7 @@ export function startTabDrag(e: MouseEvent, config: TabDragConfig): void {
         popBackIn(config.sessionId);
         moveToRightPane(config.sessionId);
       } else if (dropTarget?.type === 'leaf') {
-        // Drop from popout panel into a leaf pane
-        // Remove from panel first, then add to leaf
-        const panel = findPanelForSession(config.sessionId);
-        if (panel) {
-          splitFromPanel(config.sessionId);
-        }
-        addTabToLeaf(dropTarget.leafId, config.sessionId, true);
+        handleLeafDrop(dropTarget.leafId, dropTarget.zone, config.sessionId, null, srcPanelId);
       } else if (dropTarget?.type === 'popout-split') {
         if (dropTarget.panelId === srcPanelId) {
           if (dropTarget.pane === 'right') moveToPanelRightPane(srcPanelId, config.sessionId);

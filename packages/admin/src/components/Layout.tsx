@@ -67,6 +67,7 @@ import {
   sidebarItemMenu,
   popInPickerSessionId,
   cycleWaitingSession,
+  bringAllPanelsToFront,
 } from '../lib/sessions.js';
 
 export function Layout() {
@@ -513,6 +514,17 @@ export function Layout() {
         label: 'Toggle jump panel',
         category: 'Panels',
         action: toggleAutoJumpPanel,
+      }),
+      registerShortcut({
+        key: 'O',
+        code: 'KeyO',
+        modifiers: { ctrl: true, shift: true },
+        label: 'Bring all panels to front',
+        category: 'Panels',
+        action: () => {
+          bringAllPanelsToFront();
+          showActionToast('O', 'All panels', 'var(--pw-accent)');
+        },
       }),
     ];
     return () => cleanups.forEach((fn) => fn());

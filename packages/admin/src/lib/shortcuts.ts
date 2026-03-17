@@ -12,6 +12,7 @@ export interface Shortcut {
 }
 
 export const ctrlShiftHeld = signal(false);
+export const stickyModeActive = signal(false);
 
 const registry: Shortcut[] = [];
 let pendingSequence: string | null = null;
@@ -76,7 +77,7 @@ function handleKeyDown(e: KeyboardEvent) {
       const isArrow = e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown';
       const isDigit = /^Digit[0-9]$/.test(code);
       const isMinusEqual = code === 'Minus' || code === 'Equal';
-      const isSessionAction = code === 'KeyW' || code === 'KeyR' || code === 'KeyK' || code === 'KeyP' || code === 'KeyB' || code === 'KeyA' || code === 'KeyX' || code === 'KeyE';
+      const isSessionAction = code === 'KeyW' || code === 'KeyR' || code === 'KeyK' || code === 'KeyP' || code === 'KeyB' || code === 'KeyA' || code === 'KeyX' || code === 'KeyE' || code === 'KeyO' || code === 'KeyJ';
       const isBackquote = code === 'Backquote';
       const isTab = e.key === 'Tab';
       const isPipe = code === 'Backslash' && shiftHeld;
@@ -188,6 +189,7 @@ function handleStickyShortcut(e: KeyboardEvent) {
     stickyMode = true;
     stickyArmed = false;
     ctrlShiftHeld.value = true;
+    stickyModeActive.value = true;
     stickyPrevFocus = document.activeElement;
     (document.activeElement as HTMLElement)?.blur?.();
   }
@@ -228,6 +230,7 @@ function exitStickyMode() {
   stickyMode = false;
   stickyArmed = false;
   ctrlShiftHeld.value = false;
+  stickyModeActive.value = false;
   if (stickyPrevFocus instanceof HTMLElement) {
     stickyPrevFocus.focus();
   }
