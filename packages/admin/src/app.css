@@ -214,13 +214,19 @@ html[data-theme="dark"] {
   background: var(--pw-scrollbar-thumb-hover);
 }
 
-/* Hide xterm.js scrollbar — tmux handles scrolling */
+/* Thin scrollbar for xterm.js native scrollback */
 .xterm .xterm-viewport {
-  scrollbar-width: none !important;
-  overflow-y: hidden !important;
+  scrollbar-width: thin !important;
 }
 .xterm .xterm-viewport::-webkit-scrollbar {
-  display: none !important;
+  width: 6px !important;
+}
+.xterm .xterm-viewport::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2) !important;
+  border-radius: 3px !important;
+}
+.xterm .xterm-viewport::-webkit-scrollbar-track {
+  background: transparent !important;
 }
 
 /* PTY Ctrl+mouse text selection overlay */
@@ -3027,33 +3033,6 @@ input:focus, select:focus, textarea:focus {
   margin-left: 12px;
 }
 
-.tmux-session-menu {
-  min-width: 180px;
-  max-height: 300px;
-  overflow-y: auto;
-}
-
-.tmux-menu-label {
-  padding: 4px 12px 2px;
-  font-size: 10px;
-  color: #64748b;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.tmux-menu-loading {
-  padding: 6px 12px;
-  font-size: 11px;
-  color: #64748b;
-  font-style: italic;
-}
-
-.tmux-session-meta {
-  float: right;
-  font-size: 10px;
-  color: #64748b;
-  margin-left: 8px;
-}
 
 .tab-number-badge {
   position: absolute;
@@ -5422,74 +5401,6 @@ kbd {
   color: var(--pw-text-faint);
 }
 
-/* ==================== Tmux Config Cards ==================== */
-
-.tmux-config-card {
-  border: 1px solid var(--pw-border);
-  border-radius: 6px;
-  margin-bottom: 8px;
-  overflow: hidden;
-}
-
-.tmux-config-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  cursor: pointer;
-  background: var(--pw-bg-secondary);
-}
-
-.tmux-config-header:hover {
-  background: var(--pw-bg-hover, var(--pw-bg-secondary));
-}
-
-.tmux-default-badge {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 10px;
-  background: var(--pw-primary);
-  color: white;
-}
-
-.tmux-terminal-banner {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  background: color-mix(in srgb, var(--pw-primary) 15%, var(--pw-bg));
-  border-top: 1px solid var(--pw-border);
-  font-size: 12px;
-  color: var(--pw-text-muted);
-}
-
-.tmux-config-editor {
-  width: 100%;
-  min-height: 300px;
-  font-family: 'SF Mono', Monaco, Menlo, 'Cascadia Code', monospace;
-  font-size: 13px;
-  line-height: 1.6;
-  padding: 12px;
-  border: 1px solid var(--pw-border);
-  border-radius: 6px;
-  background: #1e1e2e;
-  color: #cdd6f4;
-  resize: vertical;
-  tab-size: 4;
-  -moz-tab-size: 4;
-}
-
-[data-theme="light"] .tmux-config-editor {
-  background: #f8f8f8;
-  color: #1e1e1e;
-}
-
-.tmux-config-editor:focus {
-  outline: none;
-  border-color: var(--pw-primary);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--pw-primary) 25%, transparent);
-}
-
 /* ==================== Settings Page ==================== */
 .settings-section {
   margin-bottom: 32px;
@@ -5669,11 +5580,7 @@ kbd {
 
 /* ==================== Pop-out Panel ==================== */
 
-.id-dropdown-wrapper {
-  position: relative;
-  margin-right: 8px;
-}
-.tmux-id-label {
+.session-id-label {
   color: #94a3b8;
   font-size: 11px;
   font-family: monospace;
@@ -5685,9 +5592,13 @@ kbd {
   white-space: nowrap;
   user-select: none;
 }
-.tmux-id-label:hover {
+.session-id-label:hover {
   color: #e2e8f0;
   border-color: #475569;
+}
+.id-dropdown-wrapper {
+  position: relative;
+  margin-right: 8px;
 }
 .id-dropdown-caret {
   font-size: 9px;

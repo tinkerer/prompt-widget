@@ -44,7 +44,7 @@ function truncateHistory(data: string): string {
 // Global resize ownership: only one terminal instance per session sends resize
 // commands to the server. When two AgentTerminals show the same session (e.g.
 // main pane + autojump popout), competing resizes with different dimensions
-// cause tmux to thrash and the content to blink. The most recently focused
+// cause the PTY to thrash and the content to blink. The most recently focused
 // terminal claims ownership.
 const resizeOwners = new Map<string, symbol>();
 
@@ -91,7 +91,7 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
     const term = new Terminal({
       cursorBlink: true,
       rightClickSelectsWord: false,
-      scrollback: 0,
+      scrollback: 5000,
       fontSize: 13,
       fontFamily: "'SF Mono', Monaco, 'Cascadia Code', monospace",
       theme: {
@@ -142,30 +142,6 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
     let inputSeq = 0;
     const pendingInputs = new Map<number, string>();
 
-    // --- Mouse mode tracking & manual mousemove injection ---
-    // xterm.js doesn't reliably send mousemove in DECSET 1003 (any-event mode)
-    // when no button is held. We track the mode from terminal output and inject
-    // SGR mouse sequences ourselves so tmux popup menus get hover highlights.
-    let mouseMode = 0;   // 0=off, 9/1000/1002/1003
-    let sgrEncoding = false; // DECSET 1006
-
-    function trackMouseModes(data: string) {
-      const re = /\x1b\[\?(\d+)([hl])/g;
-      let m;
-      while ((m = re.exec(data)) !== null) {
-        const mode = parseInt(m[1], 10);
-        const enable = m[2] === 'h';
-        switch (mode) {
-          case 9: case 1000: case 1002: case 1003:
-            mouseMode = enable ? mode : 0;
-            break;
-          case 1006:
-            sgrEncoding = enable;
-            break;
-        }
-      }
-    }
-
     function sendRawInput(data: string) {
       const ws = wsRef.current;
       if (ws && ws.readyState === WebSocket.OPEN) {
@@ -182,51 +158,6 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
       }
     }
 
-    function injectMouseEvent(e: MouseEvent, cb: number, press: boolean) {
-      const screen = containerRef.current?.querySelector('.xterm-screen');
-      if (!screen) return;
-      const rect = screen.getBoundingClientRect();
-      const col = Math.min(term.cols, Math.max(1, Math.floor((e.clientX - rect.left) / (rect.width / term.cols)) + 1));
-      const row = Math.min(term.rows, Math.max(1, Math.floor((e.clientY - rect.top) / (rect.height / term.rows)) + 1));
-      if (sgrEncoding) {
-        sendRawInput(`\x1b[<${cb};${col};${row}${press ? 'M' : 'm'}`);
-      } else {
-        sendRawInput(`\x1b[M${String.fromCharCode(cb + 32, col + 32, row + 32)}`);
-      }
-    }
-
-    let lastMoveCol = -1;
-    let lastMoveRow = -1;
-    // Suppress motion injection while a tmux display-menu is likely open.
-    // Right-click opens the menu; motion events dismiss it prematurely.
-    let suppressMotion = false;
-
-    function onMouseMove(e: MouseEvent) {
-      if (mouseMode !== 1003) return;
-      if (suppressMotion) return;
-      // Only inject no-button moves; xterm.js handles button-held moves via onData
-      if (e.buttons !== 0) return;
-      const screen = containerRef.current?.querySelector('.xterm-screen');
-      if (!screen) return;
-      const rect = screen.getBoundingClientRect();
-      const col = Math.min(term.cols, Math.max(1, Math.floor((e.clientX - rect.left) / (rect.width / term.cols)) + 1));
-      const row = Math.min(term.rows, Math.max(1, Math.floor((e.clientY - rect.top) / (rect.height / term.rows)) + 1));
-      if (col === lastMoveCol && row === lastMoveRow) return;
-      lastMoveCol = col;
-      lastMoveRow = row;
-      // cb=35: motion (32) + no button (3)
-      injectMouseEvent(e, 35, true);
-    }
-
-    function onMouseDown(e: MouseEvent) {
-      if (e.button === 2) {
-        // Right-click opens a tmux display-menu; suppress motion until dismissed
-        suppressMotion = true;
-      } else {
-        suppressMotion = false;
-      }
-    }
-
     function onContextMenu(e: Event) {
       e.preventDefault();
     }
@@ -234,8 +165,6 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
     const xtermScreen = containerRef.current.querySelector('.xterm-screen');
     if (xtermScreen) {
       xtermScreen.addEventListener('contextmenu', onContextMenu);
-      xtermScreen.addEventListener('mousemove', onMouseMove as EventListener);
-      xtermScreen.addEventListener('mousedown', onMouseDown as EventListener);
     }
 
     // ---- Ctrl+mouse: text selection & context menu ----
@@ -473,11 +402,10 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
     }
 
     function handleOutput(data: string) {
-      trackMouseModes(data);
       if (!gotFirstOutput) {
         gotFirstOutput = true;
         if (waitingDots) { clearInterval(waitingDots); waitingDots = null; }
-        // tmux just started rendering — bounce resize so it picks up correct dimensions
+        // Bounce resize so PTY picks up correct dimensions
         setTimeout(() => safeFitAndResize(true), 80);
       }
       term.write(data);
@@ -580,6 +508,24 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
           return;
         }
 
+        // Session service disconnected — use slower reconnect to avoid hammering
+        if (event.code === 4010) {
+          reconnectAttempts++;
+          if (reconnectAttempts > 3) {
+            term.write('\r\n\x1b[90m--- Session service unavailable. Click terminal or press any key to retry. ---\x1b[0m\r\n');
+            const retryHandler = term.onData(() => {
+              retryHandler.dispose();
+              reconnectAttempts = 0;
+              reconnectDelay = 200;
+              term.write('\x1b[90mReconnecting...\x1b[0m\r\n');
+              connect();
+            });
+            return;
+          }
+          reconnectTimer = setTimeout(() => connect(), 5000);
+          return;
+        }
+
         reconnectAttempts++;
         if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
           term.write('\r\n\x1b[31m--- Connection lost. Click terminal or press any key to retry. ---\x1b[0m\r\n');
@@ -604,9 +550,8 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
     connect();
 
     // Terminal auto-response sequences (DA1, DA2, DSR cursor position report).
-    // xterm.js generates these in response to queries from tmux/shell. On reconnect
-    // they arrive after tmux has timed out, causing visible junk in the PTY input.
-    // tmux infers capabilities from TERM=xterm-256color so these are unnecessary.
+    // xterm.js generates these in response to queries from the shell. On reconnect
+    // they arrive after the shell has timed out, causing visible junk in the PTY input.
     const TERMINAL_RESPONSE_RE = /\x1b\[\?[\d;]*c|\x1b\[>[\d;]*c|\x1b\[\d+;\d+R/g;
 
     let inputBuffer = '';
@@ -636,9 +581,6 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
       const filtered = data.replace(TERMINAL_RESPONSE_RE, '');
       if (!filtered) return;
       lastTerminalInput.value = Date.now();
-      if (suppressMotion && !filtered.startsWith('\x1b[M') && !filtered.startsWith('\x1b[<')) {
-        suppressMotion = false;
-      }
       inputBuffer += filtered;
       if (!inputFlushRaf) {
         inputFlushRaf = requestAnimationFrame(flushInputBuffer);
@@ -655,7 +597,7 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
       const ws = wsRef.current;
       if (ws && ws.readyState === WebSocket.OPEN && term.cols > 0 && term.rows > 0) {
         // On macOS, TIOCSWINSZ skips SIGWINCH when size is unchanged.
-        // "Bounce" by sending rows-1 first to guarantee tmux gets a real
+        // "Bounce" by sending rows-1 first to guarantee the PTY gets a real
         // SIGWINCH and re-renders when we send the correct size immediately after.
         if (bounce && term.rows > 1) {
           inputSeq++;
@@ -725,8 +667,6 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
       if (waitingDots) clearInterval(waitingDots);
       if (xtermScreen) {
         xtermScreen.removeEventListener('contextmenu', onContextMenu);
-        xtermScreen.removeEventListener('mousemove', onMouseMove as EventListener);
-        xtermScreen.removeEventListener('mousedown', onMouseDown as EventListener);
       }
       container.removeEventListener('mousedown', onCtrlMouseDown, true);
       document.removeEventListener('mousemove', onDragMove);
@@ -761,7 +701,7 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
     const focusInPanel = panelEl?.contains(document.activeElement) ?? false;
     // Wait for the browser to lay out the newly-visible container before fitting.
     // On macOS the kernel skips SIGWINCH when PTY size is unchanged, so we use
-    // bounce=true to briefly send rows-1 then correct rows, forcing tmux to
+    // bounce=true to briefly send rows-1 then correct rows, forcing the PTY to
     // re-render.  Also call term.refresh() to repaint the xterm.js canvas
     // (content written while the tab was display:none may leave it stale).
     let cancelled = false;

@@ -566,7 +566,6 @@ export async function dispatchTerminalSession(params: {
   appId?: string | null;
   launcherId?: string | null;
   permissionProfile?: PermissionProfile;
-  tmuxTarget?: string;
 }): Promise<{ sessionId: string }> {
   const sessionId = ulid();
   const now = new Date().toISOString();
@@ -603,7 +602,6 @@ export async function dispatchTerminalSession(params: {
       prompt: '',
       cwd: remoteCwd,
       permissionProfile: profile,
-      tmuxTarget: params.tmuxTarget,
       cols: 120,
       rows: 40,
     };
@@ -644,30 +642,6 @@ export async function dispatchCompanionTerminal(params: {
     .run();
 
   spawnLocal(sessionId, { cwd: params.cwd, permissionProfile: 'plain' }).catch(() => {});
-
-  return { sessionId };
-}
-
-export async function dispatchTmuxAttachSession(params: {
-  tmuxTarget: string;
-  appId?: string | null;
-}): Promise<{ sessionId: string }> {
-  const sessionId = ulid();
-  const now = new Date().toISOString();
-
-  db.insert(schema.agentSessions)
-    .values({
-      id: sessionId,
-      feedbackId: null,
-      agentEndpointId: null,
-      permissionProfile: 'plain',
-      status: 'pending',
-      outputBytes: 0,
-      createdAt: now,
-    })
-    .run();
-
-  spawnLocal(sessionId, { cwd: process.cwd(), permissionProfile: 'plain' }).catch(() => {});
 
   return { sessionId };
 }
@@ -970,13 +944,12 @@ export async function dispatchHarnessSession(params: {
     const response = await sendAndWait(params.launcherId, msg, 'launcher_session_started', 120_000);
     addSessionToLauncher(params.launcherId, sessionId);
 
-    const startedMsg = response as { pid?: number; tmuxSessionName?: string };
+    const startedMsg = response as { pid?: number };
     db.update(schema.agentSessions)
       .set({
         status: 'running',
         pid: startedMsg.pid,
         startedAt: new Date().toISOString(),
-        ...(startedMsg.tmuxSessionName ? { tmuxSessionName: startedMsg.tmuxSessionName } : {}),
       })
       .where(eq(schema.agentSessions.id, sessionId))
       .run();

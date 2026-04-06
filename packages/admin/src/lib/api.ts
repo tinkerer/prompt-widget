@@ -97,7 +97,7 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  spawnTerminal: (data?: { cwd?: string; appId?: string; launcherId?: string; harnessConfigId?: string; permissionProfile?: string; tmuxTarget?: string }) =>
+  spawnTerminal: (data?: { cwd?: string; appId?: string; launcherId?: string; harnessConfigId?: string; permissionProfile?: string }) =>
     request<{ sessionId: string }>('/admin/terminal', {
       method: 'POST',
       body: JSON.stringify(data || {}),
@@ -118,18 +118,6 @@ export const api = {
       maxSessions: number;
       online: boolean;
     }> }>('/admin/dispatch-targets'),
-
-  listTmuxSessions: () =>
-    request<{ sessions: { name: string; windows: number; created: string; attached: boolean }[] }>('/admin/tmux-sessions'),
-
-  attachTmuxSession: (data: { tmuxTarget: string; appId?: string; launcherId?: string }) =>
-    request<{ sessionId: string }>('/admin/terminal/attach-tmux', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-
-  listLauncherTmuxSessions: (launcherId: string) =>
-    request<{ sessions: Array<{ name: string; windows: number; created: string; attached: boolean }> }>(`/admin/launcher/${launcherId}/tmux-sessions`),
 
   getApplications: () => request<any[]>('/admin/applications'),
 
@@ -265,11 +253,6 @@ export const api = {
       method: 'DELETE',
     }),
 
-  openSessionInTerminal: (id: string) =>
-    request<{ ok: boolean; tmuxName: string }>(`/admin/agent-sessions/${id}/open-terminal`, {
-      method: 'POST',
-    }),
-
   getJsonl: async (id: string, fileFilter?: string): Promise<string> => {
     const token = getToken();
     const headers: Record<string, string> = {};
@@ -299,13 +282,13 @@ export const api = {
       method: 'POST',
     }),
 
-  sendKeys: (id: string, data: { keys: string; enter?: boolean; tmuxTarget?: string }) =>
+  sendKeys: (id: string, data: { keys: string; enter?: boolean }) =>
     request<{ ok: boolean; error?: string }>(`/admin/agent-sessions/${id}/send-keys`, {
       method: 'POST',
       body: JSON.stringify(data),
     }),
 
-  capturePane: (id: string, data?: { lastN?: number; tmuxTarget?: string }) =>
+  capturePane: (id: string, data?: { lastN?: number }) =>
     request<{ ok: boolean; content?: string; error?: string }>(`/admin/agent-sessions/${id}/capture-pane`, {
       method: 'POST',
       body: JSON.stringify(data || {}),
@@ -383,47 +366,6 @@ export const api = {
       activityLog: { ts: string; command: string; category: string; ok: boolean; durationMs: number }[];
     }[]>('/agent/sessions'),
 
-  // Tmux config (legacy)
-  getTmuxConf: () =>
-    request<{ content: string }>('/admin/tmux-conf'),
-
-  saveTmuxConf: (content: string) =>
-    request<{ saved: boolean }>('/admin/tmux-conf', {
-      method: 'PUT',
-      body: JSON.stringify({ content }),
-    }),
-
-  // Tmux configs (multi-config)
-  getTmuxConfigs: () =>
-    request<any[]>('/admin/tmux-configs'),
-
-  createTmuxConfig: (data: { name: string; content?: string }) =>
-    request<{ id: string }>('/admin/tmux-configs', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-
-  updateTmuxConfig: (id: string, data: { name?: string; content?: string; isDefault?: boolean }) =>
-    request<{ id: string; updated: boolean }>(`/admin/tmux-configs/${id}`, {
-      method: 'PATCH',
-      body: JSON.stringify(data),
-    }),
-
-  deleteTmuxConfig: (id: string) =>
-    request<{ id: string; deleted: boolean }>(`/admin/tmux-configs/${id}`, {
-      method: 'DELETE',
-    }),
-
-  editTmuxConfigInTerminal: (id: string) =>
-    request<{ sessionId: string; configId: string }>(`/admin/tmux-configs/${id}/edit-terminal`, {
-      method: 'POST',
-    }),
-
-  saveTmuxConfigFromFile: (id: string) =>
-    request<{ saved: boolean; content: string }>(`/admin/tmux-configs/${id}/save-from-file`, {
-      method: 'POST',
-    }),
-
   // Launchers
   getLaunchers: () =>
     request<{ launchers: any[] }>('/admin/launchers'),
@@ -458,10 +400,9 @@ export const api = {
       arch: string;
       memory: { total: number; free: number };
       activeSessions: number;
-      capabilities: { maxSessions: number; hasTmux: boolean; hasClaudeCli: boolean; hasDocker?: boolean };
+      capabilities: { maxSessions: number; hasClaudeCli: boolean; hasDocker?: boolean };
       claudeCliVersion?: string;
       dockerVersion?: string;
-      tmuxVersion?: string;
       claudeHomeExists: boolean;
     }>(`/admin/launchers/${id}/health`),
 
@@ -540,9 +481,6 @@ export const api = {
       hasCredentials: boolean;
       error?: string;
     }>(`/admin/harness-configs/${harnessConfigId}/check-container-claude`, { method: 'POST' }),
-
-  listHostTmuxSessions: (harnessConfigId: string) =>
-    request<{ sessions: Array<{ name: string; windows: number; created: string; attached: boolean }> }>(`/admin/harness-configs/${harnessConfigId}/host-tmux-sessions`),
 
   // Sprite configs
   getSpriteConfigs: (appId?: string) => {
@@ -681,4 +619,34 @@ export const api = {
 
   getWiggumRunsByParent: (sessionId: string) =>
     request<any[]>(`/admin/wiggum?parentSessionId=${encodeURIComponent(sessionId)}`),
+
+  getWiggumPrompts: (harnessConfigId: string, promptDir?: string) => {
+    const params = new URLSearchParams({ harnessConfigId });
+    if (promptDir) params.set('promptDir', promptDir);
+    return request<any[]>(`/admin/wiggum/prompts?${params}`);
+  },
+
+  getWiggumPromptFile: (harnessConfigId: string, filename: string) =>
+    request<{ filename: string; content: string }>(`/admin/wiggum/prompt-file?harnessConfigId=${encodeURIComponent(harnessConfigId)}&filename=${encodeURIComponent(filename)}`),
+
+  updateWiggumPromptFile: (harnessConfigId: string, filename: string, content: string, promptDir?: string) =>
+    request<{ ok: boolean }>('/admin/wiggum/prompt-file', {
+      method: 'PUT',
+      body: JSON.stringify({ harnessConfigId, filename, content, promptDir }),
+    }),
+
+  batchCreateWiggumRuns: (data: { harnessConfigId: string; promptFiles: string[]; maxIterations?: number; deployCommand?: string; widgetSessionId?: string; screenshotDelayMs?: number; promptDir?: string }) =>
+    request<any[]>('/admin/wiggum/batch', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  batchWiggumAction: (action: 'stop' | 'pause' | 'resume', runIds: string[]) =>
+    request<{ results: { id: string; ok: boolean; error?: string }[] }>('/admin/wiggum/batch-action', {
+      method: 'POST',
+      body: JSON.stringify({ action, runIds }),
+    }),
+
+  getWiggumLog: (harnessConfigId: string, logFile: string) =>
+    request<{ logFile: string; content: string }>(`/admin/wiggum/log?harnessConfigId=${encodeURIComponent(harnessConfigId)}&logFile=${encodeURIComponent(logFile)}`),
 };

@@ -129,7 +129,7 @@ const server = serve({ fetch: app.fetch, port: PORT }, (info) => {
       connectedAt: now,
       lastHeartbeat: now,
       activeSessions: new Set(),
-      capabilities: { maxSessions: 0, hasTmux: false, hasClaudeCli: false },
+      capabilities: { maxSessions: 0, hasClaudeCli: false },
       harness,
       isLocal: true,
       machineId: localMachineId,
@@ -304,7 +304,6 @@ launcherWss.on('connection', (ws, req) => {
               status: 'running',
               pid: msg.pid,
               startedAt: now,
-              ...(msg.tmuxSessionName ? { tmuxSessionName: msg.tmuxSessionName } : {}),
             })
             .where(eq(schema.agentSessions.id, msg.sessionId))
             .run();

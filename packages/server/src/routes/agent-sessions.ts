@@ -5,7 +5,7 @@ import { basename } from 'node:path';
 import { db, schema } from '../db/index.js';
 import { killSession } from '../agent-sessions.js';
 import { resumeAgentSession, dispatchTerminalSession, transferSession, getTransfer } from '../dispatch.js';
-import { getSessionLiveStates } from '../session-service-client.js';
+import { getSessionLiveStates, inputSessionRemote } from '../session-service-client.js';
 import { getLauncher, sendAndWait } from '../launcher-registry.js';
 import { listSessions, sendCommand } from '../sessions.js';
 import {
@@ -286,7 +286,6 @@ const sessionSelectFields = {
   outputBytes: schema.agentSessions.outputBytes,
   lastOutputSeq: schema.agentSessions.lastOutputSeq,
   lastInputSeq: schema.agentSessions.lastInputSeq,
-  tmuxSessionName: schema.agentSessions.tmuxSessionName,
   launcherId: schema.agentSessions.launcherId,
   machineId: schema.agentSessions.machineId,
   claudeSessionId: schema.agentSessions.claudeSessionId,
@@ -372,7 +371,6 @@ async function enrichSessions(rows: SessionRow[]) {
       outputBytes: r.outputBytes,
       lastOutputSeq: r.lastOutputSeq,
       lastInputSeq: r.lastInputSeq,
-      tmuxSessionName: r.tmuxSessionName,
       launcherId: r.launcherId,
       machineId: r.machineId,
       claudeSessionId: r.claudeSessionId,
@@ -530,65 +528,17 @@ agentSessionRoutes.post('/:id/archive', async (c) => {
 });
 
 agentSessionRoutes.post('/:id/open-terminal', async (c) => {
-  const id = c.req.param('id');
-  const tmuxName = `pw-${id}`;
-  const { execFileSync } = await import('node:child_process');
-  const { resolve, dirname } = await import('node:path');
-  const { fileURLToPath } = await import('node:url');
-  const { writeFileSync, chmodSync, mkdtempSync } = await import('node:fs');
-
-  // Check if session is remote
-  const session = db.select().from(schema.agentSessions).where(eq(schema.agentSessions.id, id)).get();
-  let isRemote = false;
-  let hostname: string | null = null;
-  if (session?.launcherId) {
-    const launcher = getLauncher(session.launcherId);
-    if (launcher && !launcher.isLocal) {
-      isRemote = true;
-      hostname = launcher.hostname;
-    }
-  }
-
-  if (isRemote && hostname) {
-    // Remote session — generate .command file with SSH
-    try {
-      const tmpDir = mkdtempSync('/tmp/pw-open-');
-      const tmpFile = resolve(tmpDir, 'open.command');
-      const cmd = `ssh -t ${hostname} 'TMUX= tmux -L prompt-widget attach-session -t ${tmuxName}'\nrm -rf "${tmpDir}"\n`;
-      writeFileSync(tmpFile, cmd);
-      chmodSync(tmpFile, 0o755);
-      execFileSync('open', ['-a', 'Terminal', '-e', tmpFile], { stdio: 'pipe' });
-      return c.json({ ok: true, tmuxName, remote: true, hostname });
-    } catch (err: any) {
-      return c.json({ error: err.message }, 500);
-    }
-  }
-
-  // Local session — check tmux and use existing script
-  try {
-    execFileSync('tmux', ['-L', 'prompt-widget', 'has-session', '-t', tmuxName], { stdio: 'pipe' });
-  } catch {
-    return c.json({ error: 'Tmux session not found' }, 404);
-  }
-  try {
-    const scriptPath = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'open-in-terminal.sh');
-    execFileSync(scriptPath, [tmuxName], { stdio: 'pipe' });
-    return c.json({ ok: true, tmuxName });
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500);
-  }
+  return c.json({ error: 'Open in Terminal.app is no longer supported (tmux removed)' }, 410);
 });
 
 agentSessionRoutes.post('/:id/send-keys', async (c) => {
   const id = c.req.param('id');
   const body = await c.req.json().catch(() => ({}));
-  const { keys, enter, tmuxTarget } = body as { keys?: string; enter?: boolean; tmuxTarget?: string };
+  const { keys, enter } = body as { keys?: string; enter?: boolean };
   if (!keys) return c.json({ error: 'keys is required' }, 400);
 
   const session = db.select().from(schema.agentSessions).where(eq(schema.agentSessions.id, id)).get();
   if (!session) return c.json({ error: 'Session not found' }, 404);
-
-  const tmuxName = tmuxTarget || `pw-${id}`;
 
   if (session.launcherId) {
     const launcher = getLauncher(session.launcherId);
@@ -602,7 +552,6 @@ agentSessionRoutes.post('/:id/send-keys', async (c) => {
           targetSessionId: id,
           keys,
           enter,
-          tmuxTarget,
         }, 'send_keys_result', 10_000) as any;
         return c.json({ ok: result.ok, error: result.error });
       } catch (err: any) {
@@ -611,12 +560,10 @@ agentSessionRoutes.post('/:id/send-keys', async (c) => {
     }
   }
 
-  // Local
+  // Local — write to PTY via session-service
   try {
-    const { execFileSync } = await import('node:child_process');
-    const args = ['-L', 'prompt-widget', 'send-keys', '-t', tmuxName, keys];
-    if (enter !== false) args.push('Enter');
-    execFileSync('tmux', args, { stdio: 'pipe', timeout: 10_000 });
+    const data = keys + (enter !== false ? '\r' : '');
+    await inputSessionRemote(id, data);
     return c.json({ ok: true });
   } catch (err: any) {
     return c.json({ ok: false, error: err.message }, 500);
@@ -626,12 +573,10 @@ agentSessionRoutes.post('/:id/send-keys', async (c) => {
 agentSessionRoutes.post('/:id/capture-pane', async (c) => {
   const id = c.req.param('id');
   const body = await c.req.json().catch(() => ({}));
-  const { lastN, tmuxTarget } = body as { lastN?: number; tmuxTarget?: string };
+  const { lastN } = body as { lastN?: number };
 
   const session = db.select().from(schema.agentSessions).where(eq(schema.agentSessions.id, id)).get();
   if (!session) return c.json({ error: 'Session not found' }, 404);
-
-  const tmuxName = tmuxTarget || `pw-${id}`;
 
   if (session.launcherId) {
     const launcher = getLauncher(session.launcherId);
@@ -644,7 +589,6 @@ agentSessionRoutes.post('/:id/capture-pane', async (c) => {
           sessionId: reqId,
           targetSessionId: id,
           lastN,
-          tmuxTarget,
         }, 'capture_pane_result', 10_000) as any;
         return c.json({ ok: result.ok, content: result.content, error: result.error });
       } catch (err: any) {
@@ -653,12 +597,10 @@ agentSessionRoutes.post('/:id/capture-pane', async (c) => {
     }
   }
 
-  // Local
+  // Local — get output buffer from session-service
   try {
-    const { execFileSync } = await import('node:child_process');
-    const args = ['-L', 'prompt-widget', 'capture-pane', '-t', tmuxName, '-p'];
-    if (lastN) args.push('-S', String(-lastN));
-    const content = execFileSync('tmux', args, { stdio: 'pipe', timeout: 10_000 }).toString();
+    const { captureSessionOutput } = await import('../session-service-client.js');
+    const content = await captureSessionOutput(id);
     return c.json({ ok: true, content });
   } catch (err: any) {
     return c.json({ ok: false, error: err.message }, 500);
@@ -783,13 +725,14 @@ agentSessionRoutes.post('/:id/tail-jsonl', async (c) => {
 
   const { sessionId } = await dispatchTerminalSession({ cwd: '/tmp' });
 
-  const tmuxName = `pw-${sessionId}`;
-  const { execFileSync } = await import('node:child_process');
-  try {
-    execFileSync('tmux', ['-L', 'prompt-widget', 'send-keys', '-t', tmuxName, `tail -f ${jsonlPath}`, 'Enter'], { stdio: 'pipe' });
-  } catch (err: any) {
-    console.error('Failed to send tail command:', err.message);
-  }
+  // Send tail command to the new terminal after shell starts
+  setTimeout(async () => {
+    try {
+      await inputSessionRemote(sessionId, `tail -f ${jsonlPath}\r`);
+    } catch (err: any) {
+      console.error('Failed to send tail command:', err.message);
+    }
+  }, 800);
 
   return c.json({ sessionId, jsonlPath });
 });

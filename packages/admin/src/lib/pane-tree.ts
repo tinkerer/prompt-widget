@@ -139,39 +139,23 @@ export function buildDefaultLayout(): LayoutTree {
             {
               type: 'split',
               id: 'content-split',
-              direction: 'horizontal',
-              ratio: 0.5,
+              direction: 'vertical',
+              ratio: 1.0,
               children: [
                 {
-                  type: 'split',
-                  id: 'pages-left-split',
-                  direction: 'vertical',
-                  ratio: 1.0,
-                  children: [
-                    {
-                      type: 'leaf',
-                      id: PAGE_LEAF_ID,
-                      panelType: 'tabs',
-                      tabs: ['view:feedback'],
-                      activeTabId: 'view:feedback',
-                      singleton: true,
-                    },
-                    {
-                      type: 'leaf',
-                      id: SESSIONS_LEAF_ID,
-                      panelType: 'tabs',
-                      tabs: [],
-                      activeTabId: null,
-                    },
-                  ],
+                  type: 'leaf',
+                  id: PAGE_LEAF_ID,
+                  panelType: 'tabs',
+                  tabs: ['view:feedback'],
+                  activeTabId: 'view:feedback',
+                  singleton: true,
                 },
                 {
                   type: 'leaf',
-                  id: 'aggregate-leaf',
+                  id: SESSIONS_LEAF_ID,
                   panelType: 'tabs',
-                  tabs: ['view:aggregate'],
-                  activeTabId: 'view:aggregate',
-                  singleton: true,
+                  tabs: [],
+                  activeTabId: null,
                 },
               ],
             },
@@ -249,7 +233,7 @@ function migrateTree(tree: LayoutTree): LayoutTree {
   }
 
   // Migrate singleton flags on well-known leaves
-  const singletonLeafIds = [SIDEBAR_LEAF_ID, 'sidebar-sessions', 'sidebar-terminals', 'sidebar-files', CONTROLBAR_LEAF_ID, PAGE_LEAF_ID, 'aggregate-leaf'];
+  const singletonLeafIds = [SIDEBAR_LEAF_ID, 'sidebar-sessions', 'sidebar-terminals', 'sidebar-files', CONTROLBAR_LEAF_ID, PAGE_LEAF_ID];
   for (const id of singletonLeafIds) {
     const leaf = find(tree.root, id);
     if (leaf && !leaf.singleton) leaf.singleton = true;
@@ -662,7 +646,7 @@ export function toggleLeafCollapsed(leafId: string) {
 // --- Utilities ---
 
 function isWellKnownLeaf(id: string): boolean {
-  return id === SIDEBAR_LEAF_ID || id === PAGE_LEAF_ID || id === SESSIONS_LEAF_ID || id === CONTROLBAR_LEAF_ID || id === 'aggregate-leaf';
+  return id === SIDEBAR_LEAF_ID || id === PAGE_LEAF_ID || id === SESSIONS_LEAF_ID || id === CONTROLBAR_LEAF_ID;
 }
 
 function findNodeById(node: PaneNode, id: string): PaneNode | null {

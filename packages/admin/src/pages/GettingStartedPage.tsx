@@ -1,27 +1,6 @@
-import { signal } from '@preact/signals';
+import { useSignal } from '@preact/signals';
 import { useRef, useEffect } from 'preact/hooks';
 import { marked } from 'marked';
-
-const html = signal('');
-const loading = signal(true);
-const error = signal('');
-
-async function load() {
-  loading.value = true;
-  error.value = '';
-  try {
-    const res = await fetch('/GETTING_STARTED.md');
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const md = await res.text();
-    html.value = await marked.parse(md);
-  } catch (err: any) {
-    error.value = err.message;
-  } finally {
-    loading.value = false;
-  }
-}
-
-let loaded = false;
 
 function addCopyButtons(container: HTMLElement) {
   for (const pre of container.querySelectorAll('pre')) {
@@ -43,11 +22,29 @@ function addCopyButtons(container: HTMLElement) {
 
 export function GettingStartedPage() {
   const contentRef = useRef<HTMLDivElement>(null);
+  const html = useSignal('');
+  const loading = useSignal(true);
+  const error = useSignal('');
 
-  if (!loaded) {
-    loaded = true;
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      loading.value = true;
+      error.value = '';
+      try {
+        const res = await fetch('/GETTING_STARTED.md');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const md = await res.text();
+        if (!cancelled) html.value = await marked.parse(md);
+      } catch (err: any) {
+        if (!cancelled) error.value = err.message;
+      } finally {
+        if (!cancelled) loading.value = false;
+      }
+    }
     load();
-  }
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     if (contentRef.current && html.value) {

@@ -29,7 +29,6 @@ export interface LauncherRegister {
 
 export interface LauncherCapabilities {
   maxSessions: number;
-  hasTmux: boolean;
   hasClaudeCli: boolean;
   hasDocker?: boolean;
 }
@@ -45,7 +44,6 @@ export interface LauncherSessionStarted {
   type: 'launcher_session_started';
   sessionId: string;
   pid: number;
-  tmuxSessionName?: string;
 }
 
 export interface LauncherSessionOutput {
@@ -94,12 +92,6 @@ export interface SyncCodebaseResult {
   error?: string;
 }
 
-export interface ListTmuxSessionsResult {
-  type: 'list_tmux_sessions_result';
-  sessionId: string;
-  sessions: Array<{ name: string; windows: number; created: string; attached: boolean }>;
-}
-
 export interface CheckClaudeAuthResult {
   type: 'check_claude_auth_result';
   sessionId: string;
@@ -131,7 +123,6 @@ export interface LauncherHealthCheckResult {
   capabilities: LauncherCapabilities;
   claudeCliVersion?: string;
   dockerVersion?: string;
-  tmuxVersion?: string;
   claudeHomeExists: boolean;
 }
 
@@ -170,7 +161,6 @@ export type LauncherToServerMessage =
   | ExportSessionFilesResult
   | SyncCodebaseResult
   | SyncCodebaseToContainerResult
-  | ListTmuxSessionsResult
   | CheckClaudeAuthResult
   | CheckContainerClaudeResult
   | LauncherHealthCheckResult
@@ -195,7 +185,6 @@ export interface LaunchSession {
   allowedTools?: string | null;
   claudeSessionId?: string;
   resumeSessionId?: string;
-  tmuxTarget?: string;
   cols: number;
   rows: number;
 }
@@ -297,11 +286,6 @@ export interface SyncCodebase {
   gitRemoteUrl: string;
 }
 
-export interface ListTmuxSessions {
-  type: 'list_tmux_sessions';
-  sessionId: string;
-}
-
 export interface RestartLauncher {
   type: 'restart_launcher';
 }
@@ -331,7 +315,6 @@ export interface SendKeys {
   targetSessionId: string;
   keys: string;
   enter?: boolean;
-  tmuxTarget?: string;
 }
 
 export interface CapturePane {
@@ -339,7 +322,6 @@ export interface CapturePane {
   sessionId: string;
   targetSessionId: string;
   lastN?: number;
-  tmuxTarget?: string;
 }
 
 export interface ExecInHarness {
@@ -365,7 +347,6 @@ export type ServerToLauncherMessage =
   | ExportSessionFiles
   | SyncCodebase
   | SyncCodebaseToContainer
-  | ListTmuxSessions
   | RestartLauncher
   | CheckClaudeAuth
   | CheckContainerClaude

@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import * as path from 'node:path';
 import * as pty from 'node-pty';
-import { execSync, execFileSync } from 'node:child_process';
+import { execSync } from 'node:child_process';
 import type {
   LauncherRegister,
   LauncherHeartbeat,
@@ -24,7 +24,6 @@ import type {
   SyncCodebaseResult,
   SyncCodebaseToContainer,
   SyncCodebaseToContainerResult,
-  ListTmuxSessionsResult,
   CheckClaudeAuthResult,
   CheckContainerClaudeResult,
   LauncherHealthCheckResult,
@@ -32,18 +31,6 @@ import type {
   CapturePaneResult,
   ExecInHarnessResult,
 } from '@prompt-widget/shared';
-import {
-  isTmuxAvailable,
-  spawnInTmux,
-  reattachTmux,
-  tmuxSessionExists,
-  killTmuxSession,
-  captureTmuxPane,
-  listPwTmuxSessions,
-  listDefaultTmuxSessions,
-  attachDefaultTmuxSession,
-  detachTmuxClients,
-} from './tmux-pty.js';
 import {
   computeJsonlDir,
   exportSessionFiles as exportSessionFilesLocal,
@@ -154,11 +141,10 @@ function spawnSession(params: {
   allowedTools?: string | null;
   claudeSessionId?: string;
   resumeSessionId?: string;
-  tmuxTarget?: string;
   cols: number;
   rows: number;
 }): void {
-  const { sessionId, prompt, permissionProfile, allowedTools, claudeSessionId, resumeSessionId, tmuxTarget, cols, rows } = params;
+  const { sessionId, prompt, permissionProfile, allowedTools, claudeSessionId, resumeSessionId, cols, rows } = params;
   // Resolve ~ to actual home directory, and fall back to home if cwd doesn't exist
   let cwd = params.cwd;
   if (cwd === '~' || cwd.startsWith('~/')) {
@@ -171,79 +157,17 @@ function spawnSession(params: {
     return;
   }
 
-  // Attach to an existing tmux session on the default server
-  if (tmuxTarget) {
-    console.log(`[launcher] Attaching session ${sessionId} to tmux target ${tmuxTarget}`);
-    const result = attachDefaultTmuxSession({ sessionId, tmuxTarget, cols, rows });
-    const ptyProcess = result.ptyProcess;
-    const tmuxSessionName = result.tmuxSessionName;
-
-    const session: LocalSession = {
-      sessionId,
-      ptyProcess,
-      outputBuffer: '',
-      totalBytes: 0,
-      outputSeq: 0,
-      status: 'running',
-    };
-    sessions.set(sessionId, session);
-
-    const started: LauncherSessionStarted = {
-      type: 'launcher_session_started',
-      sessionId,
-      pid: ptyProcess.pid,
-      tmuxSessionName,
-    };
-    sendToServer(started);
-
-    ptyProcess.onData((data: string) => {
-      session.outputBuffer += data;
-      session.totalBytes += Buffer.byteLength(data);
-      if (session.outputBuffer.length > MAX_OUTPUT_LOG) {
-        session.outputBuffer = session.outputBuffer.slice(-MAX_OUTPUT_LOG);
-      }
-      sendSequenced(session, { kind: 'output', data });
-    });
-
-    ptyProcess.onExit(({ exitCode }) => {
-      session.status = exitCode === 0 ? 'completed' : 'failed';
-      sendSequenced(session, { kind: 'exit', exitCode, status: session.status });
-
-      const ended: LauncherSessionEnded = {
-        type: 'launcher_session_ended',
-        sessionId,
-        exitCode,
-        status: session.status,
-        outputLog: session.outputBuffer.slice(-MAX_OUTPUT_LOG),
-      };
-      sendToServer(ended);
-      sessions.delete(sessionId);
-    });
-
-    return;
-  }
-
   const { command, args } = buildClaudeArgs(prompt, permissionProfile, allowedTools, claudeSessionId, resumeSessionId);
-  const useTmux = isTmuxAvailable();
 
-  console.log(`[launcher] Spawning session ${sessionId}: profile=${permissionProfile}, cwd=${cwd}, tmux=${useTmux}`);
+  console.log(`[launcher] Spawning session ${sessionId}: profile=${permissionProfile}, cwd=${cwd}`);
 
-  let ptyProcess: pty.IPty;
-  let tmuxSessionName: string | undefined;
-
-  if (useTmux) {
-    const result = spawnInTmux({ sessionId, command, args, cwd, cols, rows });
-    ptyProcess = result.ptyProcess;
-    tmuxSessionName = result.tmuxSessionName;
-  } else {
-    ptyProcess = pty.spawn(command, args, {
-      name: 'xterm-256color',
-      cols,
-      rows,
-      cwd,
-      env: { ...process.env, TERM: 'xterm-256color' } as Record<string, string>,
-    });
-  }
+  const ptyProcess = pty.spawn(command, args, {
+    name: 'xterm-256color',
+    cols,
+    rows,
+    cwd,
+    env: { ...process.env, TERM: 'xterm-256color' } as Record<string, string>,
+  });
 
   const session: LocalSession = {
     sessionId,
@@ -259,7 +183,6 @@ function spawnSession(params: {
     type: 'launcher_session_started',
     sessionId,
     pid: ptyProcess.pid,
-    tmuxSessionName,
   };
   sendToServer(started);
 
@@ -497,7 +420,6 @@ function handleServerMessage(msg: ServerToLauncherMessage): void {
         allowedTools: msg.allowedTools,
         claudeSessionId: msg.claudeSessionId,
         resumeSessionId: msg.resumeSessionId,
-        tmuxTarget: msg.tmuxTarget,
         cols: msg.cols,
         rows: msg.rows,
       });
@@ -508,7 +430,6 @@ function handleServerMessage(msg: ServerToLauncherMessage): void {
       if (session && session.status === 'running') {
         session.status = 'killed';
         session.ptyProcess.kill();
-        killTmuxSession(msg.sessionId);
       }
       break;
     }
@@ -536,7 +457,6 @@ function handleServerMessage(msg: ServerToLauncherMessage): void {
         } else if (content.kind === 'kill') {
           session.status = 'killed';
           session.ptyProcess.kill();
-          killTmuxSession(msg.sessionId);
         }
       }
       break;
@@ -635,17 +555,6 @@ function handleServerMessage(msg: ServerToLauncherMessage): void {
       handleSyncCodebaseToContainer(msg);
       break;
 
-    case 'list_tmux_sessions': {
-      const tmuxSessions = listDefaultTmuxSessions();
-      const result: ListTmuxSessionsResult = {
-        type: 'list_tmux_sessions_result',
-        sessionId: msg.sessionId,
-        sessions: tmuxSessions,
-      };
-      sendToServer(result);
-      break;
-    }
-
     case 'restart_launcher': {
       console.log('[launcher] Restart requested, exiting for systemd restart...');
       shutdown();
@@ -718,7 +627,6 @@ function handleServerMessage(msg: ServerToLauncherMessage): void {
         activeSessions: sessions.size,
         capabilities: {
           maxSessions: MAX_SESSIONS,
-          hasTmux: isTmuxAvailable(),
           hasClaudeCli: false,
           hasDocker: false,
         },
@@ -726,38 +634,31 @@ function handleServerMessage(msg: ServerToLauncherMessage): void {
       };
       try { execSync('claude --version', { stdio: 'pipe', timeout: 5_000 }); result.capabilities.hasClaudeCli = true; result.claudeCliVersion = execSync('claude --version', { stdio: 'pipe', timeout: 5_000 }).toString().trim(); } catch {}
       try { result.dockerVersion = execSync('docker --version', { stdio: 'pipe', timeout: 5_000 }).toString().trim(); result.capabilities.hasDocker = true; } catch {}
-      try { result.tmuxVersion = execSync('tmux -V', { stdio: 'pipe', timeout: 5_000 }).toString().trim(); } catch {}
       sendToServer(result);
       break;
     }
 
     case 'send_keys': {
-      const targetId = msg.tmuxTarget || msg.targetSessionId;
-      const tmuxName = targetId.startsWith('pw-') ? targetId : `pw-${targetId}`;
-      try {
-        const args = ['-L', 'prompt-widget', 'send-keys', '-t', tmuxName, msg.keys];
-        if (msg.enter !== false) args.push('Enter');
-        execFileSync('tmux', args, { stdio: 'pipe', timeout: 10_000 });
+      const targetSession = sessions.get(msg.targetSessionId);
+      if (targetSession && targetSession.status === 'running') {
+        targetSession.ptyProcess.write(msg.keys + (msg.enter !== false ? '\r' : ''));
         const result: SendKeysResult = { type: 'send_keys_result', sessionId: msg.sessionId, ok: true };
         sendToServer(result);
-      } catch (err: any) {
-        const result: SendKeysResult = { type: 'send_keys_result', sessionId: msg.sessionId, ok: false, error: err.message?.slice(0, 500) };
+      } else {
+        const result: SendKeysResult = { type: 'send_keys_result', sessionId: msg.sessionId, ok: false, error: 'Session not found or not running' };
         sendToServer(result);
       }
       break;
     }
 
     case 'capture_pane': {
-      const targetId = msg.tmuxTarget || msg.targetSessionId;
-      const tmuxName = targetId.startsWith('pw-') ? targetId : `pw-${targetId}`;
-      try {
-        const args = ['-L', 'prompt-widget', 'capture-pane', '-t', tmuxName, '-p'];
-        if (msg.lastN) args.push('-S', String(-msg.lastN));
-        const content = execFileSync('tmux', args, { stdio: 'pipe', timeout: 10_000 }).toString();
+      const targetSession = sessions.get(msg.targetSessionId);
+      if (targetSession) {
+        const content = targetSession.outputBuffer.slice(-(msg.lastN ? msg.lastN * 200 : 10000));
         const result: CapturePaneResult = { type: 'capture_pane_result', sessionId: msg.sessionId, ok: true, content };
         sendToServer(result);
-      } catch (err: any) {
-        const result: CapturePaneResult = { type: 'capture_pane_result', sessionId: msg.sessionId, ok: false, error: err.message?.slice(0, 500) };
+      } else {
+        const result: CapturePaneResult = { type: 'capture_pane_result', sessionId: msg.sessionId, ok: false, error: 'Session not found' };
         sendToServer(result);
       }
       break;
@@ -807,10 +708,7 @@ function handleServerMessage(msg: ServerToLauncherMessage): void {
       }
 
       const { command: innerCmd, args: innerArgs } = buildClaudeArgs(prompt, permissionProfile, undefined, claudeSessionId);
-      // Claude always needs a TTY (even -p mode uses TUI internally).
-      // Only disable TTY (-T) when there's no tmux/pty to provide one.
-      const useTmux = isTmuxAvailable();
-      const execFlags = useTmux ? [] : ['-T'];
+      const execFlags: string[] = [];
       if (containerCwd) execFlags.push('-w', containerCwd);
       if (anthropicApiKey) execFlags.push('-e', `ANTHROPIC_API_KEY=${anthropicApiKey}`);
       const projectName = `pw-${harnessConfigId}`.toLowerCase();
@@ -818,21 +716,12 @@ function handleServerMessage(msg: ServerToLauncherMessage): void {
         ? ['compose', '--project-directory', composeDir, '-p', projectName, 'exec', ...execFlags, svc, innerCmd, ...innerArgs]
         : ['compose', '-p', projectName, 'exec', ...execFlags, svc, innerCmd, ...innerArgs];
 
-      let ptyProcess: pty.IPty;
-      let tmuxSessionName: string | undefined;
-
-      if (useTmux) {
-        const result = spawnInTmux({ sessionId, command: 'docker', args: dockerArgs, cwd: composeDir || os.homedir(), cols, rows });
-        ptyProcess = result.ptyProcess;
-        tmuxSessionName = result.tmuxSessionName;
-      } else {
-        ptyProcess = pty.spawn('docker', dockerArgs, {
-          name: 'xterm-256color',
-          cols,
-          rows,
-          env: { ...process.env, TERM: 'xterm-256color' } as Record<string, string>,
-        });
-      }
+      const ptyProcess = pty.spawn('docker', dockerArgs, {
+        name: 'xterm-256color',
+        cols,
+        rows,
+        env: { ...process.env, TERM: 'xterm-256color' } as Record<string, string>,
+      });
 
       const session: LocalSession = {
         sessionId,
@@ -848,7 +737,6 @@ function handleServerMessage(msg: ServerToLauncherMessage): void {
         type: 'launcher_session_started',
         sessionId,
         pid: ptyProcess.pid,
-        tmuxSessionName,
       };
       sendToServer(started);
 
@@ -896,7 +784,6 @@ function connect(): void {
 
     const caps: LauncherCapabilities = {
       maxSessions: MAX_SESSIONS,
-      hasTmux: isTmuxAvailable(),
       hasClaudeCli: true,
       hasDocker,
     };
@@ -955,14 +842,8 @@ function shutdown(): void {
   if (reconnectTimer) clearTimeout(reconnectTimer);
 
   for (const [sessionId, session] of sessions) {
-    if (isTmuxAvailable() && tmuxSessionExists(sessionId)) {
-      console.log(`[launcher] Detaching tmux session ${sessionId} (preserved)`);
-      detachTmuxClients(sessionId);
-      try { session.ptyProcess.kill(); } catch {}
-    } else {
-      console.log(`[launcher] Killing session ${sessionId}`);
-      try { session.ptyProcess.kill(); } catch {}
-    }
+    console.log(`[launcher] Killing session ${sessionId}`);
+    try { session.ptyProcess.kill(); } catch {}
   }
 
   if (ws) {

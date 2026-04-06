@@ -88,9 +88,9 @@ export function UserGuidePage() {
       icon: '\u2328',
       content: () => (
         <div class="guide-section-body">
-          <p>Press <Kbd>?</Kbd> at any time to see the full shortcut reference. Key shortcuts:</p>
+          <p>Press <Kbd>Ctrl+Shift+/</Kbd> at any time to see the full shortcut reference. Key shortcuts:</p>
           <div class="guide-shortcuts-grid">
-            <ShortcutRow keys="?" label="Show shortcut help" />
+            <ShortcutRow keys="Ctrl+Shift+/" label="Show shortcut help" />
             <ShortcutRow keys="Cmd+K" label="Spotlight search" />
             <ShortcutRow keys="Ctrl+Shift+Left" label="Previous page" />
             <ShortcutRow keys="Ctrl+Shift+Right" label="Next page" />
@@ -104,7 +104,7 @@ export function UserGuidePage() {
             <ShortcutRow keys="Ctrl+Shift+Space" label="Toggle terminal panel" />
             <ShortcutRow keys="Ctrl+Shift+B" label="Go back" />
             <ShortcutRow keys="Ctrl+\\" label="Toggle sidebar" />
-            <ShortcutRow keys="T" label="Toggle theme (when not focused on input)" />
+            <ShortcutRow keys="Ctrl+Shift+T" label="Toggle theme" />
           </div>
           <TourButton guideId="keyboard-power-user" onStart={setActiveGuide} />
         </div>
@@ -271,10 +271,9 @@ export function UserGuidePage() {
             <li><strong>Bookmarklet</strong> &mdash; Drag the bookmark icon from the sidebar header to your bookmarks bar. Click it on any site to load the feedback widget.</li>
             <li><strong>Panel presets</strong> &mdash; Save your tab/panel layout in Preferences and restore it later.</li>
             <li><strong>Split pane</strong> &mdash; View two sessions side by side by right-clicking a tab and choosing "Split pane".</li>
-            <li><strong>Tmux configs</strong> &mdash; Create named tmux configurations in Preferences and assign them per-app.</li>
             <li><strong>Ctrl+Shift hold</strong> &mdash; Hold Ctrl+Shift to reveal quick actions (Kill, Resolve, Close) on the active session tab.</li>
             <li><strong>Multi-digit tabs</strong> &mdash; Press Ctrl+Shift+1 then 2 within 500ms to jump to tab 12.</li>
-            <li><strong>Theme toggle</strong> &mdash; Press T (when not in an input) to toggle between light and dark themes.</li>
+            <li><strong>Theme toggle</strong> &mdash; Press Ctrl+Shift+T to toggle between light and dark themes.</li>
             <li><strong>Contextual hints</strong> &mdash; Enable/disable hint toasts in Preferences. Reset dismissed hints to see them again.</li>
           </ul>
         </div>

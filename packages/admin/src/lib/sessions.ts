@@ -394,21 +394,6 @@ export async function spawnTerminal(appId?: string | null, launcherId?: string, 
   }
 }
 
-export async function attachTmuxSession(tmuxTarget: string, appId?: string | null, skipOpen?: boolean, launcherId?: string) {
-  try {
-    const data: { tmuxTarget: string; appId?: string; launcherId?: string } = { tmuxTarget };
-    if (appId && appId !== '__unlinked__') data.appId = appId;
-    if (launcherId) data.launcherId = launcherId;
-    const { sessionId } = await api.attachTmuxSession(data);
-    if (!skipOpen) openSession(sessionId);
-    loadAllSessions();
-    return sessionId;
-  } catch (err: any) {
-    console.error('Attach tmux session failed:', err.message);
-    return null;
-  }
-}
-
 // --- Quick Dispatch ---
 
 let agentsLoading: Promise<any[]> | null = null;

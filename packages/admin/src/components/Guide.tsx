@@ -39,7 +39,7 @@ export const GUIDES: GuideDef[] = [
       {
         selector: '.main',
         title: 'Main Content',
-        text: 'The main area shows the selected page. Try pressing ? at any time to see keyboard shortcuts.',
+        text: 'The main area shows the selected page. Try pressing Ctrl+Shift+/ at any time to see keyboard shortcuts.',
         position: 'left',
       },
     ],

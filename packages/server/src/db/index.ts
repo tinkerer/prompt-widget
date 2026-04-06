@@ -172,6 +172,9 @@ export function runMigrations() {
     `ALTER TABLE agent_sessions ADD COLUMN sprite_config_id TEXT`,
     `ALTER TABLE agent_sessions ADD COLUMN sprite_exec_session_id TEXT`,
     `ALTER TABLE agent_sessions ADD COLUMN cwd TEXT`,
+    `ALTER TABLE wiggum_runs ADD COLUMN prompt_file TEXT`,
+    `ALTER TABLE wiggum_runs ADD COLUMN log_file TEXT`,
+    `ALTER TABLE wiggum_runs ADD COLUMN agent_label TEXT`,
   ];
 
   for (const stmt of alterStatements) {

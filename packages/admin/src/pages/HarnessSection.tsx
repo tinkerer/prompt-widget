@@ -343,7 +343,6 @@ export function HarnessSubCard({ h }: { h: any }) {
           )}
           {launcher?.version && <span class="agent-meta-tag">v{launcher.version}</span>}
           {caps && !caps.hasDocker && <span class="agent-meta-tag" style="border-color:var(--pw-warning, #eab308)40;color:var(--pw-warning, #eab308)">No Docker</span>}
-          {caps && !caps.hasTmux && <span class="agent-meta-tag" style="border-color:var(--pw-warning, #eab308)40;color:var(--pw-warning, #eab308)">No tmux</span>}
           {caps && !caps.hasClaudeCli && <span class="agent-meta-tag" style="border-color:var(--pw-warning, #eab308)40;color:var(--pw-warning, #eab308)">No Claude CLI</span>}
         </div>
         {authCheck && (
@@ -442,7 +441,6 @@ export function HarnessSubCard({ h }: { h: any }) {
                 <div><span style="color:var(--pw-text)">Memory:</span> {formatBytes(health.memory?.free)} free / {formatBytes(health.memory?.total)}</div>
                 <div><span style="color:var(--pw-text)">Sessions:</span> {health.activeSessions}</div>
                 {health.dockerVersion && <div><span style="color:var(--pw-text)">Docker:</span> {health.dockerVersion}</div>}
-                {health.tmuxVersion && <div><span style="color:var(--pw-text)">tmux:</span> {health.tmuxVersion}</div>}
                 {health.claudeCliVersion && <div><span style="color:var(--pw-text)">Claude:</span> {health.claudeCliVersion}</div>}
               </div>
             )}

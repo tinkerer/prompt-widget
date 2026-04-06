@@ -55,6 +55,13 @@ export async function inputSessionRemote(sessionId: string, data: string): Promi
   await post(`/input/${sessionId}`, { data });
 }
 
+export async function captureSessionOutput(sessionId: string): Promise<string> {
+  const res = await fetch(`${SESSION_SERVICE_URL}/capture/${sessionId}`);
+  if (!res.ok) throw new Error(`Capture failed: ${res.statusText}`);
+  const data = await res.json() as { content?: string };
+  return data.content || '';
+}
+
 export async function getSessionServiceHealth(): Promise<boolean> {
   try {
     const res = await fetch(`${SESSION_SERVICE_URL}/health`);

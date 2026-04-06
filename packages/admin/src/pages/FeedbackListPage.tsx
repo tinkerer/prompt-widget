@@ -1,4 +1,4 @@
-import { signal, effect } from '@preact/signals';
+import { useSignal, useSignalEffect } from '@preact/signals';
 import { useEffect, useRef, useCallback } from 'preact/hooks';
 import { api } from '../lib/api.js';
 import { currentRoute } from '../lib/state.js';
@@ -9,27 +9,6 @@ import { DeletedItemsPanel, trackDeletion } from '../components/DeletedItemsPane
 import { formatDate } from '../lib/date-utils.js';
 import { AggregateWizard, openAggregateWizard } from '../components/AggregateWizard.js';
 
-const items = signal<any[]>([]);
-const total = signal(0);
-const page = signal(1);
-const totalPages = signal(0);
-const loading = signal(false);
-const filterType = signal('');
-const filterStatuses = signal<Set<string>>(new Set(['new', 'running', 'failed']));
-const searchQuery = signal('');
-const selected = signal<Set<string>>(new Set());
-const currentAppId = signal<string | null>(null);
-const showCreateForm = signal(false);
-const createTitle = signal('');
-const createDescription = signal('');
-const createType = signal('manual');
-const createTags = signal('');
-const createLoading = signal(false);
-const isStuck = signal(false);
-const filtersCollapsed = signal(false);
-const sortMode = signal<string>('newest');
-const filterTag = signal('');
-const availableTags = signal<{ tag: string; count: number }[]>([]);
 const TYPES = ['', 'manual', 'ab_test', 'analytics', 'error_report', 'programmatic'];
 const STATUSES = ['', 'new', 'reviewed', 'running', 'completed', 'killed', 'failed', 'resolved', 'archived', 'deleted'];
 const DISPATCH_STATUSES = new Set(['running', 'completed', 'killed', 'failed']);
@@ -46,147 +25,6 @@ function getItemSessionState(item: any): string | null {
   if (item.status !== 'dispatched' || !item.latestSessionId) return null;
   if (item.latestSessionStatus !== 'running') return item.latestSessionStatus || null;
   return sessionInputStates.value.get(item.latestSessionId) || 'active';
-}
-
-function applySortMode(list: any[]): any[] {
-  const mode = sortMode.value;
-  if (!mode.startsWith('state-')) return list;
-  const target = mode.replace('state-', '');
-  const stateOrder = (item: any) => {
-    const state = getItemSessionState(item);
-    if (state === target) return 0;
-    if (state === 'waiting') return 1;
-    if (state === 'active') return 2;
-    if (state === 'idle') return 3;
-    if (state) return 4;
-    return 5;
-  };
-  return [...list].sort((a, b) => stateOrder(a) - stateOrder(b));
-}
-
-async function loadFeedback() {
-  loading.value = true;
-  try {
-    const params: Record<string, string | number> = { page: page.value, limit: 20 };
-    if (filterType.value) params.type = filterType.value;
-    const regularStatuses: string[] = [];
-    const dispatchStatuses: string[] = [];
-    for (const s of filterStatuses.value) {
-      if (DISPATCH_STATUSES.has(s)) dispatchStatuses.push(s);
-      else regularStatuses.push(s);
-    }
-    if (regularStatuses.length > 0 || dispatchStatuses.length > 0) {
-      if (regularStatuses.length > 0) params.status = regularStatuses.join(',');
-      if (dispatchStatuses.length > 0) params.dispatchStatus = dispatchStatuses.join(',');
-    }
-    if (searchQuery.value) params.search = searchQuery.value;
-    if (filterTag.value) params.tag = filterTag.value;
-    if (currentAppId.value) params.appId = currentAppId.value;
-    const mode = sortMode.value;
-    if (mode === 'oldest') { params.sortOrder = 'asc'; }
-    else if (mode === 'updated') { params.sortBy = 'updatedAt'; }
-    const result = await api.getFeedback(params);
-    items.value = applySortMode(result.items);
-    total.value = result.total;
-    totalPages.value = result.totalPages;
-  } catch (err) {
-    console.error('Failed to load feedback:', err);
-  } finally {
-    loading.value = false;
-  }
-}
-
-effect(() => {
-  void filterType.value;
-  void filterStatuses.value;
-  void page.value;
-  void currentAppId.value;
-  void currentRoute.value;
-  void sortMode.value;
-  void filterTag.value;
-  loadFeedback();
-});
-
-effect(() => {
-  if (dispatchDialogResult.value === 'dispatched') {
-    loadFeedback();
-    selected.value = new Set();
-    dispatchDialogResult.value = 'idle';
-  }
-});
-
-function toggleSelect(id: string) {
-  const s = new Set(selected.value);
-  if (s.has(id)) s.delete(id);
-  else s.add(id);
-  selected.value = s;
-}
-
-function toggleSelectAll() {
-  if (selected.value.size === items.value.length) {
-    selected.value = new Set();
-  } else {
-    selected.value = new Set(items.value.map((i) => i.id));
-  }
-}
-
-async function batchUpdateStatus(status: string) {
-  if (selected.value.size === 0) return;
-  await api.batchOperation({ ids: Array.from(selected.value), operation: 'updateStatus', value: status });
-  selected.value = new Set();
-  await loadFeedback();
-}
-
-async function batchDelete() {
-  if (selected.value.size === 0) return;
-  await api.batchOperation({ ids: Array.from(selected.value), operation: 'delete' });
-  selected.value = new Set();
-  await loadFeedback();
-}
-
-async function batchPermanentDelete() {
-  if (selected.value.size === 0) return;
-  const ids = Array.from(selected.value);
-  await api.batchOperation({ ids, operation: 'permanentDelete' });
-  for (const id of ids) {
-    trackDeletion('feedback', id, `Feedback ${id.slice(-6)}`);
-  }
-  selected.value = new Set();
-  await loadFeedback();
-}
-
-async function batchRestore() {
-  if (selected.value.size === 0) return;
-  await api.batchOperation({ ids: Array.from(selected.value), operation: 'updateStatus', value: 'new' });
-  selected.value = new Set();
-  await loadFeedback();
-}
-
-async function createFeedback() {
-  if (!createTitle.value.trim() || !currentAppId.value) return;
-  createLoading.value = true;
-  try {
-    const tags = createTags.value.trim()
-      ? createTags.value.split(',').map((t) => t.trim()).filter(Boolean)
-      : undefined;
-    const result = await api.createFeedback({
-      title: createTitle.value.trim(),
-      description: createDescription.value,
-      type: createType.value,
-      appId: currentAppId.value,
-      tags,
-    });
-    showCreateForm.value = false;
-    createTitle.value = '';
-    createDescription.value = '';
-    createType.value = 'manual';
-    createTags.value = '';
-    openFeedbackItem(result.id);
-  } catch (err: any) {
-    console.error('Failed to create:', err.message);
-  } finally {
-    createLoading.value = false;
-  }
 }
 
 function StatusCell({ item }: { item: any }) {
@@ -223,66 +61,6 @@ function StatusCell({ item }: { item: any }) {
   );
 }
 
-function ActionCell({ item }: { item: any }) {
-  const hasSession = !!item.latestSessionId;
-  const sessionStatus = item.latestSessionStatus;
-  const isRunning = hasSession && sessionStatus === 'running';
-  const isCompleted = hasSession && !isRunning;
-  if (isRunning) {
-    return (
-      <div class="action-cell-group">
-        <button
-          class="btn-action-live"
-          title="Open running session"
-          onClick={(e) => { e.stopPropagation(); openSession(item.latestSessionId); }}
-        >
-          <span class="live-pulse" />
-          Live
-          {item.sessionCount > 1 && <span class="session-count">{item.sessionCount}</span>}
-        </button>
-      </div>
-    );
-  }
-
-  if (isCompleted) {
-    return (
-      <div class="action-cell-group">
-        <button
-          class="btn-action-view"
-          title={`View session (${sessionStatus})`}
-          onClick={(e) => { e.stopPropagation(); openSession(item.latestSessionId); }}
-        >
-          View
-          {item.sessionCount > 1 && <span class="session-count">{item.sessionCount}</span>}
-        </button>
-        <button
-          class="btn-dispatch-mini"
-          title="Re-dispatch to agent"
-          onClick={(e) => {
-            e.stopPropagation();
-            openDispatchDialog([item.id], currentAppId.value);
-          }}
-        >
-          ↻
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <button
-      class="btn-dispatch-quick"
-      onClick={(e) => {
-        e.stopPropagation();
-        openDispatchDialog([item.id], currentAppId.value);
-      }}
-      title="Dispatch to agent"
-    >
-      <span>→</span>
-    </button>
-  );
-}
-
 function ColResizeHandle() {
   const handleRef = useRef<HTMLDivElement>(null);
 
@@ -313,10 +91,227 @@ function ColResizeHandle() {
 }
 
 export function FeedbackListPage({ appId }: { appId: string }) {
-  if (currentAppId.value !== appId) {
-    currentAppId.value = appId;
-    page.value = 1;
+  const items = useSignal<any[]>([]);
+  const total = useSignal(0);
+  const page = useSignal(1);
+  const totalPages = useSignal(0);
+  const loading = useSignal(false);
+  const filterType = useSignal('');
+  const filterStatuses = useSignal<Set<string>>(new Set(['new', 'running', 'failed']));
+  const searchQuery = useSignal('');
+  const selected = useSignal<Set<string>>(new Set());
+  const showCreateForm = useSignal(false);
+  const createTitle = useSignal('');
+  const createDescription = useSignal('');
+  const createType = useSignal('manual');
+  const createTags = useSignal('');
+  const createLoading = useSignal(false);
+  const isStuck = useSignal(false);
+  const filtersCollapsed = useSignal(false);
+  const sortMode = useSignal<string>('newest');
+  const filterTag = useSignal('');
+  const availableTags = useSignal<{ tag: string; count: number }[]>([]);
+
+  function applySortMode(list: any[]): any[] {
+    const mode = sortMode.value;
+    if (!mode.startsWith('state-')) return list;
+    const target = mode.replace('state-', '');
+    const stateOrder = (item: any) => {
+      const state = getItemSessionState(item);
+      if (state === target) return 0;
+      if (state === 'waiting') return 1;
+      if (state === 'active') return 2;
+      if (state === 'idle') return 3;
+      if (state) return 4;
+      return 5;
+    };
+    return [...list].sort((a, b) => stateOrder(a) - stateOrder(b));
+  }
+
+  async function loadFeedback() {
+    loading.value = true;
+    try {
+      const params: Record<string, string | number> = { page: page.value, limit: 20 };
+      if (filterType.value) params.type = filterType.value;
+      const regularStatuses: string[] = [];
+      const dispatchStatuses: string[] = [];
+      for (const s of filterStatuses.value) {
+        if (DISPATCH_STATUSES.has(s)) dispatchStatuses.push(s);
+        else regularStatuses.push(s);
+      }
+      if (regularStatuses.length > 0 || dispatchStatuses.length > 0) {
+        if (regularStatuses.length > 0) params.status = regularStatuses.join(',');
+        if (dispatchStatuses.length > 0) params.dispatchStatus = dispatchStatuses.join(',');
+      }
+      if (searchQuery.value) params.search = searchQuery.value;
+      if (filterTag.value) params.tag = filterTag.value;
+      params.appId = appId;
+      const mode = sortMode.value;
+      if (mode === 'oldest') { params.sortOrder = 'asc'; }
+      else if (mode === 'updated') { params.sortBy = 'updatedAt'; }
+      const result = await api.getFeedback(params);
+      items.value = applySortMode(result.items);
+      total.value = result.total;
+      totalPages.value = result.totalPages;
+    } catch (err) {
+      console.error('Failed to load feedback:', err);
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  // Reactive filter/load effect
+  useSignalEffect(() => {
+    void filterType.value;
+    void filterStatuses.value;
+    void page.value;
+    void currentRoute.value;
+    void sortMode.value;
+    void filterTag.value;
+    loadFeedback();
+  });
+
+  // Dispatch result handler
+  useSignalEffect(() => {
+    if (dispatchDialogResult.value === 'dispatched') {
+      loadFeedback();
+      selected.value = new Set();
+      dispatchDialogResult.value = 'idle';
+    }
+  });
+
+  function toggleSelect(id: string) {
+    const s = new Set(selected.value);
+    if (s.has(id)) s.delete(id);
+    else s.add(id);
+    selected.value = s;
+  }
+
+  function toggleSelectAll() {
+    if (selected.value.size === items.value.length) {
+      selected.value = new Set();
+    } else {
+      selected.value = new Set(items.value.map((i) => i.id));
+    }
+  }
+
+  async function batchUpdateStatus(status: string) {
+    if (selected.value.size === 0) return;
+    await api.batchOperation({ ids: Array.from(selected.value), operation: 'updateStatus', value: status });
     selected.value = new Set();
+    await loadFeedback();
+  }
+
+  async function batchDelete() {
+    if (selected.value.size === 0) return;
+    await api.batchOperation({ ids: Array.from(selected.value), operation: 'delete' });
+    selected.value = new Set();
+    await loadFeedback();
+  }
+
+  async function batchPermanentDelete() {
+    if (selected.value.size === 0) return;
+    const ids = Array.from(selected.value);
+    await api.batchOperation({ ids, operation: 'permanentDelete' });
+    for (const id of ids) {
+      trackDeletion('feedback', id, `Feedback ${id.slice(-6)}`);
+    }
+    selected.value = new Set();
+    await loadFeedback();
+  }
+
+  async function batchRestore() {
+    if (selected.value.size === 0) return;
+    await api.batchOperation({ ids: Array.from(selected.value), operation: 'updateStatus', value: 'new' });
+    selected.value = new Set();
+    await loadFeedback();
+  }
+
+  async function createFeedback() {
+    if (!createTitle.value.trim()) return;
+    createLoading.value = true;
+    try {
+      const tags = createTags.value.trim()
+        ? createTags.value.split(',').map((t) => t.trim()).filter(Boolean)
+        : undefined;
+      const result = await api.createFeedback({
+        title: createTitle.value.trim(),
+        description: createDescription.value,
+        type: createType.value,
+        appId,
+        tags,
+      });
+      showCreateForm.value = false;
+      createTitle.value = '';
+      createDescription.value = '';
+      createType.value = 'manual';
+      createTags.value = '';
+      openFeedbackItem(result.id);
+    } catch (err: any) {
+      console.error('Failed to create:', err.message);
+    } finally {
+      createLoading.value = false;
+    }
+  }
+
+  function ActionCell({ item }: { item: any }) {
+    const hasSession = !!item.latestSessionId;
+    const sessionStatus = item.latestSessionStatus;
+    const isRunning = hasSession && sessionStatus === 'running';
+    const isCompleted = hasSession && !isRunning;
+    if (isRunning) {
+      return (
+        <div class="action-cell-group">
+          <button
+            class="btn-action-live"
+            title="Open running session"
+            onClick={(e) => { e.stopPropagation(); openSession(item.latestSessionId); }}
+          >
+            <span class="live-pulse" />
+            Live
+            {item.sessionCount > 1 && <span class="session-count">{item.sessionCount}</span>}
+          </button>
+        </div>
+      );
+    }
+
+    if (isCompleted) {
+      return (
+        <div class="action-cell-group">
+          <button
+            class="btn-action-view"
+            title={`View session (${sessionStatus})`}
+            onClick={(e) => { e.stopPropagation(); openSession(item.latestSessionId); }}
+          >
+            View
+            {item.sessionCount > 1 && <span class="session-count">{item.sessionCount}</span>}
+          </button>
+          <button
+            class="btn-dispatch-mini"
+            title="Re-dispatch to agent"
+            onClick={(e) => {
+              e.stopPropagation();
+              openDispatchDialog([item.id], appId);
+            }}
+          >
+            ↻
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <button
+        class="btn-dispatch-quick"
+        onClick={(e) => {
+          e.stopPropagation();
+          openDispatchDialog([item.id], appId);
+        }}
+        title="Dispatch to agent"
+      >
+        <span>→</span>
+      </button>
+    );
   }
 
   useEffect(() => {
@@ -327,7 +322,7 @@ export function FeedbackListPage({ appId }: { appId: string }) {
     const es = new EventSource(`/api/v1/admin/feedback/events?token=${encodeURIComponent(token)}`);
     const onEvent = (e: MessageEvent) => {
       const data = JSON.parse(e.data);
-      if (!currentAppId.value || data.appId === currentAppId.value) {
+      if (data.appId === appId) {
         loadFeedback();
         api.getFeedbackTags(appId).then(tags => { availableTags.value = tags; }).catch(() => {});
       }
@@ -524,7 +519,7 @@ export function FeedbackListPage({ appId }: { appId: string }) {
                 <button
                   class="btn btn-sm btn-primary"
                   onClick={() => {
-                    openDispatchDialog(Array.from(selected.value), currentAppId.value);
+                    openDispatchDialog(Array.from(selected.value), appId);
                   }}
                 >
                   Dispatch

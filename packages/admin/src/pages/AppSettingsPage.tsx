@@ -30,7 +30,6 @@ interface ControlActionDraft {
 export function AppSettingsPage({ appId }: { appId: string }) {
   const app = applications.value.find((a: any) => a.id === appId);
   const [agents, setAgents] = useState<any[]>([]);
-  const [tmuxConfigs, setTmuxConfigs] = useState<any[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -40,7 +39,6 @@ export function AppSettingsPage({ appId }: { appId: string }) {
   const [serverUrl, setServerUrl] = useState('');
   const [hooks, setHooks] = useState('');
   const [description, setDescription] = useState('');
-  const [tmuxConfigId, setTmuxConfigId] = useState('');
   const [permissionProfile, setPermissionProfile] = useState('interactive');
   const [allowedTools, setAllowedTools] = useState('');
   const [agentPath, setAgentPath] = useState('');
@@ -61,12 +59,8 @@ export function AppSettingsPage({ appId }: { appId: string }) {
 
   const loadAgents = useCallback(async () => {
     try {
-      const [agentData, configData] = await Promise.all([
-        api.getAgents(),
-        api.getTmuxConfigs(),
-      ]);
+      const agentData = await api.getAgents();
       setAgents(agentData);
-      setTmuxConfigs(configData);
     } catch { /* ignore */ }
   }, []);
 
@@ -82,7 +76,6 @@ export function AppSettingsPage({ appId }: { appId: string }) {
     setServerUrl(app.serverUrl || '');
     setHooks((app.hooks || []).join(', '));
     setDescription(app.description || '');
-    setTmuxConfigId(app.tmuxConfigId || '');
     setPermissionProfile(app.defaultPermissionProfile || 'interactive');
     setAllowedTools(app.defaultAllowedTools || '');
     setAgentPath(app.agentPath || '');
@@ -193,7 +186,6 @@ export function AppSettingsPage({ appId }: { appId: string }) {
         serverUrl: serverUrl || undefined,
         hooks: parsedHooks,
         description,
-        tmuxConfigId: tmuxConfigId || null,
         defaultPermissionProfile: permissionProfile,
         defaultAllowedTools: allowedTools || null,
         agentPath: agentPath || null,
@@ -279,21 +271,6 @@ export function AppSettingsPage({ appId }: { appId: string }) {
         {/* Session Settings */}
         <div class="settings-section">
           <h3>Session Settings</h3>
-          <div class="form-group" style="margin-bottom:10px">
-            <label style="font-size:12px;font-weight:600;margin-bottom:4px;display:block">Tmux Configuration</label>
-            <select
-              value={tmuxConfigId}
-              onChange={(e) => setTmuxConfigId((e.target as HTMLSelectElement).value)}
-              style="width:100%;padding:6px 10px;font-size:13px"
-            >
-              <option value="">Global Default</option>
-              {tmuxConfigs.map((cfg: any) => (
-                <option key={cfg.id} value={cfg.id}>
-                  {cfg.name}{cfg.isDefault ? ' (default)' : ''}
-                </option>
-              ))}
-            </select>
-          </div>
           <div class="form-group" style="margin-bottom:10px">
             <label style="font-size:12px;font-weight:600;margin-bottom:4px;display:block">Default Permission Profile</label>
             <select

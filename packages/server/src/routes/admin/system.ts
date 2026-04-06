@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, unlinkSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { resolve, dirname, join, relative, extname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -9,132 +9,13 @@ import { eq, desc } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import {
   dispatchTerminalSession,
-  dispatchTmuxAttachSession,
   dispatchAgentSession,
   dispatchCompanionTerminal,
   dispatchHarnessSession,
 } from '../../dispatch.js';
-import { inputSessionRemote } from '../../session-service-client.js';
 import { getLauncher, sendAndWait } from '../../launcher-registry.js';
 
-const PW_TMUX_CONF = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'tmux-pw.conf');
-
 export const systemRoutes = new Hono();
-
-// Tmux configs CRUD
-systemRoutes.get('/tmux-configs', (c) => {
-  const configs = db.select().from(schema.tmuxConfigs).all();
-  return c.json(configs);
-});
-
-systemRoutes.post('/tmux-configs', async (c) => {
-  const body = await c.req.json() as { name: string; content?: string };
-  if (!body.name) return c.json({ error: 'Name required' }, 400);
-
-  const now = new Date().toISOString();
-  const id = ulid();
-  db.insert(schema.tmuxConfigs).values({
-    id,
-    name: body.name,
-    content: body.content || '',
-    isDefault: false,
-    createdAt: now,
-    updatedAt: now,
-  }).run();
-  return c.json({ id }, 201);
-});
-
-systemRoutes.patch('/tmux-configs/:id', async (c) => {
-  const id = c.req.param('id');
-  const existing = db.select().from(schema.tmuxConfigs).where(eq(schema.tmuxConfigs.id, id)).get();
-  if (!existing) return c.json({ error: 'Not found' }, 404);
-
-  const body = await c.req.json() as { name?: string; content?: string; isDefault?: boolean };
-  const now = new Date().toISOString();
-  const updates: Record<string, unknown> = { updatedAt: now };
-  if (body.name !== undefined) updates.name = body.name;
-  if (body.content !== undefined) updates.content = body.content;
-  if (body.isDefault) {
-    db.update(schema.tmuxConfigs).set({ isDefault: false, updatedAt: now }).run();
-    updates.isDefault = true;
-  }
-
-  db.update(schema.tmuxConfigs).set(updates).where(eq(schema.tmuxConfigs.id, id)).run();
-  return c.json({ id, updated: true });
-});
-
-systemRoutes.delete('/tmux-configs/:id', async (c) => {
-  const id = c.req.param('id');
-  const existing = db.select().from(schema.tmuxConfigs).where(eq(schema.tmuxConfigs.id, id)).get();
-  if (!existing) return c.json({ error: 'Not found' }, 404);
-  if (existing.isDefault) return c.json({ error: 'Cannot delete the default config' }, 400);
-
-  db.delete(schema.tmuxConfigs).where(eq(schema.tmuxConfigs.id, id)).run();
-  return c.json({ id, deleted: true });
-});
-
-// Edit tmux config in terminal (nano/vim)
-systemRoutes.post('/tmux-configs/:id/edit-terminal', async (c) => {
-  const id = c.req.param('id');
-  const config = db.select().from(schema.tmuxConfigs).where(eq(schema.tmuxConfigs.id, id)).get();
-  if (!config) return c.json({ error: 'Not found' }, 404);
-
-  const tmpPath = `/tmp/pw-tmux-edit-${id}.conf`;
-  writeFileSync(tmpPath, config.content, 'utf-8');
-
-  const { sessionId } = await dispatchTerminalSession({ cwd: '/tmp' });
-
-  // Send editor command after shell is ready
-  setTimeout(async () => {
-    try {
-      await inputSessionRemote(sessionId, `\${EDITOR:-nano} ${tmpPath}\r`);
-    } catch (err) {
-      console.error('[admin] Failed to send editor command:', err);
-    }
-  }, 800);
-
-  return c.json({ sessionId, configId: id });
-});
-
-// Save tmux config back from temp file after terminal editing
-systemRoutes.post('/tmux-configs/:id/save-from-file', async (c) => {
-  const id = c.req.param('id');
-  const existing = db.select().from(schema.tmuxConfigs).where(eq(schema.tmuxConfigs.id, id)).get();
-  if (!existing) return c.json({ error: 'Config not found' }, 404);
-
-  const tmpPath = `/tmp/pw-tmux-edit-${id}.conf`;
-  let content: string;
-  try {
-    content = readFileSync(tmpPath, 'utf-8');
-  } catch {
-    return c.json({ error: 'Temp file not found — editor may not have saved yet' }, 404);
-  }
-
-  const now = new Date().toISOString();
-  db.update(schema.tmuxConfigs)
-    .set({ content, updatedAt: now })
-    .where(eq(schema.tmuxConfigs.id, id)).run();
-
-  try { unlinkSync(tmpPath); } catch {}
-
-  return c.json({ saved: true, content });
-});
-
-// Tmux config endpoints — read/write tmux-pw.conf file directly
-systemRoutes.get('/tmux-conf', (c) => {
-  try {
-    const content = readFileSync(PW_TMUX_CONF, 'utf-8');
-    return c.json({ content });
-  } catch {
-    return c.json({ content: '' });
-  }
-});
-
-systemRoutes.put('/tmux-conf', async (c) => {
-  const { content } = await c.req.json() as { content: string };
-  writeFileSync(PW_TMUX_CONF, content, 'utf-8');
-  return c.json({ saved: true });
-});
 
 // Perf metrics
 systemRoutes.post('/perf-metrics', async (c) => {
@@ -663,16 +544,14 @@ function buildSetupPrompt(
   if (companionTmuxName) {
     parts.push('');
     parts.push('## Companion Terminal');
-    parts.push(`You have a companion terminal at tmux session \`${companionTmuxName}\`.`);
-    parts.push(`Use \`tmux send-keys -t ${companionTmuxName} "command" Enter\` to run commands.`);
-    parts.push(`Use \`tmux capture-pane -t ${companionTmuxName} -p\` to read output.`);
+    parts.push(`You have a companion terminal session \`${companionTmuxName}\`.`);
     parts.push('Use the companion terminal for SSH connectivity checks, capability detection, and any shell commands needed for setup.');
     parts.push('');
     parts.push('### Remote Terminal API (for any session)');
-    parts.push('You can also interact with any agent session\'s tmux pane via HTTP:');
+    parts.push('Interact with any agent session terminal via HTTP:');
     parts.push(`- Send keys: \`curl -s -X POST ${baseUrl}/api/v1/admin/agent-sessions/SESSION_ID/send-keys -H 'Content-Type: application/json' -d '{"keys":"echo hello"}'\``);
     parts.push(`- Send keys without Enter: \`curl -s -X POST ${baseUrl}/api/v1/admin/agent-sessions/SESSION_ID/send-keys -H 'Content-Type: application/json' -d '{"keys":"text","enter":false}'\``);
-    parts.push(`- Capture pane output: \`curl -s -X POST ${baseUrl}/api/v1/admin/agent-sessions/SESSION_ID/capture-pane -H 'Content-Type: application/json' -d '{}'\``);
+    parts.push(`- Capture output: \`curl -s -X POST ${baseUrl}/api/v1/admin/agent-sessions/SESSION_ID/capture-pane -H 'Content-Type: application/json' -d '{}'\``);
     parts.push(`- Capture last N lines: \`curl -s -X POST ${baseUrl}/api/v1/admin/agent-sessions/SESSION_ID/capture-pane -H 'Content-Type: application/json' -d '{"lastN":30}'\``);
     parts.push('These work for both local and remote sessions — the server routes to the correct launcher automatically.');
   }
@@ -772,15 +651,13 @@ function buildNewEntityPrompt(
     if (companionTmuxName) {
       parts.push('');
       parts.push('## Companion Terminal');
-      parts.push(`You have a companion terminal at tmux session \`${companionTmuxName}\`.`);
-      parts.push(`Use \`tmux send-keys -t ${companionTmuxName} "command" Enter\` to run commands.`);
-      parts.push(`Use \`tmux capture-pane -t ${companionTmuxName} -p\` to read output.`);
+      parts.push(`You have a companion terminal session \`${companionTmuxName}\`.`);
       parts.push('Use the companion terminal for SSH connectivity checks, capability detection, and any shell commands needed for setup.');
       parts.push('');
       parts.push('### Remote Terminal API (for any session)');
-      parts.push('You can also interact with any agent session\'s tmux pane via HTTP:');
+      parts.push('Interact with any agent session terminal via HTTP:');
       parts.push(`- Send keys: \`curl -s -X POST ${baseUrl}/api/v1/admin/agent-sessions/SESSION_ID/send-keys -H 'Content-Type: application/json' -d '{"keys":"echo hello"}'\``);
-      parts.push(`- Capture pane: \`curl -s -X POST ${baseUrl}/api/v1/admin/agent-sessions/SESSION_ID/capture-pane -H 'Content-Type: application/json' -d '{}'\``);
+      parts.push(`- Capture output: \`curl -s -X POST ${baseUrl}/api/v1/admin/agent-sessions/SESSION_ID/capture-pane -H 'Content-Type: application/json' -d '{}'\``);
       parts.push(`- Capture last N lines: \`curl -s -X POST ${baseUrl}/api/v1/admin/agent-sessions/SESSION_ID/capture-pane -H 'Content-Type: application/json' -d '{"lastN":30}'\``);
       parts.push('These work for both local and remote sessions.');
     }
@@ -898,7 +775,7 @@ function buildNewEntityPrompt(
 // Plain terminal session (no agent, no feedback)
 systemRoutes.post('/terminal', async (c) => {
   const body = await c.req.json().catch(() => ({}));
-  const { cwd, appId, launcherId, harnessConfigId, permissionProfile, tmuxTarget } = body as { cwd?: string; appId?: string; launcherId?: string; harnessConfigId?: string; permissionProfile?: string; tmuxTarget?: string };
+  const { cwd, appId, launcherId, harnessConfigId, permissionProfile } = body as { cwd?: string; appId?: string; launcherId?: string; harnessConfigId?: string; permissionProfile?: string };
   // Harness terminal: exec into the container
   if (harnessConfigId && launcherId) {
     try {
@@ -927,7 +804,7 @@ systemRoutes.post('/terminal', async (c) => {
   }
 
   try {
-    const { sessionId } = await dispatchTerminalSession({ cwd: resolvedCwd, appId, launcherId, permissionProfile: (permissionProfile || 'plain') as any, tmuxTarget });
+    const { sessionId } = await dispatchTerminalSession({ cwd: resolvedCwd, appId, launcherId, permissionProfile: (permissionProfile || 'plain') as any });
     return c.json({ sessionId });
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : 'Unknown error';
@@ -935,47 +812,3 @@ systemRoutes.post('/terminal', async (c) => {
   }
 });
 
-// List tmux sessions from the default tmux server
-systemRoutes.get('/tmux-sessions', async (c) => {
-  const { listDefaultTmuxSessions } = await import('../../tmux-pty.js');
-  return c.json({ sessions: listDefaultTmuxSessions() });
-});
-
-// List tmux sessions on a remote launcher
-systemRoutes.get('/launcher/:launcherId/tmux-sessions', async (c) => {
-  const launcherId = c.req.param('launcherId');
-  const launcher = getLauncher(launcherId);
-  if (!launcher || launcher.ws?.readyState !== 1) {
-    return c.json({ error: 'Launcher not connected' }, 400);
-  }
-  try {
-    const sessionId = ulid();
-    const msg = { type: 'list_tmux_sessions' as const, sessionId };
-    const result = await sendAndWait(launcher.id, msg as any, 'list_tmux_sessions_result', 10_000) as { sessions: { name: string; windows: number; created: string; attached: boolean }[] };
-    return c.json({ sessions: result.sessions });
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500);
-  }
-});
-
-// Attach to an existing tmux session from the default server
-systemRoutes.post('/terminal/attach-tmux', async (c) => {
-  const body = await c.req.json().catch(() => ({}));
-  const { tmuxTarget, appId, launcherId } = body as { tmuxTarget?: string; appId?: string; launcherId?: string };
-
-  if (!tmuxTarget) {
-    return c.json({ error: 'tmuxTarget is required' }, 400);
-  }
-
-  try {
-    if (launcherId) {
-      const { sessionId } = await dispatchTerminalSession({ cwd: '~', launcherId, tmuxTarget });
-      return c.json({ sessionId });
-    }
-    const { sessionId } = await dispatchTmuxAttachSession({ tmuxTarget, appId });
-    return c.json({ sessionId });
-  } catch (err) {
-    const errorMsg = err instanceof Error ? err.message : 'Unknown error';
-    return c.json({ error: errorMsg }, 500);
-  }
-});

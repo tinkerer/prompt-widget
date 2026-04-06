@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'preact/hooks';
-import { allSessions, paneMruHistory, spawnTerminal, attachTmuxSession, setTerminalCompanionAndOpen, setTerminalCompanion, togglePanelCompanion, loadAllSessions, openSession, openIsolateCompanion, openUrlCompanion } from '../lib/sessions.js';
+import { allSessions, paneMruHistory, spawnTerminal, setTerminalCompanionAndOpen, setTerminalCompanion, togglePanelCompanion, loadAllSessions, openSession, openIsolateCompanion, openUrlCompanion } from '../lib/sessions.js';
 import { selectedAppId, applications } from '../lib/state.js';
 import { getIsolateNames, getIsolateEntry } from '../lib/isolate.js';
 import { cachedTargets, ensureTargetsLoaded, refreshTargets } from './DispatchTargetSelect.js';
@@ -47,9 +47,6 @@ function saveCollapsedState(state: Record<string, boolean>) {
 export function TerminalPicker({ mode, onClose }: Props) {
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [tmuxSessions, setTmuxSessions] = useState<{ name: string; windows: number; created: string; attached: boolean }[]>([]);
-  const [remoteTmux, setRemoteTmux] = useState<Map<string, { name: string; windows: number; created: string; attached: boolean }[]>>(new Map());
-  const [tmuxLoading, setTmuxLoading] = useState(true);
   const [internalUrlMode, setInternalUrlMode] = useState(false);
   const [collapsedCats, setCollapsedCats] = useState<Record<string, boolean>>(() => {
     const saved = loadCollapsedState();
@@ -89,39 +86,7 @@ export function TerminalPicker({ mode, onClose }: Props) {
 
   useEffect(() => {
     if (isUrlMode) return;
-    setTmuxLoading(true);
-
-    const localP = api.listTmuxSessions()
-      .then((r) => setTmuxSessions(r.sessions))
-      .catch(() => setTmuxSessions([]));
-
-    // Await targets, then fetch remote tmux sessions for each online machine/harness
-    const remoteP = refreshTargets().then(() => {
-      const targets = cachedTargets.value;
-      const onlineMachines = targets.filter(t => !t.isHarness && !t.isSprite && t.online);
-      const onlineHarnesses = targets.filter(t => t.isHarness && t.online && t.harnessConfigId);
-      const fetches = [
-        ...onlineMachines.map(m =>
-          api.listLauncherTmuxSessions(m.launcherId)
-            .then(r => [m.launcherId, r.sessions] as const)
-            .catch(() => [m.launcherId, []] as const)
-        ),
-        ...onlineHarnesses.map(h =>
-          api.listHostTmuxSessions(h.harnessConfigId!)
-            .then(r => [h.launcherId, r.sessions] as const)
-            .catch(() => [h.launcherId, []] as const)
-        ),
-      ];
-      return Promise.all(fetches);
-    }).then(results => {
-      const map = new Map<string, { name: string; windows: number; created: string; attached: boolean }[]>();
-      for (const [lid, sessions] of results) {
-        if (sessions.length > 0) map.set(lid, sessions);
-      }
-      setRemoteTmux(map);
-    });
-
-    Promise.all([localP, remoteP]).finally(() => setTmuxLoading(false));
+    refreshTargets();
   }, []);
 
   const parentSessionId = mode.kind === 'companion' ? mode.sessionId : null;
@@ -158,17 +123,6 @@ export function TerminalPicker({ mode, onClose }: Props) {
       openCompanionPane(termSessionId);
     } else {
       openSession(termSessionId);
-    }
-  }
-
-  async function pickTmux(tmuxName: string, launcherId?: string) {
-    onClose();
-    const isCompanion = !!parentSessionId;
-    if (isCompanion) openCompanionPane('__loading__');
-    const newId = await attachTmuxSession(tmuxName, appId ?? undefined, isCompanion, launcherId);
-    if (newId && parentSessionId) {
-      await loadAllSessions();
-      setTerminalCompanion(parentSessionId, newId);
     }
   }
 
@@ -257,23 +211,6 @@ export function TerminalPicker({ mode, onClose }: Props) {
     });
   }
 
-  // 2b. Remote tmux sessions per machine
-  for (const m of machines) {
-    const sessions = remoteTmux.get(m.launcherId);
-    if (!sessions?.length) continue;
-    const machineName = m.machineName || m.name;
-    for (const s of sessions) {
-      items.push({
-        id: `remote-tmux:${m.launcherId}:${s.name}`,
-        category: `${machineName} Tmux`,
-        icon: '\u{1F4DF}',
-        title: s.name,
-        subtitle: `${s.windows} window${s.windows !== 1 ? 's' : ''}${s.attached ? ', attached' : ''}`,
-        action: () => pickTmux(s.name, m.launcherId),
-      });
-    }
-  }
-
   // 3. Harnesses
   for (const t of harnesses) {
     items.push({
@@ -287,22 +224,6 @@ export function TerminalPicker({ mode, onClose }: Props) {
       action: t.online ? () => pickNew(t.launcherId, t.harnessConfigId || undefined) : () => {},
       disabled: !t.online,
     });
-  }
-
-  // 3b. Harness tmux sessions
-  for (const h of harnesses) {
-    const hSessions = remoteTmux.get(h.launcherId);
-    if (!hSessions?.length) continue;
-    for (const s of hSessions) {
-      items.push({
-        id: `harness-tmux:${h.launcherId}:${s.name}`,
-        category: `${h.name} Tmux`,
-        icon: '\u{1F4DF}',
-        title: s.name,
-        subtitle: `${s.windows} window${s.windows !== 1 ? 's' : ''}${s.attached ? ', attached' : ''}`,
-        action: () => pickTmux(s.name, h.launcherId),
-      });
-    }
   }
 
   // 4. Sprites
@@ -364,18 +285,6 @@ export function TerminalPicker({ mode, onClose }: Props) {
         action: () => pickExisting(s.id),
       });
     }
-  }
-
-  // 7. Tmux sessions
-  for (const s of tmuxSessions) {
-    items.push({
-      id: `tmux:${s.name}`,
-      category: 'Tmux Sessions',
-      icon: '\u{1F4DF}',
-      title: s.name,
-      subtitle: `${s.windows} window${s.windows !== 1 ? 's' : ''}${s.attached ? ', attached' : ''}`,
-      action: () => pickTmux(s.name),
-    });
   }
 
   // 7. Isolated components
@@ -463,13 +372,7 @@ export function TerminalPicker({ mode, onClose }: Props) {
   // Group by category
   const grouped: [string, PickerItem[]][] = [];
   if (urlItem) grouped.push(['Iframe', [urlItem]]);
-  const remoteTmuxCategories = machines
-    .filter(m => remoteTmux.has(m.launcherId))
-    .map(m => `${m.machineName || m.name} Tmux`);
-  const harnessTmuxCategories = harnesses
-    .filter(h => remoteTmux.has(h.launcherId))
-    .map(h => `${h.name} Tmux`);
-  const categoryOrder = ['Layout', 'Views', 'New', 'Remote Machines', ...remoteTmuxCategories, 'Harnesses', ...harnessTmuxCategories, 'Sprites', 'Recent', 'Open Terminals', 'Tmux Sessions', 'Isolated Components', 'Iframe'];
+  const categoryOrder = ['Layout', 'Views', 'New', 'Remote Machines', 'Harnesses', 'Sprites', 'Recent', 'Open Terminals', 'Isolated Components', 'Iframe'];
   for (const cat of categoryOrder) {
     if (cat === 'Iframe' && urlItem) continue;
     const catItems = filtered.filter(i => i.category === cat);
@@ -524,7 +427,6 @@ export function TerminalPicker({ mode, onClose }: Props) {
             onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
             onKeyDown={handleKeyDown}
           />
-          {tmuxLoading && <span class="spotlight-spinner" />}
           <kbd class="spotlight-esc" onClick={onClose}>esc</kbd>
         </div>
         {flatFiltered.length > 0 && (

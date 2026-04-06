@@ -1,4 +1,4 @@
-import { signal } from '@preact/signals';
+import { useSignal } from '@preact/signals';
 import { useEffect, useState } from 'preact/hooks';
 import { api } from '../lib/api.js';
 import { subscribeAdmin } from '../lib/admin-ws.js';
@@ -23,19 +23,6 @@ interface LiveConnection {
   name: string | null;
   tags: string[];
   activityLog: ActivityEntry[];
-}
-
-const connections = signal<LiveConnection[]>([]);
-const loading = signal(false);
-
-async function loadConnections() {
-  try {
-    connections.value = await api.getLiveConnections();
-  } catch {
-    // ignore
-  } finally {
-    loading.value = false;
-  }
 }
 
 function formatRelativeTime(dateStr: string | null): string {
@@ -180,10 +167,22 @@ function ActivityDetail({ log }: { log: ActivityEntry[] }) {
 
 export function LiveConnectionsPage({ appId }: { appId?: string | null }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const connections = useSignal<LiveConnection[]>([]);
+  const loading = useSignal(false);
+
+  async function loadConnections() {
+    try {
+      connections.value = await api.getLiveConnections();
+    } catch {
+      // ignore
+    } finally {
+      loading.value = false;
+    }
+  }
 
   useEffect(() => {
     loading.value = true;
-    loadConnections(); // initial load
+    loadConnections();
     return subscribeAdmin('live-connections', (data: LiveConnection[]) => {
       connections.value = data;
       loading.value = false;

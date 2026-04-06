@@ -14,13 +14,11 @@ const formProjectDir = signal('');
 const formServerUrl = signal('');
 const formHooks = signal('');
 const formDescription = signal('');
-const formTmuxConfigId = signal('');
 const formPermissionProfile = signal('interactive');
 const formAllowedTools = signal('');
 const formAgentPath = signal('');
 const formError = signal('');
 const formLoading = signal(false);
-const tmuxConfigs = signal<any[]>([]);
 const showToolPresets = signal(false);
 
 const TOOL_PRESETS = [
@@ -49,12 +47,8 @@ function addToolPreset(value: string) {
 async function loadApps() {
   loading.value = true;
   try {
-    const [appList, configList] = await Promise.all([
-      api.getApplications(),
-      api.getTmuxConfigs(),
-    ]);
+    const appList = await api.getApplications();
     apps.value = appList;
-    tmuxConfigs.value = configList;
   } catch (err) {
     console.error('Failed to load applications:', err);
   } finally {
@@ -71,7 +65,6 @@ function openCreate() {
   formServerUrl.value = '';
   formHooks.value = '';
   formDescription.value = '';
-  formTmuxConfigId.value = '';
   formPermissionProfile.value = 'interactive';
   formAllowedTools.value = '';
   formAgentPath.value = '';
@@ -86,7 +79,6 @@ function openEdit(app: any) {
   formServerUrl.value = app.serverUrl || '';
   formHooks.value = (app.hooks || []).join(', ');
   formDescription.value = app.description || '';
-  formTmuxConfigId.value = app.tmuxConfigId || '';
   formPermissionProfile.value = app.defaultPermissionProfile || 'interactive';
   formAllowedTools.value = app.defaultAllowedTools || '';
   formAgentPath.value = app.agentPath || '';
@@ -110,7 +102,6 @@ async function saveApp(e: Event) {
     serverUrl: formServerUrl.value || undefined,
     hooks,
     description: formDescription.value,
-    tmuxConfigId: formTmuxConfigId.value || null,
     defaultPermissionProfile: formPermissionProfile.value,
     defaultAllowedTools: formAllowedTools.value || null,
     agentPath: formAgentPath.value || null,
@@ -266,21 +257,6 @@ export function ApplicationsPage() {
               <>
                 <div style="border-top:1px solid var(--pw-border);margin:16px 0;padding-top:12px">
                   <h4 style="margin:0 0 12px;font-size:13px;color:var(--pw-text-muted)">Session Settings</h4>
-                </div>
-                <div class="form-group">
-                  <label>Tmux Configuration</label>
-                  <select
-                    value={formTmuxConfigId.value}
-                    onChange={(e) => (formTmuxConfigId.value = (e.target as HTMLSelectElement).value)}
-                    style="width:100%"
-                  >
-                    <option value="">Global Default</option>
-                    {tmuxConfigs.value.map((cfg: any) => (
-                      <option key={cfg.id} value={cfg.id}>
-                        {cfg.name}{cfg.isDefault ? ' (default)' : ''}
-                      </option>
-                    ))}
-                  </select>
                 </div>
                 <div class="form-group">
                   <label>Default Permission Profile</label>

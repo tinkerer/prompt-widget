@@ -1,48 +1,45 @@
-import { signal } from '@preact/signals';
-import { useState } from 'preact/hooks';
+import { useSignal } from '@preact/signals';
+import { useState, useEffect } from 'preact/hooks';
 import { api } from '../lib/api.js';
 import { SetupAssistButton } from '../components/SetupAssistButton.js';
 import { DeletedItemsPanel, trackDeletion } from '../components/DeletedItemsPanel.js';
 import { AgentCard } from '../components/AgentCard.js';
 import { AgentFormModal } from '../components/AgentFormModal.js';
 
-const agents = signal<any[]>([]);
-const applications = signal<any[]>([]);
-const loading = signal(true);
-
-async function loadAgents() {
-  loading.value = true;
-  try {
-    const [agentsList, appsList] = await Promise.all([
-      api.getAgents(),
-      api.getApplications(),
-    ]);
-    agents.value = agentsList;
-    applications.value = appsList;
-  } catch (err) {
-    console.error('Failed to load agents:', err);
-  } finally {
-    loading.value = false;
-  }
-}
-
-async function deleteAgent(id: string, name: string) {
-  await api.deleteAgent(id);
-  trackDeletion('agents', id, name);
-  await loadAgents();
-}
-
-let loaded = false;
-
 export function AgentsPage() {
+  const agents = useSignal<any[]>([]);
+  const applications = useSignal<any[]>([]);
+  const loading = useSignal(true);
+
   const [modalAgent, setModalAgent] = useState<any | undefined>(undefined);
   const [modalVisible, setModalVisible] = useState(false);
   const [modalFixedAppId, setModalFixedAppId] = useState<string | undefined>(undefined);
 
-  if (!loaded) {
-    loaded = true;
-    loadAgents();
+  async function loadAgents() {
+    loading.value = true;
+    try {
+      const [agentsList, appsList] = await Promise.all([
+        api.getAgents(),
+        api.getApplications(),
+      ]);
+      agents.value = agentsList;
+      applications.value = appsList;
+    } catch (err) {
+      console.error('Failed to load agents:', err);
+    } finally {
+      loading.value = false;
+    }
   }
+
+  async function deleteAgent(id: string, name: string) {
+    await api.deleteAgent(id);
+    trackDeletion('agents', id, name);
+    await loadAgents();
+  }
+
+  useEffect(() => {
+    loadAgents();
+  }, []);
 
   function openCreate(fixedAppId?: string) {
     setModalAgent(undefined);

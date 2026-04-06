@@ -1,5 +1,5 @@
-import { signal, effect } from '@preact/signals';
-import { useRef } from 'preact/hooks';
+import { useSignal, useSignalEffect } from '@preact/signals';
+import { useRef, useEffect } from 'preact/hooks';
 import { marked } from 'marked';
 import { api } from '../lib/api.js';
 import { navigate } from '../lib/state.js';
@@ -14,315 +14,11 @@ import { ElementCard } from '../components/ElementCard.js';
 import { SpecView, SpecToolbar } from '../components/SpecView.js';
 import { fetchParent, fetchChildren, fetchSiblings, fetchComputedStyles } from '../lib/dom-traversal.js';
 
+import type { Signal } from '@preact/signals';
+
 marked.setOptions({ gfm: true, breaks: true });
 
-const feedback = signal<any>(null);
-const loading = signal(true);
-const error = signal('');
-const agents = signal<any[]>([]);
-const dispatchAgentId = signal('');
-const dispatchInstructions = signal('');
-const dispatchLoading = signal(false);
-const dispatchTarget = signal('');
-const newTag = signal('');
-const agentSessions = signal<any[]>([]);
-const lastLoadedId = signal<string | null>(null);
-const lightboxSrc = signal<string | null>(null);
-const lightboxImageId = signal<string | null>(null);
-const lightboxFeedbackId = signal<string | null>(null);
-const cropMode = signal(false);
-const cacheBuster = signal(0);
-const editingTitle = signal(false);
-const editTitleValue = signal('');
-const editingDescription = signal(false);
-const editDescValue = signal('');
-const liveConnections = signal<any[]>([]);
-const enrichLoading = signal<string | null>(null);
-const expandedElements = signal<Set<number>>(new Set());
-const specViewMode = signal<'inline' | 'side'>('inline');
-const domTraversalLoading = signal<string | null>(null);
-
 const STATUSES = ['new', 'reviewed', 'dispatched', 'resolved', 'archived'];
-
-effect(() => {
-  if (!lightboxSrc.value) return;
-  const handler = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      e.stopImmediatePropagation();
-      if (cropMode.value) {
-        cropMode.value = false;
-      } else {
-        lightboxSrc.value = null;
-        lightboxImageId.value = null;
-        lightboxFeedbackId.value = null;
-      }
-    }
-  };
-  document.addEventListener('keydown', handler, true);
-  return () => document.removeEventListener('keydown', handler, true);
-});
-
-let currentDetailAppId: string | null = null;
-
-async function load(id: string, appId: string | null) {
-  loading.value = true;
-  error.value = '';
-  agents.value = [];
-  dispatchAgentId.value = '';
-  lastLoadedId.value = id;
-  currentDetailAppId = appId;
-  try {
-    const fb = await api.getFeedbackById(id);
-    feedback.value = fb;
-    if (fb?.title) {
-      feedbackTitleCache.value = { ...feedbackTitleCache.value, [id]: fb.title };
-    }
-    const agentsList = await api.getAgents(fb.appId || undefined);
-    agents.value = agentsList;
-    // Prefer per-app default, then global default, then first agent
-    const appDefault = agentsList.find((a: any) => a.isDefault && a.appId === fb.appId);
-    const globalDefault = agentsList.find((a: any) => a.isDefault && !a.appId);
-    const def = appDefault || globalDefault;
-    if (def) dispatchAgentId.value = def.id;
-    else if (agentsList.length > 0) dispatchAgentId.value = agentsList[0].id;
-    loadSessions(id);
-    loadLiveConnections(fb.appId);
-  } catch (err: any) {
-    error.value = err.message;
-  } finally {
-    loading.value = false;
-  }
-}
-
-async function loadLiveConnections(appId?: string) {
-  try {
-    const all = await api.getLiveConnections();
-    liveConnections.value = appId ? all.filter((s: any) => s.appId === appId) : all;
-  } catch {
-    liveConnections.value = [];
-  }
-}
-
-async function loadSessions(feedbackId: string) {
-  try {
-    agentSessions.value = await api.getAgentSessions(feedbackId);
-  } catch {
-    // ignore
-  }
-}
-
-async function updateStatus(status: string) {
-  const fb = feedback.value;
-  if (!fb) return;
-  await api.updateFeedback(fb.id, { status });
-  fb.status = status;
-  feedback.value = { ...fb };
-}
-
-async function saveTitle() {
-  const fb = feedback.value;
-  if (!fb || !editTitleValue.value.trim()) return;
-  await api.updateFeedback(fb.id, { title: editTitleValue.value.trim() });
-  fb.title = editTitleValue.value.trim();
-  feedback.value = { ...fb };
-  editingTitle.value = false;
-}
-
-async function saveDescription() {
-  const fb = feedback.value;
-  if (!fb) return;
-  await api.updateFeedback(fb.id, { description: editDescValue.value });
-  fb.description = editDescValue.value;
-  feedback.value = { ...fb };
-  editingDescription.value = false;
-}
-
-async function deleteFeedback() {
-  const fb = feedback.value;
-  if (!fb) return;
-  await api.updateFeedback(fb.id, { status: 'deleted' });
-  if (currentDetailAppId) {
-    navigate(`/app/${currentDetailAppId}/feedback`);
-  } else {
-    navigate('/');
-  }
-}
-
-async function addTag() {
-  const fb = feedback.value;
-  if (!fb || !newTag.value.trim()) return;
-  const tags = [...(fb.tags || []), newTag.value.trim()];
-  await api.updateFeedback(fb.id, { tags });
-  fb.tags = tags;
-  feedback.value = { ...fb };
-  newTag.value = '';
-}
-
-async function removeTag(tag: string) {
-  const fb = feedback.value;
-  if (!fb) return;
-  const tags = (fb.tags || []).filter((t: string) => t !== tag);
-  await api.updateFeedback(fb.id, { tags });
-  fb.tags = tags;
-  feedback.value = { ...fb };
-}
-
-async function doDispatch() {
-  const fb = feedback.value;
-  if (!fb || !dispatchAgentId.value) return;
-  dispatchLoading.value = true;
-  try {
-    const selectedAgent = agents.value.find((a) => a.id === dispatchAgentId.value);
-    const { launcherId, harnessConfigId } = parseTargetKey(dispatchTarget.value, cachedTargets.value);
-    const result = await api.dispatch({
-      feedbackId: fb.id,
-      agentEndpointId: dispatchAgentId.value,
-      instructions: dispatchInstructions.value || undefined,
-      launcherId,
-      harnessConfigId,
-    });
-    dispatchInstructions.value = '';
-
-    // Optimistically update local feedback state instead of re-fetching everything
-    feedback.value = {
-      ...fb,
-      status: 'dispatched',
-      dispatchedTo: selectedAgent?.name || 'Agent',
-      dispatchedAt: new Date().toISOString(),
-      dispatchStatus: result.sessionId ? 'running' : 'success',
-      dispatchResponse: result.response,
-    };
-
-    if (result.sessionId) {
-      openSession(result.sessionId);
-    }
-
-    // Only refresh sessions list (lightweight) instead of full page reload
-    loadSessions(fb.id);
-  } catch (err: any) {
-    const msg = err.message || 'Unknown error';
-    const isServiceDown = msg.includes('unreachable') || msg.includes('503');
-    if (isServiceDown) {
-      error.value = `Dispatch failed — session service may be down: ${msg}`;
-    } else {
-      error.value = 'Dispatch failed: ' + msg;
-    }
-  } finally {
-    dispatchLoading.value = false;
-  }
-}
-
-function formatJson(data: any) {
-  if (!data) return 'null';
-  return JSON.stringify(data, null, 2);
-}
-
-async function deleteScreenshot(screenshotId: string) {
-  const fb = feedback.value;
-  if (!fb) return;
-  await api.deleteScreenshot(screenshotId);
-  fb.screenshots = (fb.screenshots || []).filter((s: any) => s.id !== screenshotId);
-  feedback.value = { ...fb };
-}
-
-async function handleFileUpload(e: Event) {
-  const fb = feedback.value;
-  if (!fb) return;
-  const input = e.target as HTMLInputElement;
-  const file = input.files?.[0];
-  if (!file) return;
-  const result = await api.saveImageAsNew(fb.id, file);
-  fb.screenshots = [...(fb.screenshots || []), { id: result.id, filename: result.filename }];
-  feedback.value = { ...fb };
-  input.value = '';
-}
-
-async function captureFromSession(sessionId: string) {
-  const fb = feedback.value;
-  if (!fb) return;
-  enrichLoading.value = `screenshot-${sessionId}`;
-  try {
-    const result = await api.captureSessionScreenshot(sessionId);
-    if (result.dataUrl) {
-      const res = await fetch(result.dataUrl);
-      const blob = await res.blob();
-      const saved = await api.saveImageAsNew(fb.id, blob);
-      fb.screenshots = [...(fb.screenshots || []), { id: saved.id, filename: saved.filename }];
-      feedback.value = { ...fb };
-    }
-  } finally {
-    enrichLoading.value = null;
-  }
-}
-
-async function enrichConsole(sessionId: string) {
-  const fb = feedback.value;
-  if (!fb) return;
-  enrichLoading.value = `console-${sessionId}`;
-  try {
-    const result = await api.getSessionConsole(sessionId);
-    if (result.logs?.length) {
-      await api.updateFeedback(fb.id, { context: { consoleLogs: result.logs } });
-      const updated = await api.getFeedbackById(fb.id);
-      feedback.value = updated;
-    }
-  } finally {
-    enrichLoading.value = null;
-  }
-}
-
-async function triggerAppendMode(sessionId: string) {
-  const fb = feedback.value;
-  if (!fb) return;
-  enrichLoading.value = `append-${sessionId}`;
-  try {
-    await api.triggerAppendMode(sessionId, fb.id);
-  } finally {
-    enrichLoading.value = null;
-  }
-}
-
-async function enrichNetwork(sessionId: string) {
-  const fb = feedback.value;
-  if (!fb) return;
-  enrichLoading.value = `network-${sessionId}`;
-  try {
-    const result = await api.getSessionNetwork(sessionId);
-    if (result.errors?.length) {
-      await api.updateFeedback(fb.id, { context: { networkErrors: result.errors } });
-      const updated = await api.getFeedbackById(fb.id);
-      feedback.value = updated;
-    }
-  } finally {
-    enrichLoading.value = null;
-  }
-}
-
-// Paste handler: paste images from clipboard to add as screenshots
-effect(() => {
-  const fb = feedback.value;
-  if (!fb) return;
-  const handler = async (e: ClipboardEvent) => {
-    const items = e.clipboardData?.items;
-    if (!items) return;
-    for (const item of items) {
-      if (item.type.startsWith('image/')) {
-        e.preventDefault();
-        const file = item.getAsFile();
-        if (!file) continue;
-        const result = await api.saveImageAsNew(fb.id, file);
-        const current = feedback.value;
-        if (current) {
-          current.screenshots = [...(current.screenshots || []), { id: result.id, filename: result.filename }];
-          feedback.value = { ...current };
-        }
-        break;
-      }
-    }
-  };
-  document.addEventListener('paste', handler as EventListener);
-  return () => document.removeEventListener('paste', handler as EventListener);
-});
 
 function DescriptionEditor({ value, onChange, onCancel, onSave, elements, screenshots }: {
   value: string;
@@ -361,10 +57,16 @@ function DescriptionEditor({ value, onChange, onCancel, onSave, elements, screen
   );
 }
 
-function DescriptionDisplay({ fb, onEdit, onScreenshotClick }: {
+function DescriptionDisplay({ fb, onEdit, onScreenshotClick, liveConnections, expandedElements, specViewMode, domTraversalLoading, cacheBuster, feedback }: {
   fb: any;
   onEdit: () => void;
   onScreenshotClick: (ss: any) => void;
+  liveConnections: Signal<any[]>;
+  expandedElements: Signal<Set<number>>;
+  specViewMode: Signal<'inline' | 'side'>;
+  domTraversalLoading: Signal<string | null>;
+  cacheBuster: Signal<number>;
+  feedback: Signal<any>;
 }) {
   const elements: any[] = fb.data?.selectedElements || (fb.data?.selectedElement ? [fb.data.selectedElement] : []);
   const screenshots: { id: string; filename?: string }[] = fb.screenshots || [];
@@ -480,11 +182,317 @@ function DescriptionDisplay({ fb, onEdit, onScreenshotClick }: {
 }
 
 export function FeedbackDetailPage({ id, appId, embedded }: { id: string; appId: string | null; embedded?: boolean }) {
-  if (lastLoadedId.value !== id) {
-    load(id, appId);
+  const feedback = useSignal<any>(null);
+  const loading = useSignal(true);
+  const error = useSignal('');
+  const agents = useSignal<any[]>([]);
+  const dispatchAgentId = useSignal('');
+  const dispatchInstructions = useSignal('');
+  const dispatchLoading = useSignal(false);
+  const dispatchTarget = useSignal('');
+  const newTag = useSignal('');
+  const agentSessions = useSignal<any[]>([]);
+  const lastLoadedId = useSignal<string | null>(null);
+  const lightboxSrc = useSignal<string | null>(null);
+  const lightboxImageId = useSignal<string | null>(null);
+  const lightboxFeedbackId = useSignal<string | null>(null);
+  const cropMode = useSignal(false);
+  const cacheBuster = useSignal(0);
+  const editingTitle = useSignal(false);
+  const editTitleValue = useSignal('');
+  const editingDescription = useSignal(false);
+  const editDescValue = useSignal('');
+  const liveConnections = useSignal<any[]>([]);
+  const enrichLoading = useSignal<string | null>(null);
+  const expandedElements = useSignal<Set<number>>(new Set());
+  const specViewMode = useSignal<'inline' | 'side'>('inline');
+  const domTraversalLoading = useSignal<string | null>(null);
+
+  const currentDetailAppIdRef = useRef<string | null>(null);
+
+  async function load(loadId: string, loadAppId: string | null) {
+    loading.value = true;
+    error.value = '';
+    agents.value = [];
+    dispatchAgentId.value = '';
+    lastLoadedId.value = loadId;
+    currentDetailAppIdRef.current = loadAppId;
+    try {
+      const fb = await api.getFeedbackById(loadId);
+      feedback.value = fb;
+      if (fb?.title) {
+        feedbackTitleCache.value = { ...feedbackTitleCache.value, [loadId]: fb.title };
+      }
+      const agentsList = await api.getAgents(fb.appId || undefined);
+      agents.value = agentsList;
+      const appDefault = agentsList.find((a: any) => a.isDefault && a.appId === fb.appId);
+      const globalDefault = agentsList.find((a: any) => a.isDefault && !a.appId);
+      const def = appDefault || globalDefault;
+      if (def) dispatchAgentId.value = def.id;
+      else if (agentsList.length > 0) dispatchAgentId.value = agentsList[0].id;
+      loadSessions(loadId);
+      loadLiveConnections(fb.appId);
+    } catch (err: any) {
+      error.value = err.message;
+    } finally {
+      loading.value = false;
+    }
   }
 
-  if (loading.value) return <div>Loading...</div>;
+  async function loadLiveConnections(liveAppId?: string) {
+    try {
+      const all = await api.getLiveConnections();
+      liveConnections.value = liveAppId ? all.filter((s: any) => s.appId === liveAppId) : all;
+    } catch {
+      liveConnections.value = [];
+    }
+  }
+
+  async function loadSessions(feedbackId: string) {
+    try {
+      agentSessions.value = await api.getAgentSessions(feedbackId);
+    } catch {
+      // ignore
+    }
+  }
+
+  async function updateStatus(status: string) {
+    const fb = feedback.value;
+    if (!fb) return;
+    await api.updateFeedback(fb.id, { status });
+    fb.status = status;
+    feedback.value = { ...fb };
+  }
+
+  async function saveTitle() {
+    const fb = feedback.value;
+    if (!fb || !editTitleValue.value.trim()) return;
+    await api.updateFeedback(fb.id, { title: editTitleValue.value.trim() });
+    fb.title = editTitleValue.value.trim();
+    feedback.value = { ...fb };
+    editingTitle.value = false;
+  }
+
+  async function saveDescription() {
+    const fb = feedback.value;
+    if (!fb) return;
+    await api.updateFeedback(fb.id, { description: editDescValue.value });
+    fb.description = editDescValue.value;
+    feedback.value = { ...fb };
+    editingDescription.value = false;
+  }
+
+  async function deleteFeedback() {
+    const fb = feedback.value;
+    if (!fb) return;
+    await api.updateFeedback(fb.id, { status: 'deleted' });
+    if (currentDetailAppIdRef.current) {
+      navigate(`/app/${currentDetailAppIdRef.current}/feedback`);
+    } else {
+      navigate('/');
+    }
+  }
+
+  async function addTag() {
+    const fb = feedback.value;
+    if (!fb || !newTag.value.trim()) return;
+    const tags = [...(fb.tags || []), newTag.value.trim()];
+    await api.updateFeedback(fb.id, { tags });
+    fb.tags = tags;
+    feedback.value = { ...fb };
+    newTag.value = '';
+  }
+
+  async function removeTag(tag: string) {
+    const fb = feedback.value;
+    if (!fb) return;
+    const tags = (fb.tags || []).filter((t: string) => t !== tag);
+    await api.updateFeedback(fb.id, { tags });
+    fb.tags = tags;
+    feedback.value = { ...fb };
+  }
+
+  async function doDispatch() {
+    const fb = feedback.value;
+    if (!fb || !dispatchAgentId.value) return;
+    dispatchLoading.value = true;
+    try {
+      const selectedAgent = agents.value.find((a) => a.id === dispatchAgentId.value);
+      const { launcherId, harnessConfigId } = parseTargetKey(dispatchTarget.value, cachedTargets.value);
+      const result = await api.dispatch({
+        feedbackId: fb.id,
+        agentEndpointId: dispatchAgentId.value,
+        instructions: dispatchInstructions.value || undefined,
+        launcherId,
+        harnessConfigId,
+      });
+      dispatchInstructions.value = '';
+
+      feedback.value = {
+        ...fb,
+        status: 'dispatched',
+        dispatchedTo: selectedAgent?.name || 'Agent',
+        dispatchedAt: new Date().toISOString(),
+        dispatchStatus: result.sessionId ? 'running' : 'success',
+        dispatchResponse: result.response,
+      };
+
+      if (result.sessionId) {
+        openSession(result.sessionId);
+      }
+
+      loadSessions(fb.id);
+    } catch (err: any) {
+      const msg = err.message || 'Unknown error';
+      const isServiceDown = msg.includes('unreachable') || msg.includes('503');
+      if (isServiceDown) {
+        error.value = `Dispatch failed — session service may be down: ${msg}`;
+      } else {
+        error.value = 'Dispatch failed: ' + msg;
+      }
+    } finally {
+      dispatchLoading.value = false;
+    }
+  }
+
+  function formatJson(data: any) {
+    if (!data) return 'null';
+    return JSON.stringify(data, null, 2);
+  }
+
+  async function deleteScreenshot(screenshotId: string) {
+    const fb = feedback.value;
+    if (!fb) return;
+    await api.deleteScreenshot(screenshotId);
+    fb.screenshots = (fb.screenshots || []).filter((s: any) => s.id !== screenshotId);
+    feedback.value = { ...fb };
+  }
+
+  async function handleFileUpload(e: Event) {
+    const fb = feedback.value;
+    if (!fb) return;
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    const result = await api.saveImageAsNew(fb.id, file);
+    fb.screenshots = [...(fb.screenshots || []), { id: result.id, filename: result.filename }];
+    feedback.value = { ...fb };
+    input.value = '';
+  }
+
+  async function captureFromSession(sessionId: string) {
+    const fb = feedback.value;
+    if (!fb) return;
+    enrichLoading.value = `screenshot-${sessionId}`;
+    try {
+      const result = await api.captureSessionScreenshot(sessionId);
+      if (result.dataUrl) {
+        const res = await fetch(result.dataUrl);
+        const blob = await res.blob();
+        const saved = await api.saveImageAsNew(fb.id, blob);
+        fb.screenshots = [...(fb.screenshots || []), { id: saved.id, filename: saved.filename }];
+        feedback.value = { ...fb };
+      }
+    } finally {
+      enrichLoading.value = null;
+    }
+  }
+
+  async function enrichConsole(sessionId: string) {
+    const fb = feedback.value;
+    if (!fb) return;
+    enrichLoading.value = `console-${sessionId}`;
+    try {
+      const result = await api.getSessionConsole(sessionId);
+      if (result.logs?.length) {
+        await api.updateFeedback(fb.id, { context: { consoleLogs: result.logs } });
+        const updated = await api.getFeedbackById(fb.id);
+        feedback.value = updated;
+      }
+    } finally {
+      enrichLoading.value = null;
+    }
+  }
+
+  async function triggerAppendMode(sessionId: string) {
+    const fb = feedback.value;
+    if (!fb) return;
+    enrichLoading.value = `append-${sessionId}`;
+    try {
+      await api.triggerAppendMode(sessionId, fb.id);
+    } finally {
+      enrichLoading.value = null;
+    }
+  }
+
+  async function enrichNetwork(sessionId: string) {
+    const fb = feedback.value;
+    if (!fb) return;
+    enrichLoading.value = `network-${sessionId}`;
+    try {
+      const result = await api.getSessionNetwork(sessionId);
+      if (result.errors?.length) {
+        await api.updateFeedback(fb.id, { context: { networkErrors: result.errors } });
+        const updated = await api.getFeedbackById(fb.id);
+        feedback.value = updated;
+      }
+    } finally {
+      enrichLoading.value = null;
+    }
+  }
+
+  // Lightbox escape handler
+  useSignalEffect(() => {
+    if (!lightboxSrc.value) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopImmediatePropagation();
+        if (cropMode.value) {
+          cropMode.value = false;
+        } else {
+          lightboxSrc.value = null;
+          lightboxImageId.value = null;
+          lightboxFeedbackId.value = null;
+        }
+      }
+    };
+    document.addEventListener('keydown', handler, true);
+    return () => document.removeEventListener('keydown', handler, true);
+  });
+
+  // Paste handler: paste images from clipboard to add as screenshots
+  useSignalEffect(() => {
+    const fb = feedback.value;
+    if (!fb) return;
+    const handler = async (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          e.preventDefault();
+          const file = item.getAsFile();
+          if (!file) continue;
+          const result = await api.saveImageAsNew(fb.id, file);
+          const current = feedback.value;
+          if (current) {
+            current.screenshots = [...(current.screenshots || []), { id: result.id, filename: result.filename }];
+            feedback.value = { ...current };
+          }
+          break;
+        }
+      }
+    };
+    document.addEventListener('paste', handler as EventListener);
+    return () => document.removeEventListener('paste', handler as EventListener);
+  });
+
+  useEffect(() => {
+    if (lastLoadedId.value !== id) {
+      load(id, appId);
+    }
+  }, [id, appId]);
+
+  if (loading.value || lastLoadedId.value !== id) return <div>Loading...</div>;
   if (error.value) return <div class="error-msg">{error.value}</div>;
 
   const fb = feedback.value;
@@ -606,6 +614,12 @@ export function FeedbackDetailPage({ id, appId, embedded }: { id: string; appId:
                   lightboxFeedbackId.value = fb.id;
                   cropMode.value = false;
                 }}
+                liveConnections={liveConnections}
+                expandedElements={expandedElements}
+                specViewMode={specViewMode}
+                domTraversalLoading={domTraversalLoading}
+                cacheBuster={cacheBuster}
+                feedback={feedback}
               />
             )}
 

@@ -9,7 +9,6 @@ import {
   getSessionServiceActiveSessions,
 } from './session-service-client.js';
 import { getLauncher, listLaunchers } from './launcher-registry.js';
-import { tmuxSessionExists, isTmuxAvailable } from './tmux-pty.js';
 import { updateFeedbackOnSessionEnd } from './feedback-status.js';
 import { detectAndStoreJsonlContinuations } from './jsonl-utils.js';
 import { sendInputToSprite, killSpriteSession, isSpriteSession } from './sprite-sessions.js';
@@ -46,7 +45,6 @@ export async function spawnAgentSession(params: {
   allowedTools?: string | null;
   claudeSessionId?: string;
   resumeSessionId?: string;
-  tmuxTarget?: string;
 }): Promise<void> {
   await spawnSessionRemote(params);
 }
@@ -100,13 +98,18 @@ export function attachAdmin(sessionId: string, ws: WsWebSocket): boolean {
     // Launcher offline — fall through to DB-only path below
   }
 
+  // No DB record at all → reject immediately
+  if (!session) {
+    return false;
+  }
+
   // Local session: send DB history immediately (same as launcher path) so the
   // admin sees content right away instead of waiting for the service WS to connect.
-  if (session?.outputLog) {
+  if (session.outputLog) {
     ws.send(JSON.stringify({ type: 'history', data: session.outputLog }));
   }
-  if (session && session.status !== 'pending' && session.status !== 'running') {
-    ws.send(JSON.stringify({ type: 'exit', exitCode: session?.exitCode, status: session?.status }));
+  if (session.status !== 'pending' && session.status !== 'running') {
+    ws.send(JSON.stringify({ type: 'exit', exitCode: session.exitCode, status: session.status }));
     return true;
   }
 
@@ -132,33 +135,25 @@ export function attachAdmin(sessionId: string, ws: WsWebSocket): boolean {
     }
   });
 
-  serviceWs.on('close', () => {
+  serviceWs.on('close', (code) => {
     adminBridges.delete(ws);
-    // Close the browser WS so it reconnects and re-establishes the bridge
     if (connected) {
-      try { ws.close(4010, 'Session service disconnected'); } catch {}
+      // Forward 4004 from session-service so the client stops reconnecting
+      const closeCode = code === 4004 ? 4004 : 4010;
+      const reason = code === 4004 ? 'Session not found' : 'Session service disconnected';
+      try { ws.close(closeCode, reason); } catch {}
     }
   });
 
   serviceWs.on('error', () => {
     adminBridges.delete(ws);
     if (!connected) {
-      const s = db
-        .select()
-        .from(schema.agentSessions)
-        .where(eq(schema.agentSessions.id, sessionId))
-        .get();
-      if (s) {
-        ws.send(JSON.stringify({ type: 'history', data: s.outputLog || '' }));
-        if (s.status !== 'pending' && s.status !== 'running') {
-          ws.send(JSON.stringify({ type: 'exit', exitCode: s.exitCode, status: s.status }));
-        } else {
-          // Session is still pending/running but we lost the bridge — close the
-          // browser WS so the terminal reconnects and gets a fresh bridge
-          try { ws.close(4010, 'Session service unavailable, reconnecting'); } catch {}
-        }
+      if (session.status !== 'pending' && session.status !== 'running') {
+        ws.send(JSON.stringify({ type: 'exit', exitCode: session.exitCode, status: session.status }));
       } else {
-        ws.close(4004, 'Session not found');
+        // Session is still pending/running but we lost the bridge — close the
+        // browser WS so the terminal reconnects and gets a fresh bridge
+        try { ws.close(4010, 'Session service unavailable, reconnecting'); } catch {}
       }
     }
   });
@@ -321,7 +316,6 @@ export async function cleanupOrphanedSessions(): Promise<void> {
     }
   }
 
-  const hasTmux = isTmuxAvailable();
   const activeSvcSessions = activeSvcResult ? new Set(activeSvcResult) : null;
 
   const now = new Date().toISOString();
@@ -332,8 +326,6 @@ export async function cleanupOrphanedSessions(): Promise<void> {
     if (isSpriteSession(session.id)) continue;
     // Launcher confirms it's alive
     if (session.launcherId && launcherSessions.has(session.id)) continue;
-    // Tmux session still exists — don't mark as failed
-    if (hasTmux && tmuxSessionExists(session.id)) continue;
     // Session-service was unreachable — can't confirm liveness, skip
     if (!activeSvcSessions) continue;
 

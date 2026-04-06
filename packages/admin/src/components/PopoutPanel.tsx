@@ -47,7 +47,6 @@ import {
   switchAutoJumpActiveSession,
   getTerminalCompanion,
   focusSessionTerminal,
-  buildTmuxAttachCmd,
   autoJumpDismissed,
   handleBounceCounter,
   termPickerOpen,
@@ -281,7 +280,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
           <>
             <span
               ref={idMenuBtnRef}
-              class="tmux-id-label"
+              class="session-id-label"
               onClick={(e) => { e.stopPropagation(); popoutIdMenuOpen.value = showIdMenu ? null : activeId; }}
             >
               pw-{activeId.slice(-6)} <span class="id-dropdown-caret">{'\u25BE'}</span>
@@ -352,6 +351,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
             const tabSess = sessionMap.get(sid);
             const tabExited = exitedSessions.value.has(sid);
             const tabIsCompanion = sid.startsWith('jsonl:') || sid.startsWith('feedback:') || sid.startsWith('iframe:') || sid.startsWith('terminal:');
+            const tabIsFb = sid.startsWith('fb:');
             const tabInputState = !tabExited && !tabIsCompanion ? (sessionInputStates.value.get(sid) || null) : null;
             const tabIsPlain = tabSess?.permissionProfile === 'plain';
             const isActiveTab = sid === activeId;
@@ -390,7 +390,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
                   renamingSessionId.value = sid;
                 }}
               >
-                {!tabIsCompanion && <span
+                {!tabIsCompanion && !tabIsFb && <span
                   class={`status-dot${tabExited ? ' exited' : ''}${tabIsPlain ? ' plain' : ''}${tabInputState ? ` ${tabInputState}` : ''}`}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -400,8 +400,8 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
                 >
                   {ctrlShiftHeld.value && gn !== null && <PanelTabBadge tabNum={gn} />}
                 </span>}
-                {tabIsCompanion && <span class="companion-icon">{
-                  sid.startsWith('feedback:') ? '\u{1F4AC}' :
+                {(tabIsCompanion || tabIsFb) && <span class="companion-icon">{
+                  (sid.startsWith('feedback:') || sid.startsWith('fb:')) ? '\u{1F4AC}' :
                   sid.startsWith('jsonl:') ? '\u{1F4DC}' :
                   sid.startsWith('iframe:') ? '\u{1F310}' :
                   sid.startsWith('terminal:') ? '\u{25B8}' :
@@ -441,7 +441,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
           <>
             <span
               ref={idMenuBtnRef2}
-              class="tmux-id-label"
+              class="session-id-label"
               onClick={(e) => { e.stopPropagation(); popoutIdMenuOpen.value = showIdMenu ? null : activeId; }}
             >
               pw-{activeId.slice(-6)} <span class="id-dropdown-caret">{'\u25BE'}</span>
@@ -578,12 +578,6 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
                     <PopupMenu anchorRef={companionMenuBtnRef} onClose={() => { companionMenuOpen.value = null; }} className="companion-dropdown">
                       <button class="popup-menu-item" onClick={(e: any) => { e.stopPropagation(); companionMenuOpen.value = null; copyWithTooltip(activeTermId, e); }}>
                         Copy ID: {activeTermId.slice(-8)}
-                      </button>
-                      <button class="popup-menu-item" onClick={(e: any) => { e.stopPropagation(); companionMenuOpen.value = null; copyWithTooltip(buildTmuxAttachCmd(activeTermId, termSess), e); }}>
-                        Copy tmux command
-                      </button>
-                      <button class="popup-menu-item" onClick={() => { companionMenuOpen.value = null; api.openSessionInTerminal(activeTermId).catch(() => {}); }}>
-                        Open in Terminal.app
                       </button>
                     </PopupMenu>
                   )}
@@ -824,16 +818,12 @@ export function PopoutPanel() {
       let handled = true;
       if (key === 'c') {
         copyText(menuSessionId);
-      } else if (key === 't') {
-        copyText(buildTmuxAttachCmd(menuSessionId, sMap.get(menuSessionId)));
       } else if (key === 'p') {
         popBackIn(menuSessionId);
       } else if (key === 'w') {
         window.open(`#/session/${menuSessionId}`, '_blank', 'width=900,height=600,menubar=no,toolbar=no');
       } else if (key === 'b') {
         window.open(`#/session/${menuSessionId}`, '_blank');
-      } else if (key === 'a' && !exited.has(menuSessionId)) {
-        api.openSessionInTerminal(menuSessionId);
       } else if (key === 'j') {
         const s = sMap.get(menuSessionId);
         if (s?.jsonlPath) copyText(s.jsonlPath);

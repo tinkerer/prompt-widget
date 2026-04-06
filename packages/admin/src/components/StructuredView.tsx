@@ -114,6 +114,8 @@ export function StructuredView({ sessionId, isActive, permissionProfile }: Props
 
     let reconnectDelay = 2000;
     const MAX_RECONNECT_DELAY = 30000;
+    const MAX_RECONNECT_ATTEMPTS = 5;
+    let reconnectAttempts = 0;
 
     function connect() {
       if (cleanedUp.current) return;
@@ -122,6 +124,7 @@ export function StructuredView({ sessionId, isActive, permissionProfile }: Props
 
       ws.onopen = () => {
         reconnectDelay = 2000;
+        reconnectAttempts = 0;
       };
 
       ws.onmessage = (event) => {
@@ -134,7 +137,8 @@ export function StructuredView({ sessionId, isActive, permissionProfile }: Props
           } else if (msg.type === 'output' && msg.data) {
             data = msg.data;
           } else if (msg.type === 'history' && msg.data) {
-            data = msg.data;
+            // Truncate large history to prevent expensive synchronous parsing
+            data = msg.data.length > 50_000 ? msg.data.slice(-50_000) : msg.data;
           }
 
           if (data) {
@@ -146,12 +150,25 @@ export function StructuredView({ sessionId, isActive, permissionProfile }: Props
         } catch {}
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         wsRef.current = null;
-        if (!cleanedUp.current) {
-          setTimeout(connect, reconnectDelay);
-          reconnectDelay = Math.min(reconnectDelay * 1.5, MAX_RECONNECT_DELAY);
+        if (cleanedUp.current) return;
+
+        // Stop reconnecting for terminal close codes
+        if (event.code === 4004 || event.code === 4001 || event.code === 4003) return;
+
+        // Session service unavailable — limited retries
+        if (event.code === 4010) {
+          reconnectAttempts++;
+          if (reconnectAttempts > 3) return;
+          setTimeout(connect, 5000);
+          return;
         }
+
+        reconnectAttempts++;
+        if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) return;
+        setTimeout(connect, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 1.5, MAX_RECONNECT_DELAY);
       };
     }
 

@@ -1,6 +1,6 @@
 import { OVERLAY_CSS } from './overlay-styles.js';
 
-export type PanelType = 'feedback' | 'detail' | 'sessions' | 'aggregate' | 'settings' | 'terminal';
+export type PanelType = 'feedback' | 'detail' | 'sessions' | 'files' | 'settings' | 'terminal';
 
 interface PanelConfig {
   icon: string;
@@ -14,7 +14,7 @@ const PANEL_CONFIGS: Record<PanelType, PanelConfig> = {
   feedback: { icon: '\u{1F4CB}', title: 'Feedback', path: (a) => `/app/${a}/feedback`, width: 650, height: 500 },
   detail: { icon: '\u{1F4CB}', title: 'Feedback Detail', path: (a, p) => `/app/${a}/feedback/${p}`, width: 650, height: 600 },
   sessions: { icon: '\u26A1', title: 'Sessions', path: (a) => `/app/${a}/sessions`, width: 650, height: 500 },
-  aggregate: { icon: '\u{1F4CA}', title: 'Aggregate', path: (a) => `/app/${a}/aggregate`, width: 650, height: 500 },
+  files: { icon: '\u{1F4C2}', title: 'Files', path: (a) => `/app/${a}/sessions`, width: 650, height: 500 },
   settings: { icon: '\u2699', title: 'Settings', path: () => '/settings/applications', width: 550, height: 500 },
   terminal: { icon: '\u{1F4BB}', title: 'Terminal', path: (a) => `/app/${a}/sessions`, width: 750, height: 500 },
 };

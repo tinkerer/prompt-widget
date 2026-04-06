@@ -272,7 +272,6 @@ export type MachineStatus = 'online' | 'offline';
 
 export interface MachineCapabilities {
   maxSessions?: number;
-  hasTmux?: boolean;
   hasDocker?: boolean;
   hasClaudeCli?: boolean;
 }
@@ -338,6 +337,9 @@ export interface WiggumRun {
   maxIterations: number;
   widgetSessionId: string | null;
   screenshotDelayMs: number;
+  promptFile: string | null;
+  logFile: string | null;
+  agentLabel: string | null;
   status: WiggumRunStatus;
   currentIteration: number;
   iterations: WiggumIteration[];

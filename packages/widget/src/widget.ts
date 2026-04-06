@@ -742,7 +742,7 @@ export class PromptWidgetElement {
     const items: Array<{ icon: string; label: string; type: PanelType }> = [
       { icon: '\u{1F4CB}', label: 'Feedback List', type: 'feedback' },
       { icon: '\u26A1', label: 'Sessions', type: 'sessions' },
-      { icon: '\u{1F4CA}', label: 'Aggregate', type: 'aggregate' },
+      { icon: '\u{1F4C2}', label: 'Files', type: 'files' },
       { icon: '\u{1F4BB}', label: 'Terminal', type: 'terminal' },
       { icon: '\u2699', label: 'Settings', type: 'settings' },
     ];
@@ -1802,15 +1802,18 @@ export class PromptWidgetElement {
 
   private navigateAdmin(type: PanelType) {
     const appId = this.getAdminAppId();
-    const routes: Record<PanelType, string> = {
+    if (type === 'files') {
+      window.dispatchEvent(new CustomEvent('pw-navigate-view', { detail: { viewId: `view:files:${appId}` } }));
+      return;
+    }
+    const routes: Record<string, string> = {
       feedback: `/app/${appId}/feedback`,
       detail: `/app/${appId}/feedback`,
       sessions: `/app/${appId}/sessions`,
-      aggregate: `/app/${appId}/aggregate`,
       settings: '/settings/preferences',
       terminal: `/app/${appId}/sessions`,
     };
-    window.location.hash = routes[type];
+    window.location.hash = routes[type] || `/app/${appId}/sessions`;
   }
 
   private bindShortcut() {

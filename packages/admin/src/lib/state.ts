@@ -2,6 +2,7 @@ import { signal, computed, effect } from '@preact/signals';
 import { api } from './api.js';
 import { timed, bindRouteSignal } from './perf.js';
 import { isolatedComponent } from './isolate.js';
+import { openPageView, openSettingsPanel } from './companion-state.js';
 
 // Embed mode detection
 const params = new URLSearchParams(window.location.search);
@@ -99,11 +100,28 @@ export function clearToken() {
   isAuthenticated.value = false;
 }
 
+function routeToViewId(route: string): string | null {
+  if (route.startsWith('/settings/')) {
+    return null;
+  }
+  const m = route.match(/^\/app\/[^/]+\/([^/]+)/);
+  if (!m) return null;
+  const map: Record<string, string> = {
+    feedback: 'view:feedback',
+    sessions: 'view:sessions-page',
+    live: 'view:live',
+    settings: 'view:app-settings',
+  };
+  return map[m[1]] || null;
+}
+
 export function navigate(path: string) {
   window.location.hash = path;
   currentRoute.value = path;
   const appId = extractAppIdFromRoute(path);
   if (appId) selectedAppId.value = appId;
+  const viewId = routeToViewId(path);
+  if (viewId) openPageView(viewId);
 }
 
 window.addEventListener('hashchange', () => {
@@ -111,7 +129,13 @@ window.addEventListener('hashchange', () => {
   currentRoute.value = route;
   const appId = extractAppIdFromRoute(route);
   if (appId) selectedAppId.value = appId;
+  const viewId = routeToViewId(route);
+  if (viewId) openPageView(viewId);
 });
+
+window.addEventListener('pw-navigate-view', ((e: CustomEvent) => {
+  if (e.detail?.viewId) openPageView(e.detail.viewId);
+}) as EventListener);
 
 // Embed postMessage bridge
 if (isEmbedded.value) {

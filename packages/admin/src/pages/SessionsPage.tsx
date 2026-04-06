@@ -1,4 +1,4 @@
-import { signal } from '@preact/signals';
+import { useSignal } from '@preact/signals';
 import { useEffect, useRef } from 'preact/hooks';
 import { api } from '../lib/api.js';
 import { isEmbedded } from '../lib/state.js';
@@ -8,45 +8,6 @@ import { cachedTargets, ensureTargetsLoaded } from '../components/DispatchTarget
 
 const ALL_STATUSES = ['running', 'pending', 'completed', 'failed', 'killed', 'deleted'] as const;
 const DEFAULT_STATUSES = new Set<string>(['running', 'pending', 'completed', 'failed', 'killed']);
-const filterStatuses = signal<Set<string>>(new Set(DEFAULT_STATUSES));
-const filterTargets = signal<Set<string>>(new Set<string>());
-const searchQuery = signal('');
-const feedbackMap = signal<Record<string, string>>({});
-const agentMap = signal<Record<string, string>>({});
-const agentAppMap = signal<Record<string, string | null>>({});
-const metaWiggumAgentIds = signal<Set<string>>(new Set());
-const mapsLoaded = signal(false);
-
-async function loadMaps() {
-  if (mapsLoaded.value) return;
-  try {
-    const [fbResult, agents] = await Promise.all([
-      api.getFeedback({ limit: 200 }),
-      api.getAgents(),
-    ]);
-    const fm: Record<string, string> = {};
-    for (const fb of fbResult.items) {
-      fm[fb.id] = fb.title || fb.id.slice(-8);
-    }
-    feedbackMap.value = fm;
-    const am: Record<string, string> = {};
-    const aam: Record<string, string | null> = {};
-    const mwIds = new Set<string>();
-    for (const a of agents) {
-      am[a.id] = a.name || a.id.slice(-8);
-      aam[a.id] = a.appId || null;
-      if (a.promptTemplate && a.promptTemplate.includes('meta-wiggum orchestrator')) {
-        mwIds.add(a.id);
-      }
-    }
-    agentMap.value = am;
-    agentAppMap.value = aam;
-    metaWiggumAgentIds.value = mwIds;
-    mapsLoaded.value = true;
-  } catch {
-    // ignore
-  }
-}
 
 function formatRelativeTime(dateStr: string | null): string {
   if (!dateStr) return '—';
@@ -85,18 +46,6 @@ async function permanentlyDeleteAll(ids: string[]) {
   }
 }
 
-function toggleStatus(status: string) {
-  const next = new Set(filterStatuses.value);
-  if (next.has(status)) next.delete(status); else next.add(status);
-  filterStatuses.value = next;
-}
-
-function toggleTarget(targetKey: string) {
-  const next = new Set(filterTargets.value);
-  if (next.has(targetKey)) next.delete(targetKey); else next.add(targetKey);
-  filterTargets.value = next;
-}
-
 function getSessionTargetKey(s: any): string {
   if (s.harnessName) return `harness:${s.harnessName}`;
   if (s.spriteConfigId) return `sprite:${s.machineName || s.launcherName || 'sprite'}`;
@@ -107,8 +56,8 @@ function getSessionTargetKey(s: any): string {
 
 function getTargetLabel(key: string): string {
   if (key === 'local') return 'Local';
-  const [type, name] = key.split(':', 2);
-  return name || type;
+  const [, name] = key.split(':', 2);
+  return name || key.split(':')[0];
 }
 
 function getTargetCategory(key: string): string {
@@ -122,6 +71,57 @@ function getTargetCategory(key: string): string {
 
 export function SessionsPage({ appId }: { appId?: string | null }) {
   const autoTerminalDone = useRef(false);
+  const filterStatuses = useSignal<Set<string>>(new Set(DEFAULT_STATUSES));
+  const filterTargets = useSignal<Set<string>>(new Set<string>());
+  const searchQuery = useSignal('');
+  const feedbackMap = useSignal<Record<string, string>>({});
+  const agentMap = useSignal<Record<string, string>>({});
+  const agentAppMap = useSignal<Record<string, string | null>>({});
+  const metaWiggumAgentIds = useSignal<Set<string>>(new Set());
+  const mapsLoaded = useSignal(false);
+
+  async function loadMaps() {
+    if (mapsLoaded.value) return;
+    try {
+      const [fbResult, agents] = await Promise.all([
+        api.getFeedback({ limit: 200 }),
+        api.getAgents(),
+      ]);
+      const fm: Record<string, string> = {};
+      for (const fb of fbResult.items) {
+        fm[fb.id] = fb.title || fb.id.slice(-8);
+      }
+      feedbackMap.value = fm;
+      const am: Record<string, string> = {};
+      const aam: Record<string, string | null> = {};
+      const mwIds = new Set<string>();
+      for (const a of agents) {
+        am[a.id] = a.name || a.id.slice(-8);
+        aam[a.id] = a.appId || null;
+        if (a.promptTemplate && a.promptTemplate.includes('meta-wiggum orchestrator')) {
+          mwIds.add(a.id);
+        }
+      }
+      agentMap.value = am;
+      agentAppMap.value = aam;
+      metaWiggumAgentIds.value = mwIds;
+      mapsLoaded.value = true;
+    } catch {
+      // ignore
+    }
+  }
+
+  function toggleStatus(status: string) {
+    const next = new Set(filterStatuses.value);
+    if (next.has(status)) next.delete(status); else next.add(status);
+    filterStatuses.value = next;
+  }
+
+  function toggleTarget(targetKey: string) {
+    const next = new Set(filterTargets.value);
+    if (next.has(targetKey)) next.delete(targetKey); else next.add(targetKey);
+    filterTargets.value = next;
+  }
 
   useEffect(() => {
     loadMaps();
@@ -164,13 +164,11 @@ export function SessionsPage({ appId }: { appId?: string | null }) {
   const activeStatuses = filterStatuses.value;
   let filtered = appFiltered.filter((s) => activeStatuses.has(s.status));
 
-  // Target filter
   const activeTargets = filterTargets.value;
   if (activeTargets.size > 0) {
     filtered = filtered.filter((s) => activeTargets.has(getSessionTargetKey(s)));
   }
 
-  // Search filter
   const q = searchQuery.value.toLowerCase();
   if (q) {
     filtered = filtered.filter((s) => {
@@ -200,13 +198,11 @@ export function SessionsPage({ appId }: { appId?: string | null }) {
     return acc;
   }, {});
 
-  // Build target options from sessions + dispatch targets
   const targetCounts: Record<string, number> = {};
   for (const s of appFiltered) {
     const key = getSessionTargetKey(s);
     targetCounts[key] = (targetCounts[key] || 0) + 1;
   }
-  // Also include dispatch targets that may have no sessions yet
   const targets = cachedTargets.value;
   for (const t of targets) {
     let key: string;

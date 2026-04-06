@@ -12,11 +12,9 @@ import {
   togglePanelCompanion,
   companionTabId,
   toggleAlwaysOnTop,
-  buildTmuxAttachCmd,
   openUrlCompanion,
   termPickerOpen,
 } from '../lib/sessions.js';
-import { api } from '../lib/api.js';
 
 export function PanelTabBadge({ tabNum }: { tabNum: number }) {
   const pending = pendingFirstDigit.value;
@@ -103,9 +101,6 @@ export function IdDropdownMenu({ activeId, panel, session, isExited, anchorRef, 
       <button class="popup-menu-item" onClick={(e) => { e.stopPropagation(); onClose(); copyWithTooltip(activeId, e as any); }}>
         Copy {activeId} <kbd>C</kbd>
       </button>
-      <button class="popup-menu-item" onClick={(e) => { e.stopPropagation(); onClose(); copyWithTooltip(buildTmuxAttachCmd(activeId, session), e as any); }}>
-        Copy tmux command <kbd>T</kbd>
-      </button>
       {session?.jsonlPath && (
         <button class="popup-menu-item" onClick={(e) => { e.stopPropagation(); onClose(); copyWithTooltip(session.jsonlPath, e as any); }}>
           Copy JSONL path <kbd>J</kbd>
@@ -168,9 +163,6 @@ export function IdDropdownMenu({ activeId, panel, session, isExited, anchorRef, 
       <button class="popup-menu-item" onClick={() => { onClose(); popBackIn(activeId); }}>Pop back to tab bar <kbd>P</kbd></button>
       <button class="popup-menu-item" onClick={() => { onClose(); window.open(`#/session/${activeId}`, '_blank', 'width=900,height=600,menubar=no,toolbar=no'); }}>Open in window <kbd>W</kbd></button>
       <button class="popup-menu-item" onClick={() => { onClose(); window.open(`#/session/${activeId}`, '_blank'); }}>Open in browser tab <kbd>B</kbd></button>
-      {!isExited && (
-        <button class="popup-menu-item" onClick={() => { onClose(); api.openSessionInTerminal(activeId).catch(() => {}); }}>Open in Terminal.app <kbd>A</kbd></button>
-      )}
     </PopupMenu>
   );
 }

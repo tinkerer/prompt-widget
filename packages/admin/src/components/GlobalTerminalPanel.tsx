@@ -64,7 +64,6 @@ import {
   getJsonlSelectedFile,
   setJsonlSelectedFile,
   type JsonlFileInfo,
-  buildTmuxAttachCmd,
   openFeedbackItem,
 } from '../lib/sessions.js';
 import { renderTabContent } from './PaneContent.js';
@@ -73,7 +72,6 @@ import { startTabDrag, type TabDragSource } from '../lib/tab-drag.js';
 import { selectedAppId } from '../lib/state.js';
 import { showTabs, showHotkeyHints, popoutMode, type PopoutMode } from '../lib/settings.js';
 import { ctrlShiftHeld } from '../lib/shortcuts.js';
-import { api } from '../lib/api.js';
 import { copyText, copyWithTooltip } from '../lib/clipboard.js';
 import { TerminalPicker } from './TerminalPicker.js';
 
@@ -130,7 +128,7 @@ function JsonlFileDropdown({ sessionId, sess }: { sessionId: string; sess: any }
   return (
     <div class="id-dropdown-wrapper jsonl-file-dropdown">
       <span
-        class="tmux-id-label"
+        class="session-id-label"
         onClick={() => {
           jsonlDropdownOpen.value = isOpen ? null : sessionId;
         }}
@@ -220,7 +218,7 @@ function PaneHeader({
               return (
                 <div class="id-dropdown-wrapper">
                   <span
-                    class="tmux-id-label"
+                    class="session-id-label"
                     style="cursor:pointer"
                     onClick={() => { companionIdMenuOpen.value = showMenu ? null : sessionId!; }}
                   >
@@ -231,12 +229,6 @@ function PaneHeader({
                     <div class="id-dropdown-menu" onClick={() => { companionIdMenuOpen.value = null; }}>
                       <button onClick={(e: any) => { e.stopPropagation(); companionIdMenuOpen.value = null; copyWithTooltip(termSid, e); }}>
                         Copy ID: {termSid.slice(-8)}
-                      </button>
-                      <button onClick={(e: any) => { e.stopPropagation(); companionIdMenuOpen.value = null; copyWithTooltip(buildTmuxAttachCmd(termSid, termSess), e); }}>
-                        Copy tmux command
-                      </button>
-                      <button onClick={() => { companionIdMenuOpen.value = null; api.openSessionInTerminal(termSid).catch(() => {}); }}>
-                        Open in Terminal.app
                       </button>
                     </div>
                   )}
@@ -254,7 +246,7 @@ function PaneHeader({
               return (
                 <div class="id-dropdown-wrapper">
                   <span
-                    class="tmux-id-label"
+                    class="session-id-label"
                     style="cursor:pointer"
                     onClick={() => { companionIdMenuOpen.value = showMenu ? null : sessionId!; }}
                   >
@@ -265,12 +257,6 @@ function PaneHeader({
                     <div class="id-dropdown-menu" onClick={() => { companionIdMenuOpen.value = null; }}>
                       <button onClick={(e: any) => { e.stopPropagation(); companionIdMenuOpen.value = null; copyWithTooltip(realSessionId!, e); }}>
                         Copy ID: {realSessionId!.slice(-8)}
-                      </button>
-                      <button onClick={(e: any) => { e.stopPropagation(); companionIdMenuOpen.value = null; copyWithTooltip(buildTmuxAttachCmd(realSessionId!, sess), e); }}>
-                        Copy tmux command
-                      </button>
-                      <button onClick={() => { companionIdMenuOpen.value = null; api.openSessionInTerminal(realSessionId!).catch(() => {}); }}>
-                        Open in Terminal.app
                       </button>
                     </div>
                   )}
@@ -287,7 +273,7 @@ function PaneHeader({
         <>
           <div class="id-dropdown-wrapper">
             <span
-              class="tmux-id-label"
+              class="session-id-label"
               onClick={() => { idMenuOpen.value = idMenuOpen.value === sessionId ? null : sessionId; }}
             >
               pw-{sessionId.slice(-6)} <span class="id-dropdown-caret">{'\u25BE'}</span>
@@ -299,9 +285,6 @@ function PaneHeader({
                   <div class="id-submenu">
                     <button onClick={(e) => { idMenuOpen.value = null; copyWithTooltip(sessionId, e as any); }}>
                       Session ID <kbd>C</kbd>
-                    </button>
-                    <button onClick={(e) => { idMenuOpen.value = null; copyWithTooltip(buildTmuxAttachCmd(sessionId, sessionMap.get(sessionId)), e as any); }}>
-                      Tmux command <kbd>T</kbd>
                     </button>
                     {sess?.jsonlPath && (
                       <button onClick={(e) => { idMenuOpen.value = null; copyWithTooltip(sess.jsonlPath, e as any); }}>
@@ -385,9 +368,6 @@ function PaneHeader({
                     <button onClick={() => { idMenuOpen.value = null; executePopout(sessionId, 'panel'); }}>Panel <kbd>P</kbd></button>
                     <button onClick={() => { idMenuOpen.value = null; executePopout(sessionId, 'window'); }}>Window <kbd>W</kbd></button>
                     <button onClick={() => { idMenuOpen.value = null; executePopout(sessionId, 'tab'); }}>Browser Tab <kbd>B</kbd></button>
-                    {!isExited && (
-                      <button onClick={() => { idMenuOpen.value = null; executePopout(sessionId, 'terminal'); }}>Terminal.app <kbd>A</kbd></button>
-                    )}
                     {canSplit && (
                       <button onClick={() => { idMenuOpen.value = null; enableSplit(); }}>{'\u2AFF'} Split Panes <kbd>S</kbd></button>
                     )}
@@ -461,9 +441,6 @@ function executePopout(sessionId: string, mode: PopoutMode) {
     case 'tab':
       window.open(`#/session/${sessionId}`, '_blank');
       break;
-    case 'terminal':
-      api.openSessionInTerminal(sessionId);
-      break;
   }
 }
 
@@ -508,6 +485,7 @@ function PaneTabBar({
       {tabs.map((sid) => {
         const isJsonl = sid.startsWith('jsonl:');
         const isFeedback = sid.startsWith('feedback:');
+        const isFb = sid.startsWith('fb:');
         const isIframe = sid.startsWith('iframe:');
         const isTerminal = sid.startsWith('terminal:');
         const isIsolate = sid.startsWith('isolate:');
@@ -569,7 +547,7 @@ function PaneTabBar({
               renamingSessionId.value = sid;
             }}
           >
-            {!isCompanion && <span
+            {!isCompanion && !isFb && <span
               class={`status-dot ${isExited ? 'exited' : ''}${isPlain ? ' plain' : ''}${inputState ? ` ${inputState}` : ''}`}
               onClick={(e) => {
                 e.stopPropagation();
@@ -581,6 +559,15 @@ function PaneTabBar({
                 <TabBadge tabNum={tabNum} />
               )}
             </span>}
+            {(isCompanion || isFb) && <span class="companion-icon">{
+              (isFeedback || isFb) ? '\u{1F4AC}' :
+              isJsonl ? '\u{1F4DC}' :
+              isIframe ? '\u{1F310}' :
+              isTerminal ? '\u{25B8}' :
+              isUrl ? '\u{1F517}' :
+              isIsolate ? '\u2699' :
+              '\u25C6'
+            }</span>}
             {renamingSessionId.value === sid ? (
               <input
                 type="text"
@@ -686,16 +673,12 @@ export function GlobalTerminalPanel() {
       let handled = true;
       if (key === 'c') {
         copyText(menuSessionId);
-      } else if (key === 't') {
-        copyText(buildTmuxAttachCmd(menuSessionId, sessionMap.get(menuSessionId)));
       } else if (key === 'p') {
         executePopout(menuSessionId, 'panel');
       } else if (key === 'w') {
         executePopout(menuSessionId, 'window');
       } else if (key === 'b') {
         executePopout(menuSessionId, 'tab');
-      } else if (key === 'a' && !exited.has(menuSessionId)) {
-        executePopout(menuSessionId, 'terminal');
       } else if (key === 'j') {
         const s = sessionMap.get(menuSessionId);
         if (s?.jsonlPath) copyText(s.jsonlPath);

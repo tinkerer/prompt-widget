@@ -49,7 +49,6 @@ import {
   getJsonlSelectedFile,
   setJsonlSelectedFile,
   type JsonlFileInfo,
-  buildTmuxAttachCmd,
   hotkeyMenuOpen,
   getWorktreeLabel,
   activePanelId,
@@ -64,7 +63,6 @@ import { startTabDrag, dragOverLeafZone } from '../lib/tab-drag.js';
 import { ctrlShiftHeld } from '../lib/shortcuts.js';
 import { showHotkeyHints, popoutMode, type PopoutMode } from '../lib/settings.js';
 import { selectedAppId, applications, appFeedbackCounts } from '../lib/state.js';
-import { api } from '../lib/api.js';
 import { copyWithTooltip } from '../lib/clipboard.js';
 import { useState } from 'preact/hooks';
 
@@ -87,9 +85,6 @@ function executePopout(sessionId: string, mode: PopoutMode) {
       break;
     case 'tab':
       window.open(`#/session/${sessionId}`, '_blank');
-      break;
-    case 'terminal':
-      api.openSessionInTerminal(sessionId);
       break;
   }
 }
@@ -144,7 +139,7 @@ function JsonlFileDropdown({ sessionId, sess }: { sessionId: string; sess: any }
     <div class="id-dropdown-wrapper jsonl-file-dropdown">
       <span
         ref={triggerRef}
-        class="tmux-id-label"
+        class="session-id-label"
         onClick={() => { jsonlDropdownOpen.value = isOpen ? null : sessionId; }}
         title={claudeUuid ? `Claude Session: ${claudeUuid}` : undefined}
       >
@@ -227,7 +222,7 @@ function PaneHeader({
               return (
                 <div class="id-dropdown-wrapper">
                   <span
-                    class="tmux-id-label"
+                    class="session-id-label"
                     style="cursor:pointer"
                     onClick={() => { companionIdMenuOpen.value = showMenu ? null : sessionId!; }}
                   >
@@ -238,12 +233,6 @@ function PaneHeader({
                     <div class="id-dropdown-menu" onClick={() => { companionIdMenuOpen.value = null; }}>
                       <button onClick={(e: any) => { e.stopPropagation(); companionIdMenuOpen.value = null; copyWithTooltip(termSid, e); }}>
                         Copy ID: {termSid.slice(-8)}
-                      </button>
-                      <button onClick={(e: any) => { e.stopPropagation(); companionIdMenuOpen.value = null; copyWithTooltip(buildTmuxAttachCmd(termSid, termSess), e); }}>
-                        Copy tmux command
-                      </button>
-                      <button onClick={() => { companionIdMenuOpen.value = null; api.openSessionInTerminal(termSid).catch(() => {}); }}>
-                        Open in Terminal.app
                       </button>
                     </div>
                   )}
@@ -261,7 +250,7 @@ function PaneHeader({
               return (
                 <div class="id-dropdown-wrapper">
                   <span
-                    class="tmux-id-label"
+                    class="session-id-label"
                     style="cursor:pointer"
                     onClick={() => { companionIdMenuOpen.value = showMenu ? null : sessionId!; }}
                   >
@@ -272,12 +261,6 @@ function PaneHeader({
                     <div class="id-dropdown-menu" onClick={() => { companionIdMenuOpen.value = null; }}>
                       <button onClick={(e: any) => { e.stopPropagation(); companionIdMenuOpen.value = null; copyWithTooltip(realSessionId!, e); }}>
                         Copy ID: {realSessionId!.slice(-8)}
-                      </button>
-                      <button onClick={(e: any) => { e.stopPropagation(); companionIdMenuOpen.value = null; copyWithTooltip(buildTmuxAttachCmd(realSessionId!, sess), e); }}>
-                        Copy tmux command
-                      </button>
-                      <button onClick={() => { companionIdMenuOpen.value = null; api.openSessionInTerminal(realSessionId!).catch(() => {}); }}>
-                        Open in Terminal.app
                       </button>
                     </div>
                   )}
@@ -295,7 +278,7 @@ function PaneHeader({
           <div class="id-dropdown-wrapper">
             <span
               ref={idMenuTriggerRef}
-              class="tmux-id-label"
+              class="session-id-label"
               onClick={() => { idMenuOpen.value = idMenuOpen.value === sessionId ? null : sessionId; }}
             >
               pw-{sessionId.slice(-6)} <span class="id-dropdown-caret">{'\u25BE'}</span>
@@ -307,9 +290,6 @@ function PaneHeader({
                   <div class="id-submenu">
                     <button class="popup-menu-item" onClick={(e) => { idMenuOpen.value = null; copyWithTooltip(sessionId, e as any); }}>
                       Session ID <kbd>C</kbd>
-                    </button>
-                    <button class="popup-menu-item" onClick={(e) => { idMenuOpen.value = null; copyWithTooltip(buildTmuxAttachCmd(sessionId, sessionMap.get(sessionId)), e as any); }}>
-                      Tmux command <kbd>T</kbd>
                     </button>
                     {sess?.jsonlPath && (
                       <button class="popup-menu-item" onClick={(e) => { idMenuOpen.value = null; copyWithTooltip(sess.jsonlPath, e as any); }}>
@@ -402,9 +382,6 @@ function PaneHeader({
                     <button class="popup-menu-item" onClick={() => { idMenuOpen.value = null; executePopout(sessionId, 'panel'); }}>Panel <kbd>P</kbd></button>
                     <button class="popup-menu-item" onClick={() => { idMenuOpen.value = null; executePopout(sessionId, 'window'); }}>Window <kbd>W</kbd></button>
                     <button class="popup-menu-item" onClick={() => { idMenuOpen.value = null; executePopout(sessionId, 'tab'); }}>Browser Tab <kbd>B</kbd></button>
-                    {!isExited && (
-                      <button class="popup-menu-item" onClick={() => { idMenuOpen.value = null; executePopout(sessionId, 'terminal'); }}>Terminal.app <kbd>A</kbd></button>
-                    )}
                   </div>
                 </div>
               </PopupMenu>
@@ -754,16 +731,12 @@ export function LeafPane({ leaf }: LeafPaneProps) {
       const sess = sessionMap.get(menuSessionId);
       if (key === 'c') {
         navigator.clipboard.writeText(menuSessionId);
-      } else if (key === 't') {
-        navigator.clipboard.writeText(buildTmuxAttachCmd(menuSessionId, sess));
       } else if (key === 'p') {
         executePopout(menuSessionId, 'panel');
       } else if (key === 'w') {
         executePopout(menuSessionId, 'window');
       } else if (key === 'b') {
         executePopout(menuSessionId, 'tab');
-      } else if (key === 'a' && !exited.has(menuSessionId)) {
-        executePopout(menuSessionId, 'terminal');
       } else if (key === 'j') {
         if (sess?.jsonlPath) navigator.clipboard.writeText(sess.jsonlPath);
       } else if (key === 'd') {
@@ -944,6 +917,7 @@ export function LeafPane({ leaf }: LeafPaneProps) {
             const isView = sid.startsWith('view:');
             const isJsonl = sid.startsWith('jsonl:');
             const isFeedback = sid.startsWith('feedback:');
+            const isFb = sid.startsWith('fb:');
             const isIframe = sid.startsWith('iframe:');
             const isTerminal = sid.startsWith('terminal:');
             const isIsolate = sid.startsWith('isolate:');
@@ -1001,7 +975,7 @@ export function LeafPane({ leaf }: LeafPaneProps) {
                   renamingSessionId.value = sid;
                 }}
               >
-                {!isCompanion && <span
+                {!isCompanion && !isFb && <span
                   class={`status-dot ${isExited ? 'exited' : ''}${isPlain ? ' plain' : ''}${inputState ? ` ${inputState}` : ''}`}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -1013,8 +987,8 @@ export function LeafPane({ leaf }: LeafPaneProps) {
                     <TabBadge tabNum={tabNum} />
                   )}
                 </span>}
-                {isCompanion && !isView && <span class="companion-icon">{
-                  isFeedback ? '\u{1F4AC}' :
+                {(isCompanion || isFb) && !isView && <span class="companion-icon">{
+                  (isFeedback || isFb) ? '\u{1F4AC}' :
                   isJsonl ? '\u{1F4DC}' :
                   isIframe ? '\u{1F310}' :
                   isTerminal ? '\u{25B8}' :

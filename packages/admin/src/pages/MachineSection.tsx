@@ -227,7 +227,6 @@ export function MachineCard({ m }: { m: any }) {
           {m.hostname && <span class="agent-meta-tag">{m.hostname}</span>}
           {m.address && <span class="agent-meta-tag">{m.address}</span>}
           {m.capabilities?.hasDocker && <span class="agent-meta-tag">Docker</span>}
-          {m.capabilities?.hasTmux && <span class="agent-meta-tag">tmux</span>}
           {m.capabilities?.hasClaudeCli && <span class="agent-meta-tag">Claude CLI</span>}
         </div>
         {m.adminUrl && (() => {

@@ -17,6 +17,7 @@ import { TerminalPicker } from './TerminalPicker.js';
 import { ControlBar } from './ControlBar.js';
 import { registerShortcut, ctrlShiftHeld } from '../lib/shortcuts.js';
 import { toggleTheme, arrowTabSwitching, showHotkeyHints } from '../lib/settings.js';
+import { openPageView } from '../lib/companion-state.js';
 import {
   openTabs,
   activeTabId,
@@ -145,13 +146,16 @@ export function Layout() {
     const cleanups = [
       registerShortcut({
         key: '?',
-        modifiers: { shift: true },
+        code: 'Slash',
+        modifiers: { ctrl: true, shift: true },
         label: 'Show keyboard shortcuts',
         category: 'General',
         action: () => setShowShortcutHelp(true),
       }),
       registerShortcut({
-        key: 't',
+        key: 'T',
+        code: 'KeyT',
+        modifiers: { ctrl: true, shift: true },
         label: 'Toggle theme',
         category: 'General',
         action: toggleTheme,
@@ -183,17 +187,6 @@ export function Layout() {
         label: 'Toggle sidebar',
         category: 'Panels',
         action: toggleSidebar,
-      }),
-      registerShortcut({
-        key: '`',
-        label: 'Toggle terminal panel',
-        category: 'Panels',
-        action: () => {
-          if (openTabs.value.length > 0) {
-            panelMinimized.value = !panelMinimized.value;
-            persistPanelState();
-          }
-        },
       }),
       registerShortcut({
         key: '~',
@@ -228,11 +221,11 @@ export function Layout() {
       registerShortcut({
         sequence: 'g g',
         key: 'g',
-        label: 'Go to Aggregate',
+        label: 'Go to Files',
         category: 'Navigation',
         action: () => {
           const appId = selectedAppId.value || applications.value[0]?.id;
-          if (appId) navigate(`/app/${appId}/aggregate`);
+          if (appId) openPageView(`view:files:${appId}`);
         },
       }),
       registerShortcut({
@@ -557,7 +550,7 @@ export function Layout() {
     return () => window.removeEventListener('message', onMessage);
   }, []);
 
-  const appSubTabs = ['feedback', 'aggregate', 'sessions', 'live', 'settings'];
+  const appSubTabs = ['feedback', 'sessions', 'live', 'settings'];
   const settingsTabs = ['/settings/agents', '/settings/infrastructure', '/settings/user-guide', '/settings/getting-started', '/settings/preferences'];
 
   function cycleNav(dir: number) {
@@ -694,10 +687,6 @@ export function Layout() {
               sidebarItemMenu.value = null;
               window.open(`${location.pathname}#/session/${menuSid}`, '_blank');
             }}>Open in tab</button>
-            <button onClick={() => {
-              sidebarItemMenu.value = null;
-              api.openSessionInTerminal(menuSid).catch((err: any) => console.error('Open in terminal failed:', err.message));
-            }}>Open in Terminal.app</button>
             <button onClick={() => {
               sidebarItemMenu.value = null;
               const leaf = findLeafWithTab(menuSid);

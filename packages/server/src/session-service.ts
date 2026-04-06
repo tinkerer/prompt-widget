@@ -2,24 +2,12 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Server } from 'node:http';
-import { execFileSync } from 'node:child_process';
 import * as pty from 'node-pty';
-import { eq, inArray, desc } from 'drizzle-orm';
+import { eq, desc } from 'drizzle-orm';
 import { db, schema } from './db/index.js';
 import type { PermissionProfile, SequencedOutput, SessionOutputData } from '@prompt-widget/shared';
 import { MessageBuffer } from './message-buffer.js';
-import {
-  isTmuxAvailable,
-  spawnInTmux,
-  reattachTmux,
-  tmuxSessionExists,
-  killTmuxSession,
-  captureTmuxPane,
-  listPwTmuxSessions,
-  detachTmuxClients,
-  attachDefaultTmuxSession,
-  safeDir,
-} from './tmux-pty.js';
+import { safeDir } from './tmux-pty.js';
 
 const PORT = parseInt(process.env.SESSION_SERVICE_PORT || '3002', 10);
 
@@ -92,42 +80,6 @@ function classifyFromTitle(title: string, visibleText: string): InputState {
   return 'idle';
 }
 
-// Lightweight poll: update pane metadata (title/command/path) for display,
-// and provide fallback state detection for recovered sessions that haven't
-// sent new data through onData yet.
-function pollTmuxPaneInfo(): void {
-  try {
-    const out = execFileSync('tmux', ['-L', 'prompt-widget', 'list-panes', '-a', '-F', '#{session_name}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}'], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
-    for (const line of out.trim().split('\n')) {
-      const parts = line.split('\t');
-      if (parts.length < 4) continue;
-      const [name, command, path, ...titleParts] = parts;
-      const title = titleParts.join('\t');
-      if (!name.startsWith('pw-')) continue;
-      const sessionId = name.slice(3);
-      const proc = activeSessions.get(sessionId);
-      if (!proc || proc.status !== 'running') continue;
-
-      proc.paneTitle = title;
-      proc.paneCommand = command;
-      proc.panePath = path;
-
-      // For plain terminals or sessions that already get onData detection, skip
-      if (proc.permissionProfile === 'plain') continue;
-
-      // Capture only the visible pane area (not full scrollback) so old,
-      // already-accepted permission prompts don't cause false "waiting" state.
-      let visibleText = '';
-      try {
-        visibleText = execFileSync('tmux', ['-L', 'prompt-widget', 'capture-pane', '-t', `pw-${sessionId}`, '-p'],
-          { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
-      } catch {}
-      const newState = classifyFromTitle(title, visibleText);
-      applyInputState(proc, newState);
-    }
-  } catch {}
-}
-
 type InputState = 'active' | 'idle' | 'waiting';
 
 interface AgentProcess {
@@ -142,9 +94,6 @@ interface AgentProcess {
   status: 'running' | 'completed' | 'failed' | 'killed';
   flushTimer: ReturnType<typeof setInterval>;
   inputState: InputState;
-  paneTitle: string;
-  paneCommand: string;
-  panePath: string;
   hasStarted: boolean;
   /** Timer for debouncing transitions away from 'waiting' state */
   waitingDebounce: ReturnType<typeof setTimeout> | null;
@@ -337,62 +286,31 @@ function spawnSession(params: {
   allowedTools?: string | null;
   claudeSessionId?: string;
   resumeSessionId?: string;
-  tmuxTarget?: string;
 }): void {
-  const { sessionId, prompt = '', cwd, permissionProfile, allowedTools, claudeSessionId, resumeSessionId, tmuxTarget } = params;
+  const { sessionId, prompt = '', cwd, permissionProfile, allowedTools, claudeSessionId, resumeSessionId } = params;
 
   if (activeSessions.has(sessionId)) {
     throw new Error(`Session ${sessionId} is already running`);
   }
 
-  const useTmux = isTmuxAvailable();
-  let ptyProcess: pty.IPty;
-  let tmuxSessionName: string | null = null;
+  const { command, args } = buildClaudeArgs(
+    prompt,
+    permissionProfile,
+    allowedTools,
+    claudeSessionId,
+    resumeSessionId,
+  );
 
-  if (tmuxTarget) {
-    // Attach to an existing tmux session from the default server
-    console.log(`[session-service] Attaching session ${sessionId} to tmux target: ${tmuxTarget}`);
-    const result = attachDefaultTmuxSession({
-      sessionId,
-      tmuxTarget,
-      cols: 120,
-      rows: 40,
-    });
-    ptyProcess = result.ptyProcess;
-    tmuxSessionName = result.tmuxSessionName;
-  } else {
-    const { command, args } = buildClaudeArgs(
-      prompt,
-      permissionProfile,
-      allowedTools,
-      claudeSessionId,
-      resumeSessionId,
-    );
+  console.log(`[session-service] Spawning session ${sessionId}: profile=${permissionProfile}, cwd=${cwd}`);
 
-    console.log(`[session-service] Spawning session ${sessionId}: profile=${permissionProfile}, cwd=${cwd}, tmux=${useTmux}`);
-
-    if (useTmux) {
-      const result = spawnInTmux({
-        sessionId,
-        command,
-        args,
-        cwd,
-        cols: 120,
-        rows: 40,
-      });
-      ptyProcess = result.ptyProcess;
-      tmuxSessionName = result.tmuxSessionName;
-    } else {
-      const { CLAUDECODE, ...cleanedEnv } = process.env as Record<string, string>;
-      ptyProcess = pty.spawn(command, args, {
-        name: 'xterm-256color',
-        cols: 120,
-        rows: 40,
-        cwd: safeDir(cwd),
-        env: { ...cleanedEnv, TERM: 'xterm-256color' },
-      });
-    }
-  }
+  const { CLAUDECODE, ...cleanedEnv } = process.env as Record<string, string>;
+  const ptyProcess = pty.spawn(command, args, {
+    name: 'xterm-256color',
+    cols: 120,
+    rows: 40,
+    cwd: safeDir(cwd),
+    env: { ...cleanedEnv, TERM: 'xterm-256color' },
+  });
 
   const proc: AgentProcess = {
     sessionId,
@@ -406,9 +324,6 @@ function spawnSession(params: {
     status: 'running',
     flushTimer: setInterval(() => flushOutput(sessionId), FLUSH_INTERVAL),
     inputState: 'active' as InputState,
-    paneTitle: '',
-    paneCommand: '',
-    panePath: '',
     hasStarted: false,
     waitingDebounce: null,
     lastStateBroadcast: 0,
@@ -434,7 +349,6 @@ function spawnSession(params: {
       status: 'running',
       pid: ptyProcess.pid,
       startedAt: now,
-      ...(tmuxSessionName ? { tmuxSessionName } : {}),
     })
     .where(eq(schema.agentSessions.id, sessionId))
     .run();
@@ -539,7 +453,6 @@ function killSessionProcess(sessionId: string): boolean {
 
   proc.status = 'killed';
   proc.ptyProcess.kill();
-  killTmuxSession(sessionId);
   clearInterval(proc.flushTimer);
   sendSequenced(proc, { kind: 'exit', exitCode: -1, status: 'killed' });
 
@@ -581,50 +494,8 @@ function writeToSession(sessionId: string, data: string): void {
   }
 }
 
-function tryRecoverSession(session: typeof schema.agentSessions.$inferSelect): boolean {
-  if (!isTmuxAvailable() || !tmuxSessionExists(session.id)) return false;
-
-  try {
-    console.log(`[session-service] Late-recovering tmux session: ${session.id}`);
-    const captured = captureTmuxPane(session.id);
-    const ptyProcess = reattachTmux({ sessionId: session.id, cols: 120, rows: 40 });
-
-    const proc: AgentProcess = {
-      sessionId: session.id,
-      permissionProfile: (session.permissionProfile || 'interactive') as PermissionProfile,
-      ptyProcess,
-      outputBuffer: captured || session.outputLog || '',
-      totalBytes: session.outputBytes || 0,
-      outputSeq: session.lastOutputSeq || 0,
-      lastInputAckSeq: session.lastInputSeq || 0,
-      adminSockets: new Set(),
-      status: 'running',
-      flushTimer: setInterval(() => flushOutput(session.id), FLUSH_INTERVAL),
-      inputState: 'active' as InputState,
-      paneTitle: '',
-      paneCommand: '',
-      panePath: '',
-      hasStarted: (session.outputBytes || 0) > 100,
-      waitingDebounce: null,
-    lastStateBroadcast: 0,
-    };
-    activeSessions.set(session.id, proc);
-
-    // Restore DB status to running (may have been wrongly marked as failed)
-    db.update(schema.agentSessions)
-      .set({ status: 'running', completedAt: null })
-      .where(eq(schema.agentSessions.id, session.id))
-      .run();
-
-    wireOnData(proc, ptyProcess);
-    wireOnExit(proc, ptyProcess);
-
-    console.log(`[session-service] Late-recovered session ${session.id} from tmux`);
-    return true;
-  } catch (err) {
-    console.error(`[session-service] Failed to late-recover session ${session.id}:`, err);
-    return false;
-  }
+function tryRecoverSession(_session: typeof schema.agentSessions.$inferSelect): boolean {
+  return false;
 }
 
 function markSessionStale(sessionId: string): void {
@@ -716,48 +587,12 @@ function detachAdminSocket(sessionId: string, ws: WebSocket): void {
 
 // ---------- Session recovery ----------
 
-function recoverTmuxSessions(): void {
-  if (!isTmuxAvailable()) {
-    db.update(schema.agentSessions)
-      .set({ status: 'failed', completedAt: new Date().toISOString() })
-      .where(eq(schema.agentSessions.status, 'running'))
-      .run();
-    return;
-  }
-
-  // Recover sessions marked as running
-  const runningSessions = db
-    .select()
-    .from(schema.agentSessions)
+function recoverSessions(): void {
+  // No tmux recovery — mark all DB 'running' sessions as failed on startup
+  db.update(schema.agentSessions)
+    .set({ status: 'failed', completedAt: new Date().toISOString() })
     .where(eq(schema.agentSessions.status, 'running'))
-    .all();
-
-  for (const session of runningSessions) {
-    if (!tryRecoverSession(session)) {
-      console.log(`[session-service] tmux session gone for ${session.id}, marking failed`);
-      markSessionStale(session.id);
-    }
-  }
-
-  // Also recover sessions wrongly marked as failed that still have live tmux sessions
-  const liveTmuxIds = listPwTmuxSessions();
-  if (liveTmuxIds.length === 0) return;
-
-  const alreadyRecovered = new Set(activeSessions.keys());
-  const candidates = liveTmuxIds.filter(id => !alreadyRecovered.has(id));
-  if (candidates.length === 0) return;
-
-  const failedSessions = db
-    .select()
-    .from(schema.agentSessions)
-    .where(inArray(schema.agentSessions.id, candidates))
-    .all()
-    .filter(s => s.status === 'failed');
-
-  for (const session of failedSessions) {
-    console.log(`[session-service] Recovering wrongly-failed session ${session.id} (tmux still alive)`);
-    tryRecoverSession(session);
-  }
+    .run();
 }
 
 // ---------- HTTP API ----------
@@ -767,17 +602,16 @@ const app = new Hono();
 app.get('/health', (c) => {
   return c.json({
     ok: true,
-    tmux: isTmuxAvailable(),
     activeSessions: activeSessions.size,
     sessions: Array.from(activeSessions.keys()),
   });
 });
 
 app.get('/waiting', (c) => {
-  const states: Record<string, { inputState: InputState; paneTitle: string; paneCommand: string; panePath: string }> = {};
+  const states: Record<string, { inputState: InputState }> = {};
   for (const [id, proc] of activeSessions) {
-    if (proc.inputState !== 'active' || proc.paneTitle) {
-      states[id] = { inputState: proc.inputState, paneTitle: proc.paneTitle, paneCommand: proc.paneCommand, panePath: proc.panePath };
+    if (proc.inputState !== 'active') {
+      states[id] = { inputState: proc.inputState };
     }
   }
   return c.json(states);
@@ -785,17 +619,17 @@ app.get('/waiting', (c) => {
 
 app.post('/spawn', async (c) => {
   const body = await c.req.json();
-  const { sessionId, prompt, cwd, permissionProfile, allowedTools, claudeSessionId, resumeSessionId, tmuxTarget } = body;
+  const { sessionId, prompt, cwd, permissionProfile, allowedTools, claudeSessionId, resumeSessionId } = body;
 
   if (!sessionId || !cwd || !permissionProfile) {
     return c.json({ error: 'Missing required fields' }, 400);
   }
-  if (permissionProfile !== 'plain' && permissionProfile !== 'interactive' && !prompt && !resumeSessionId && !tmuxTarget) {
+  if (permissionProfile !== 'plain' && permissionProfile !== 'interactive' && !prompt && !resumeSessionId) {
     return c.json({ error: 'Prompt required for non-plain sessions' }, 400);
   }
 
   try {
-    spawnSession({ sessionId, prompt, cwd, permissionProfile, allowedTools, claudeSessionId, resumeSessionId, tmuxTarget });
+    spawnSession({ sessionId, prompt, cwd, permissionProfile, allowedTools, claudeSessionId, resumeSessionId });
     return c.json({ ok: true, sessionId });
   } catch (err) {
     const pending = pendingConnections.get(sessionId);
@@ -861,6 +695,19 @@ app.get('/status/:id', (c) => {
       totalBytes: session.outputBytes || 0,
       healthy: session.status === 'running' ? false : null,
     });
+  }
+  return c.json({ error: 'Not found' }, 404);
+});
+
+app.get('/capture/:id', (c) => {
+  const id = c.req.param('id');
+  const proc = activeSessions.get(id);
+  if (proc) {
+    return c.json({ ok: true, content: proc.outputBuffer.slice(-10000) });
+  }
+  const session = db.select().from(schema.agentSessions).where(eq(schema.agentSessions.id, id)).get();
+  if (session?.outputLog) {
+    return c.json({ ok: true, content: session.outputLog.slice(-10000) });
   }
   return c.json({ error: 'Not found' }, 404);
 });
@@ -948,11 +795,7 @@ wsServer.on('connection', (ws, req) => {
 
 // ---------- Start ----------
 
-recoverTmuxSessions();
-
-// Poll tmux pane info every 3s for metadata + fallback state detection
-pollTmuxPaneInfo(); // immediate first check
-setInterval(pollTmuxPaneInfo, 3000);
+recoverSessions();
 
 const server = serve({ fetch: app.fetch, port: PORT }, () => {
   console.log(`[session-service] Running on http://localhost:${PORT}`);
@@ -977,14 +820,8 @@ function shutdown() {
   for (const [sessionId, proc] of activeSessions) {
     clearInterval(proc.flushTimer);
     flushOutput(sessionId);
-    if (isTmuxAvailable() && tmuxSessionExists(sessionId)) {
-      console.log(`[session-service] Detaching tmux session ${sessionId} (preserved)`);
-      detachTmuxClients(sessionId);
-      try { proc.ptyProcess.kill(); } catch { /* tmux client process */ }
-    } else {
-      console.log(`[session-service] Killing session ${sessionId}`);
-      try { proc.ptyProcess.kill(); } catch { /* already dead */ }
-    }
+    console.log(`[session-service] Killing session ${sessionId}`);
+    try { proc.ptyProcess.kill(); } catch { /* already dead */ }
   }
   messageBuffer.destroy();
   process.exit(0);

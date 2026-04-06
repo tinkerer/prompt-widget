@@ -26,14 +26,6 @@ export function loadJson<T>(key: string, fallback: T): T {
 
 export const termPickerOpen = signal<TerminalPickerMode | null>(null);
 
-export function buildTmuxAttachCmd(sessionId: string, session?: { isRemote?: boolean; launcherHostname?: string }): string {
-  const base = `TMUX= tmux -L prompt-widget attach-session -t pw-${sessionId}`;
-  if (session?.isRemote && session?.launcherHostname) {
-    return `ssh -t ${session.launcherHostname} '${base}'`;
-  }
-  return base;
-}
-
 export const openTabs = signal<string[]>(loadJson('pw-open-tabs', []));
 export const activeTabId = signal<string | null>(loadJson('pw-active-tab', null));
 export const previousTabId = signal<string | null>(null);

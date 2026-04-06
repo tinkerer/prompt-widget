@@ -4,7 +4,7 @@ import { ulid } from 'ulidx';
 import { db, schema } from '../db/index.js';
 import { listLaunchers, getLauncher, sendAndWait } from '../launcher-registry.js';
 import { dispatchHarnessSession } from '../dispatch.js';
-import type { StartHarness, StopHarness, PermissionProfile, ListTmuxSessions, ListTmuxSessionsResult, CheckClaudeAuth, CheckClaudeAuthResult, CheckContainerClaude, CheckContainerClaudeResult } from '@prompt-widget/shared';
+import type { StartHarness, StopHarness, PermissionProfile, CheckClaudeAuth, CheckClaudeAuthResult, CheckContainerClaude, CheckContainerClaudeResult } from '@prompt-widget/shared';
 
 const app = new Hono();
 
@@ -283,42 +283,6 @@ app.post('/:id/check-container-claude', async (c) => {
     };
     const result = await sendAndWait(targetLauncher.id, msg as any, 'check_container_claude_result', 20_000) as CheckContainerClaudeResult;
     return c.json(result);
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500);
-  }
-});
-
-app.get('/:id/host-tmux-sessions', async (c) => {
-  const id = c.req.param('id');
-  const config = db.select().from(schema.harnessConfigs).where(eq(schema.harnessConfigs.id, id)).get();
-  if (!config) return c.json({ error: 'Harness config not found' }, 404);
-
-  if (!config.hostTerminalAccess) {
-    return c.json({ error: 'Host terminal access is not enabled for this harness' }, 400);
-  }
-
-  // Find the launcher for the machine
-  let targetLauncher;
-  if (config.launcherId) {
-    targetLauncher = getLauncher(config.launcherId);
-  }
-  if (!targetLauncher && config.machineId) {
-    const launchers = listLaunchers();
-    targetLauncher = launchers.find(l => l.machineId === config.machineId && l.ws?.readyState === 1);
-  }
-
-  if (!targetLauncher || targetLauncher.ws?.readyState !== 1) {
-    return c.json({ error: 'No connected launcher for this harness' }, 400);
-  }
-
-  try {
-    const sessionId = ulid();
-    const msg: ListTmuxSessions = {
-      type: 'list_tmux_sessions',
-      sessionId,
-    };
-    const result = await sendAndWait(targetLauncher.id, msg, 'list_tmux_sessions_result', 10_000) as ListTmuxSessionsResult;
-    return c.json({ sessions: result.sessions });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }
