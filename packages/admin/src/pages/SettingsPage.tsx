@@ -7,6 +7,7 @@ import { hintsEnabled, resetAllHints } from '../lib/hints.js';
 import { autoFixEnabled, setAutoFixEnabled } from '../lib/autofix.js';
 import { panelPresets, savePreset, restorePreset, deletePreset } from '../lib/sessions.js';
 import { DeletedItemsPanel } from '../components/DeletedItemsPanel.js';
+import { api } from '../lib/api.js';
 
 function formatKey(s: ReturnType<typeof getAllShortcuts>[0]): string {
   const parts: string[] = [];
@@ -67,6 +68,91 @@ function PanelPresetManager() {
   );
 }
 
+
+function ChangePasswordSection() {
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [status, setStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async () => {
+    setStatus(null);
+    if (!currentPassword || !newPassword) {
+      setStatus({ type: 'error', message: 'Please fill in all fields' });
+      return;
+    }
+    if (newPassword.length < 4) {
+      setStatus({ type: 'error', message: 'New password must be at least 4 characters' });
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setStatus({ type: 'error', message: 'New passwords do not match' });
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.changePassword(currentPassword, newPassword);
+      setStatus({ type: 'success', message: 'Password changed successfully' });
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+    } catch (e: any) {
+      setStatus({ type: 'error', message: e.message || 'Failed to change password' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div class="settings-section">
+      <h3>Change Password</h3>
+      <div style="display:flex;flex-direction:column;gap:10px;max-width:320px">
+        <div>
+          <label style="font-size:12px;color:var(--pw-text-muted);display:block;margin-bottom:4px">Current Password</label>
+          <input
+            type="password"
+            value={currentPassword}
+            onInput={(e) => setCurrentPassword((e.target as HTMLInputElement).value)}
+            style="width:100%;padding:6px 10px;border:1px solid var(--pw-border);border-radius:6px;background:var(--pw-bg);color:var(--pw-text);font-size:13px"
+          />
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--pw-text-muted);display:block;margin-bottom:4px">New Password</label>
+          <input
+            type="password"
+            value={newPassword}
+            onInput={(e) => setNewPassword((e.target as HTMLInputElement).value)}
+            style="width:100%;padding:6px 10px;border:1px solid var(--pw-border);border-radius:6px;background:var(--pw-bg);color:var(--pw-text);font-size:13px"
+          />
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--pw-text-muted);display:block;margin-bottom:4px">Confirm New Password</label>
+          <input
+            type="password"
+            value={confirmPassword}
+            onInput={(e) => setConfirmPassword((e.target as HTMLInputElement).value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') handleSubmit(); }}
+            style="width:100%;padding:6px 10px;border:1px solid var(--pw-border);border-radius:6px;background:var(--pw-bg);color:var(--pw-text);font-size:13px"
+          />
+        </div>
+        {status && (
+          <div style={`font-size:12px;color:${status.type === 'success' ? 'var(--pw-success, #22c55e)' : 'var(--pw-danger, #ef4444)'}`}>
+            {status.message}
+          </div>
+        )}
+        <button
+          class="btn btn-sm"
+          disabled={saving}
+          onClick={handleSubmit}
+          style="align-self:flex-start;padding:6px 16px"
+        >
+          {saving ? 'Saving...' : 'Update Password'}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export function SettingsPage() {
   const [activeGuide, setActiveGuide] = useState<typeof GUIDES[0] | null>(null);
@@ -414,6 +500,8 @@ export function SettingsPage() {
             </label>
           </div>
         </div>
+
+        <ChangePasswordSection />
 
         <div class="settings-section">
           <h3>About</h3>

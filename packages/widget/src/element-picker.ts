@@ -20,7 +20,7 @@ function generateSelector(el: Element): string {
 
   for (let depth = 0; current && depth < 5; depth++) {
     if (current.id) {
-      segments.unshift(`#${current.id}`);
+      segments.unshift(`#${CSS.escape(current.id)}`);
       const candidate = segments.join(' > ');
       if (document.querySelectorAll(candidate).length === 1) return candidate;
     }
@@ -28,7 +28,7 @@ function generateSelector(el: Element): string {
     let seg = current.tagName.toLowerCase();
     const classList = Array.from(current.classList).filter(c => !c.startsWith('pw-'));
     if (classList.length > 0) {
-      seg += '.' + classList.join('.');
+      seg += '.' + classList.map(c => CSS.escape(c)).join('.');
     }
 
     const parent: Element | null = current.parentElement;

@@ -11,10 +11,26 @@ function addCopyButtons(container: HTMLElement) {
     btn.addEventListener('click', () => {
       const code = pre.querySelector('code');
       const text = (code || pre).textContent || '';
-      navigator.clipboard.writeText(text).then(() => {
+      const onSuccess = () => {
         btn.textContent = 'Copied!';
         setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
-      });
+      };
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).then(onSuccess, fallback);
+      } else {
+        fallback();
+      }
+      function fallback() {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        onSuccess();
+      }
     });
     pre.appendChild(btn);
   }
