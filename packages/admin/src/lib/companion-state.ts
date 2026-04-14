@@ -249,8 +249,11 @@ export function openPageView(viewId: string) {
     setFocusedLeaf(existingLeaf.id);
     return;
   }
-  addTabToLeaf(PAGE_LEAF_ID, viewId, true);
-  setFocusedLeaf(PAGE_LEAF_ID);
+  // Try the canonical page leaf first; fall back to whichever leaf holds view:feedback
+  const pageLeaf = findLeafWithTab('view:feedback') || findLeafWithTab('view:page');
+  const targetLeafId = pageLeaf?.id || PAGE_LEAF_ID;
+  addTabToLeaf(targetLeafId, viewId, true);
+  setFocusedLeaf(targetLeafId);
 }
 
 export function openSettingsPanel(settingsKey: string) {

@@ -1,13 +1,29 @@
 import { useSignal } from '@preact/signals';
 import { useEffect, useRef } from 'preact/hooks';
 import { api } from '../lib/api.js';
-import { isEmbedded } from '../lib/state.js';
+import { isEmbedded, applications } from '../lib/state.js';
 import { allSessions, openSession, deleteSession, permanentlyDeleteSession, spawnTerminal, sessionInputStates, includeDeletedInPolling, termPickerOpen, openFeedbackItem } from '../lib/sessions.js';
 import { DeletedItemsPanel, trackDeletion } from '../components/DeletedItemsPanel.js';
 import { cachedTargets, ensureTargetsLoaded } from '../components/DispatchTargetSelect.js';
 
 const ALL_STATUSES = ['running', 'pending', 'completed', 'failed', 'killed', 'deleted'] as const;
 const DEFAULT_STATUSES = new Set<string>(['running', 'pending', 'completed', 'failed', 'killed']);
+const UNLINKED_APP_KEY = '__unlinked__';
+
+function loadSetFromStorage(key: string): Set<string> {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? new Set(arr) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function saveSetToStorage(key: string, set: Set<string>) {
+  try { localStorage.setItem(key, JSON.stringify([...set])); } catch { /* ignore */ }
+}
 
 function formatRelativeTime(dateStr: string | null): string {
   if (!dateStr) return '—';
@@ -73,12 +89,35 @@ export function SessionsPage({ appId }: { appId?: string | null }) {
   const autoTerminalDone = useRef(false);
   const filterStatuses = useSignal<Set<string>>(new Set(DEFAULT_STATUSES));
   const filterTargets = useSignal<Set<string>>(new Set<string>());
+  const filterApps = useSignal<Set<string>>(new Set<string>());
   const searchQuery = useSignal('');
   const feedbackMap = useSignal<Record<string, string>>({});
   const agentMap = useSignal<Record<string, string>>({});
   const agentAppMap = useSignal<Record<string, string | null>>({});
   const metaWiggumAgentIds = useSignal<Set<string>>(new Set());
   const mapsLoaded = useSignal(false);
+  const expandedSwarms = useSignal<Set<string>>(loadSetFromStorage('pw-sessions-expanded-swarms'));
+  const collapsedApps = useSignal<Set<string>>(loadSetFromStorage('pw-sessions-collapsed-apps'));
+
+  function toggleSwarm(orchId: string) {
+    const next = new Set(expandedSwarms.value);
+    if (next.has(orchId)) next.delete(orchId); else next.add(orchId);
+    expandedSwarms.value = next;
+    saveSetToStorage('pw-sessions-expanded-swarms', next);
+  }
+
+  function toggleAppSection(appKey: string) {
+    const next = new Set(collapsedApps.value);
+    if (next.has(appKey)) next.delete(appKey); else next.add(appKey);
+    collapsedApps.value = next;
+    saveSetToStorage('pw-sessions-collapsed-apps', next);
+  }
+
+  function toggleAppFilter(appKey: string) {
+    const next = new Set(filterApps.value);
+    if (next.has(appKey)) next.delete(appKey); else next.add(appKey);
+    filterApps.value = next;
+  }
 
   async function loadMaps() {
     if (mapsLoaded.value) return;
@@ -148,17 +187,29 @@ export function SessionsPage({ appId }: { appId?: string | null }) {
 
   const sessions = allSessions.value;
 
-  let appFiltered = sessions;
-  if (appId && appId !== '__unlinked__') {
-    const appAgentIds = new Set(
-      Object.entries(agentAppMap.value)
-        .filter(([, aid]) => aid === appId)
-        .map(([id]) => id)
-    );
-    appFiltered = sessions.filter((s) =>
-      s.appId === appId ||
-      (s.agentEndpointId && appAgentIds.has(s.agentEndpointId))
-    );
+  // Resolve effective appId for each session — prefer session.appId, fall back
+  // to the agent endpoint's appId. Returns UNLINKED_APP_KEY when there is none.
+  const resolveAppId = (s: any): string => {
+    if (s.appId) return s.appId;
+    if (s.agentEndpointId && agentAppMap.value[s.agentEndpointId]) {
+      return agentAppMap.value[s.agentEndpointId] as string;
+    }
+    return UNLINKED_APP_KEY;
+  };
+
+  // If the user has explicitly chosen apps via the in-page filter, that
+  // overrides the route's appId scope (so users can widen the view past one
+  // app without leaving the page). Otherwise the route's appId scopes the list.
+  const activeApps = filterApps.value;
+  let appFiltered: any[];
+  if (activeApps.size > 0) {
+    appFiltered = sessions.filter((s) => activeApps.has(resolveAppId(s)));
+  } else if (appId && appId !== UNLINKED_APP_KEY) {
+    appFiltered = sessions.filter((s) => resolveAppId(s) === appId);
+  } else if (appId === UNLINKED_APP_KEY) {
+    appFiltered = sessions.filter((s) => resolveAppId(s) === UNLINKED_APP_KEY);
+  } else {
+    appFiltered = sessions;
   }
 
   const activeStatuses = filterStatuses.value;
@@ -184,19 +235,150 @@ export function SessionsPage({ appId }: { appId?: string | null }) {
     });
   }
 
-  const sorted = [...filtered].sort((a, b) => {
-    const statusOrder = (s: string) =>
-      s === 'running' ? 0 : s === 'pending' ? 1 : 2;
+  const sortByStartedDesc = (a: any, b: any) => {
+    const statusOrder = (s: string) => s === 'running' ? 0 : s === 'pending' ? 1 : 2;
     const diff = statusOrder(a.status) - statusOrder(b.status);
     if (diff !== 0) return diff;
     return new Date(b.startedAt || b.createdAt || 0).getTime() -
       new Date(a.startedAt || a.createdAt || 0).getTime();
+  };
+
+  // Build swarm hierarchy using server-provided swarmId/wiggumRunId linkage
+  // AND the legacy parentSessionId chain approach.
+  const sessionById = new Map<string, any>(sessions.map((s: any) => [s.id, s]));
+  const isOrchestrator = (s: any): boolean =>
+    !!(s && s.agentEndpointId && metaWiggumAgentIds.value.has(s.agentEndpointId));
+
+  // Walk the parent chain (with cycle guard) and return the topmost orchestrator
+  // ancestor, or null if the session is standalone.
+  const findSwarmRoot = (s: any): any | null => {
+    let root: any | null = isOrchestrator(s) ? s : null;
+    let cur: any = s;
+    const seen = new Set<string>();
+    while (cur && cur.parentSessionId && !seen.has(cur.id)) {
+      seen.add(cur.id);
+      const parent = sessionById.get(cur.parentSessionId);
+      if (!parent) break;
+      if (isOrchestrator(parent)) root = parent;
+      cur = parent;
+    }
+    return root;
+  };
+
+  // Determine grouping key for a session:
+  // 1. swarmId → group under swarm (FAFO sessions)
+  // 2. wiggumRunId (no swarm) → group under wiggum run
+  // 3. parentSessionId orchestrator chain → legacy meta-wiggum grouping
+  // 4. null → standalone
+  type GroupKey = { type: 'swarm'; id: string; name: string }
+    | { type: 'wiggum'; runId: string }
+    | { type: 'orchestrator'; session: any }
+    | null;
+
+  const getGroupKey = (s: any): GroupKey => {
+    if (s.swarmId) return { type: 'swarm', id: s.swarmId, name: s.swarmName || `Swarm ${s.swarmId.slice(-8)}` };
+    if (s.wiggumRunId) return { type: 'wiggum', runId: s.wiggumRunId };
+    const root = findSwarmRoot(s);
+    if (root) return { type: 'orchestrator', session: root };
+    return null;
+  };
+
+  // Group entries: key is "swarm:<id>" | "wiggum:<runId>" | "orch:<sessionId>"
+  type SwarmEntry = { label: string; type: 'swarm' | 'wiggum' | 'orchestrator'; refId: string; orchestrator: any | null; children: any[] };
+  type AppGroup = {
+    appKey: string;
+    swarms: Map<string, SwarmEntry>;
+    standalone: any[];
+    visibleCount: number;
+  };
+  const appGroups = new Map<string, AppGroup>();
+  const ensureGroup = (appKey: string): AppGroup => {
+    let g = appGroups.get(appKey);
+    if (!g) {
+      g = { appKey, swarms: new Map(), standalone: [], visibleCount: 0 };
+      appGroups.set(appKey, g);
+    }
+    return g;
+  };
+
+  for (const s of filtered) {
+    const appKey = resolveAppId(s);
+    const group = ensureGroup(appKey);
+    const gk = getGroupKey(s);
+    if (gk) {
+      let mapKey: string;
+      let entry: SwarmEntry | undefined;
+      if (gk.type === 'swarm') {
+        mapKey = `swarm:${gk.id}`;
+        entry = group.swarms.get(mapKey);
+        if (!entry) {
+          entry = { label: `\uD83E\uDDEC ${gk.name}`, type: 'swarm', refId: gk.id, orchestrator: null, children: [] };
+          group.swarms.set(mapKey, entry);
+        }
+      } else if (gk.type === 'wiggum') {
+        mapKey = `wiggum:${gk.runId}`;
+        entry = group.swarms.get(mapKey);
+        if (!entry) {
+          entry = { label: `\uD83D\uDD04 Wiggum ${gk.runId.slice(-8)}`, type: 'wiggum', refId: gk.runId, orchestrator: null, children: [] };
+          group.swarms.set(mapKey, entry);
+        }
+      } else {
+        // orchestrator
+        mapKey = `orch:${gk.session.id}`;
+        entry = group.swarms.get(mapKey);
+        if (!entry) {
+          entry = { label: '', type: 'orchestrator', refId: gk.session.id, orchestrator: gk.session, children: [] };
+          group.swarms.set(mapKey, entry);
+        }
+      }
+      entry.children.push(s);
+    } else {
+      group.standalone.push(s);
+    }
+    group.visibleCount += 1;
+  }
+
+  // Sort children inside each swarm and standalone lists
+  for (const group of appGroups.values()) {
+    group.standalone.sort(sortByStartedDesc);
+    for (const entry of group.swarms.values()) {
+      entry.children.sort(sortByStartedDesc);
+    }
+  }
+
+  // Sort the apps so the route's appId comes first, "unlinked" last,
+  // others alphabetically by name.
+  const appNameByKey = (k: string): string => {
+    if (k === UNLINKED_APP_KEY) return 'Unlinked';
+    return applications.value.find((a: any) => a.id === k)?.name || k.slice(-8);
+  };
+  const orderedAppGroups = [...appGroups.values()].sort((a, b) => {
+    if (a.appKey === appId) return -1;
+    if (b.appKey === appId) return 1;
+    if (a.appKey === UNLINKED_APP_KEY) return 1;
+    if (b.appKey === UNLINKED_APP_KEY) return -1;
+    return appNameByKey(a.appKey).localeCompare(appNameByKey(b.appKey));
   });
+
+  const sorted = filtered; // back-compat for the count line below
+  const totalVisible = filtered.length;
 
   const statusCounts = appFiltered.reduce<Record<string, number>>((acc, s) => {
     acc[s.status] = (acc[s.status] || 0) + 1;
     return acc;
   }, {});
+
+  // App counts (used by the in-page app filter chip group). These reflect the
+  // full session list — the chip group lets users widen scope past the route's appId.
+  const appCounts: Record<string, number> = {};
+  for (const s of sessions) {
+    const k = resolveAppId(s);
+    appCounts[k] = (appCounts[k] || 0) + 1;
+  }
+  const appKeysForFilter = [
+    ...applications.value.map((a: any) => a.id as string),
+    UNLINKED_APP_KEY,
+  ].filter((k) => (appCounts[k] || 0) > 0);
 
   const targetCounts: Record<string, number> = {};
   for (const s of appFiltered) {
@@ -220,7 +402,151 @@ export function SessionsPage({ appId }: { appId?: string | null }) {
 
   const feedbackPath = appId ? `/app/${appId}/feedback` : '/feedback';
 
-  const showPurge = activeStatuses.has('deleted') && activeStatuses.size === 1 && sorted.length > 0;
+  const showPurge = activeStatuses.has('deleted') && activeStatuses.size === 1 && totalVisible > 0;
+
+  // Whether to show app section headers. We section by app whenever the user
+  // is looking at more than one app worth of results (either no route appId,
+  // or the in-page app filter has widened scope).
+  const showAppSections = orderedAppGroups.length > 1;
+
+  // -------- Inline session row renderer --------
+  const renderSessionRow = (s: any, opts: { indent?: boolean; isOrchestrator?: boolean; isExpanded?: boolean; onToggleExpand?: () => void; childCount?: number } = {}) => {
+    const agentLabel = s.permissionProfile === 'plain' ? 'Terminal' : (agentMap.value[s.agentEndpointId] || s.agentEndpointId?.slice(-8) || null);
+    const feedbackTitle = feedbackMap.value[s.feedbackId];
+    const inputState = sessionInputStates.value.get(s.id);
+    return (
+      <div
+        key={s.id}
+        class={`session-card ${s.status}${opts.indent ? ' session-card-indent' : ''}${opts.isOrchestrator ? ' session-card-orchestrator' : ''}`}
+        onClick={() => openSession(s.id)}
+      >
+        <div class="session-card-main">
+          {opts.isOrchestrator && (
+            <button
+              class="session-swarm-toggle"
+              onClick={(e) => { e.stopPropagation(); opts.onToggleExpand?.(); }}
+              title={opts.isExpanded ? 'Collapse swarm' : 'Expand swarm'}
+            >
+              {opts.isExpanded ? '\u25be' : '\u25b8'}
+            </button>
+          )}
+          <span class={`session-status-dot ${s.status}${s.status === 'running' && inputState ? ` ${inputState}` : ''}`} />
+          {opts.isOrchestrator && (
+            <span class="session-orchestrator-badge">orchestrator</span>
+          )}
+          <span class="session-card-label">
+            {feedbackTitle || agentLabel || `Session ${s.id.slice(-8)}`}
+          </span>
+          <span class="session-card-id">{s.id.slice(-8)}</span>
+          <span class={`session-card-status ${s.status}`}>{s.status}</span>
+          {opts.isOrchestrator && opts.childCount !== undefined && opts.childCount > 0 && (
+            <span class="session-swarm-count">{opts.childCount} child{opts.childCount === 1 ? '' : 'ren'}</span>
+          )}
+        </div>
+        <div class="session-card-meta">
+          {agentLabel && feedbackTitle && <span>{agentLabel}</span>}
+          <span>{formatRelativeTime(s.startedAt || s.createdAt)}</span>
+          <span>{formatDuration(s.startedAt, s.completedAt)}</span>
+          {feedbackTitle && (
+            <span
+              class="session-feedback-link"
+              onClick={(e) => { e.stopPropagation(); openFeedbackItem(s.feedbackId); }}
+            >
+              feedback
+            </span>
+          )}
+        </div>
+        <div class="session-card-actions" onClick={(e) => e.stopPropagation()}>
+          {s.status !== 'deleted' && (
+            <>
+              <button class="btn btn-sm" onClick={() => openSession(s.id)}>
+                {s.status === 'running' ? 'Attach' : 'View'}
+              </button>
+              <button
+                class="btn btn-sm btn-danger"
+                onClick={() => deleteSession(s.id)}
+                title="Archive session"
+              >
+                &times;
+              </button>
+            </>
+          )}
+          {s.status === 'deleted' && (
+            <button
+              class="btn btn-sm btn-danger"
+              onClick={() => permanentlyDelete(s.id)}
+              title="Permanently delete"
+            >
+              Delete forever
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderGroupBody = (group: AppGroup) => {
+    // Sort groups: newest first by their first child's start time
+    const swarmEntries = [...group.swarms.values()].sort((a, b) => {
+      const aFirst = a.orchestrator || a.children[0];
+      const bFirst = b.orchestrator || b.children[0];
+      return sortByStartedDesc(aFirst, bFirst);
+    });
+    return (
+      <>
+        {swarmEntries.map((entry) => {
+          const groupKey = `${entry.type}:${entry.refId}`;
+          const expanded = expandedSwarms.value.has(groupKey);
+
+          if (entry.type === 'orchestrator' && entry.orchestrator) {
+            // Legacy meta-wiggum: orchestrator session as header
+            return (
+              <div key={`swarm-${groupKey}`} class="session-swarm-group">
+                {renderSessionRow(entry.orchestrator, {
+                  isOrchestrator: true,
+                  isExpanded: expanded,
+                  onToggleExpand: () => toggleSwarm(groupKey),
+                  childCount: entry.children.filter(c => c.id !== entry.orchestrator.id).length,
+                })}
+                {expanded && entry.children
+                  .filter(c => c.id !== entry.orchestrator.id)
+                  .map((c) => renderSessionRow(c, { indent: true }))}
+              </div>
+            );
+          }
+
+          // FAFO swarm or wiggum run group — custom header row
+          const activeCount = entry.children.filter((c: any) => c.status === 'running').length;
+          return (
+            <div key={`swarm-${groupKey}`} class="session-swarm-group">
+              <div
+                class="session-card session-card-orchestrator"
+                onClick={() => toggleSwarm(groupKey)}
+                style={{ cursor: 'pointer' }}
+              >
+                <div class="session-card-main">
+                  <button
+                    class="session-swarm-toggle"
+                    onClick={(e) => { e.stopPropagation(); toggleSwarm(groupKey); }}
+                  >
+                    {expanded ? '\u25be' : '\u25b8'}
+                  </button>
+                  <span class="session-orchestrator-badge">{entry.type === 'swarm' ? 'FAFO' : 'wiggum'}</span>
+                  <span class="session-card-label">{entry.label}</span>
+                  <span class="session-swarm-count">
+                    {entry.children.length} session{entry.children.length === 1 ? '' : 's'}
+                    {activeCount > 0 ? ` \u00b7 ${activeCount} running` : ''}
+                  </span>
+                </div>
+              </div>
+              {expanded && entry.children.map((c) => renderSessionRow(c, { indent: true }))}
+            </div>
+          );
+        })}
+        {group.standalone.map((s) => renderSessionRow(s))}
+      </>
+    );
+  };
 
   return (
     <div>
@@ -278,94 +604,61 @@ export function SessionsPage({ appId }: { appId?: string | null }) {
             })}
           </div>
         )}
+        {appKeysForFilter.length > 1 && (
+          <div class="sessions-filter-group">
+            {appKeysForFilter.map((key) => {
+              const count = appCounts[key] || 0;
+              return (
+                <label key={`app-${key}`} class="sessions-filter-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={activeApps.has(key)}
+                    onChange={() => toggleAppFilter(key)}
+                  />
+                  <span class="sessions-filter-badge">App</span>
+                  {appNameByKey(key)} {count > 0 && <span class="sessions-filter-count">({count})</span>}
+                </label>
+              );
+            })}
+          </div>
+        )}
         <span style={{ color: 'var(--pw-text-muted)', fontSize: '13px' }}>
-          {sorted.length} shown
+          {totalVisible} shown
           {statusCounts.running ? ` \u00b7 ${statusCounts.running} running` : ''}
         </span>
         {showPurge && (
           <button
             class="btn btn-sm btn-danger"
-            onClick={() => permanentlyDeleteAll(sorted.map((s) => s.id))}
+            onClick={() => permanentlyDeleteAll(filtered.map((s) => s.id))}
           >
-            Purge all ({sorted.length})
+            Purge all ({totalVisible})
           </button>
         )}
       </div>
 
       <div class="session-card-list">
-        {sorted.length === 0 && (
+        {totalVisible === 0 && (
           <div style={{ textAlign: 'center', color: 'var(--pw-text-faint)', padding: '24px' }}>No sessions found</div>
         )}
-        {sorted.map((s) => {
-          const agentLabel = s.permissionProfile === 'plain' ? 'Terminal' : (agentMap.value[s.agentEndpointId] || s.agentEndpointId?.slice(-8) || null);
-          const feedbackTitle = feedbackMap.value[s.feedbackId];
-          const isMetaWiggum = s.agentEndpointId && metaWiggumAgentIds.value.has(s.agentEndpointId);
-          return (
-            <div key={s.id} class={`session-card ${s.status}`} onClick={() => openSession(s.id)}>
-              <div class="session-card-main">
-                <span class={`session-status-dot ${s.status}${s.status === 'running' && sessionInputStates.value.has(s.id) ? ` ${sessionInputStates.value.get(s.id)}` : ''}`} />
-                {isMetaWiggum && (
-                  <span style={{
-                    fontSize: 9,
-                    fontWeight: 700,
-                    padding: '1px 5px',
-                    borderRadius: 3,
-                    background: '#7c3aed',
-                    color: '#fff',
-                    marginRight: 4,
-                    letterSpacing: '0.5px',
-                    textTransform: 'uppercase',
-                  }}>
-                    orchestrator
-                  </span>
-                )}
-                <span class="session-card-label">
-                  {feedbackTitle || agentLabel || `Session ${s.id.slice(-8)}`}
-                </span>
-                <span class="session-card-id">{s.id.slice(-8)}</span>
-                <span class={`session-card-status ${s.status}`}>{s.status}</span>
-              </div>
-              <div class="session-card-meta">
-                {agentLabel && feedbackTitle && <span>{agentLabel}</span>}
-                <span>{formatRelativeTime(s.startedAt || s.createdAt)}</span>
-                <span>{formatDuration(s.startedAt, s.completedAt)}</span>
-                {feedbackTitle && (
-                  <span
-                    class="session-feedback-link"
-                    onClick={(e) => { e.stopPropagation(); openFeedbackItem(s.feedbackId); }}
-                  >
-                    feedback
-                  </span>
-                )}
-              </div>
-              <div class="session-card-actions" onClick={(e) => e.stopPropagation()}>
-                {s.status !== 'deleted' && (
-                  <>
-                    <button class="btn btn-sm" onClick={() => openSession(s.id)}>
-                      {s.status === 'running' ? 'Attach' : 'View'}
-                    </button>
-                    <button
-                      class="btn btn-sm btn-danger"
-                      onClick={() => deleteSession(s.id)}
-                      title="Archive session"
-                    >
-                      &times;
-                    </button>
-                  </>
-                )}
-                {s.status === 'deleted' && (
-                  <button
-                    class="btn btn-sm btn-danger"
-                    onClick={() => permanentlyDelete(s.id)}
-                    title="Permanently delete"
-                  >
-                    Delete forever
-                  </button>
-                )}
-              </div>
-            </div>
-          );
-        })}
+        {showAppSections
+          ? orderedAppGroups.map((group) => {
+              const collapsed = collapsedApps.value.has(group.appKey);
+              return (
+                <div key={`appsec-${group.appKey}`} class="session-app-section">
+                  <div class="session-app-section-header" onClick={() => toggleAppSection(group.appKey)}>
+                    <span class="session-app-section-chevron">{collapsed ? '\u25b8' : '\u25be'}</span>
+                    <span class="session-app-section-name">{appNameByKey(group.appKey)}</span>
+                    <span class="session-app-section-count">{group.visibleCount}</span>
+                  </div>
+                  {!collapsed && (
+                    <div class="session-app-section-body">
+                      {renderGroupBody(group)}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          : orderedAppGroups.map((group) => renderGroupBody(group))}
       </div>
       <DeletedItemsPanel type="sessions" />
     </div>

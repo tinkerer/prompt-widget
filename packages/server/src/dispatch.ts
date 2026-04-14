@@ -738,8 +738,8 @@ export async function resumeAgentSession(parentSessionId: string, targetLauncher
   const sessionId = ulid();
   const now = new Date().toISOString();
 
-  // Default to interactive for resume, but allow override (e.g. yolo for dangerously-skip-permissions)
-  const permissionProfile: PermissionProfile = overridePermissionProfile || 'interactive';
+  // Inherit parent's permission profile by default; allow explicit override (e.g. restart-as)
+  const permissionProfile: PermissionProfile = overridePermissionProfile || parent.permissionProfile;
 
   // If parent has a Claude session ID, use --resume for full context restoration
   if (parent.claudeSessionId) {

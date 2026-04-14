@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { signal } from '@preact/signals';
 import {
   allSessions,
@@ -37,14 +37,25 @@ import {
   autoJumpPaused,
   sidebarStatusMenu,
   sidebarItemMenu,
+  sessionAppFilters,
+  toggleAppFilter,
+  sessionGroupByApp,
+  toggleGroupByApp,
+  sessionExpandedParents,
+  toggleExpandedParent,
+  sessionCollapsedAppGroups,
+  toggleCollapsedAppGroup,
+  loadAllSessions,
 } from '../lib/sessions.js';
 import { setFocusedLeaf } from '../lib/pane-tree.js';
 import { ctrlShiftHeld } from '../lib/shortcuts.js';
 import { autoJumpWaiting, autoJumpInterrupt, autoJumpDelay, autoJumpShowPopup, autoJumpLogs, autoCloseWaitingPanel, autoJumpHandleBounce } from '../lib/settings.js';
-import { selectedAppId } from '../lib/state.js';
+import { selectedAppId, applications, navigate } from '../lib/state.js';
 import { PopupMenu } from './PopupMenu.js';
+import { QuickDispatchPopup } from './QuickDispatchPopup.js';
 
 const autoJumpMenuOpen = signal(false);
+const quickDispatchAppKey = signal<string | null>(null);
 
 function SidebarTabBadge({ tabNum }: { tabNum: number }) {
   const pending = pendingFirstDigit.value;
@@ -335,6 +346,51 @@ export function SessionsListView() {
               ))}
             </div>
           </div>
+          {applications.value.length > 0 && (
+            <div class="sidebar-filter-section">
+              <div class="sidebar-filter-section-label">Application</div>
+              <div class="sidebar-filter-checkboxes">
+                {applications.value.map((app: any) => {
+                  const count = nonDeletedSessions.filter((s: any) => s.appId === app.id).length;
+                  return (
+                    <label key={app.id} class="sidebar-filter-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={sessionAppFilters.value.has(app.id)}
+                        onChange={() => toggleAppFilter(app.id)}
+                      />
+                      <span>{app.name}</span>
+                      {count > 0 && <span class="sidebar-filter-count">{count}</span>}
+                    </label>
+                  );
+                })}
+                {(() => {
+                  const unlinkedCount = nonDeletedSessions.filter((s: any) => !s.appId).length;
+                  return unlinkedCount > 0 ? (
+                    <label class="sidebar-filter-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={sessionAppFilters.value.has('__unlinked__')}
+                        onChange={() => toggleAppFilter('__unlinked__')}
+                      />
+                      <span style={{ fontStyle: 'italic' }}>Unlinked</span>
+                      <span class="sidebar-filter-count">{unlinkedCount}</span>
+                    </label>
+                  ) : null;
+                })()}
+              </div>
+            </div>
+          )}
+          <div class="sidebar-filter-section">
+            <label class="sidebar-filter-checkbox">
+              <input
+                type="checkbox"
+                checked={sessionGroupByApp.value}
+                onChange={() => toggleGroupByApp()}
+              />
+              <span>Group by application</span>
+            </label>
+          </div>
         </div>
       )}
       <div class="sidebar-sessions-list" style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
@@ -346,12 +402,245 @@ export function SessionsListView() {
             {waitingAgents.map(renderItem)}
           </>
         )}
-        {restAgents.length > 0 && (
-          <>
-            <div class="sidebar-section-label">Agent Sessions ({restAgents.length})</div>
-            {restAgents.map(renderItem)}
-          </>
-        )}
+        {restAgents.length > 0 && (() => {
+          // Build parent-child hierarchy from filtered agent sessions
+          // Uses both parentSessionId chains AND swarmId/wiggumRunId from server
+          const sessionById = new Map(sessions.map((s: any) => [s.id, s]));
+          const childrenByParent = new Map<string, any[]>();
+          const childIds = new Set<string>();
+
+          // Group by swarmId or wiggumRunId
+          const swarmGroups = new Map<string, { label: string; type: string; children: any[] }>();
+          const swarmChildIds = new Set<string>();
+
+          for (const s of restAgents) {
+            if (s.swarmId) {
+              const key = `swarm:${s.swarmId}`;
+              let grp = swarmGroups.get(key);
+              if (!grp) {
+                grp = { label: `\uD83E\uDDEC ${s.swarmName || s.swarmId.slice(-8)}`, type: 'swarm', children: [] };
+                swarmGroups.set(key, grp);
+              }
+              grp.children.push(s);
+              swarmChildIds.add(s.id);
+            } else if (s.wiggumRunId && !s.swarmId) {
+              const key = `wiggum:${s.wiggumRunId}`;
+              let grp = swarmGroups.get(key);
+              if (!grp) {
+                grp = { label: `\uD83D\uDD04 Wiggum ${s.wiggumRunId.slice(-8)}`, type: 'wiggum', children: [] };
+                swarmGroups.set(key, grp);
+              }
+              grp.children.push(s);
+              swarmChildIds.add(s.id);
+            }
+          }
+
+          // Remaining: parentSessionId-based hierarchy (only for non-swarm sessions)
+          for (const s of restAgents) {
+            if (swarmChildIds.has(s.id)) continue;
+            if (s.parentSessionId && sessionById.has(s.parentSessionId)) {
+              const parentVisible = restAgents.some((a: any) => a.id === s.parentSessionId && !swarmChildIds.has(a.id));
+              if (parentVisible) {
+                childIds.add(s.id);
+                const arr = childrenByParent.get(s.parentSessionId) || [];
+                arr.push(s);
+                childrenByParent.set(s.parentSessionId, arr);
+              }
+            }
+          }
+          // Top-level: sessions that are not children of another visible session and not in a swarm group
+          const topLevel = restAgents.filter((s: any) => !childIds.has(s.id) && !swarmChildIds.has(s.id));
+
+          const renderHierarchical = (items: any[]) => {
+            return items.map((s: any) => {
+              const children = childrenByParent.get(s.id);
+              if (!children || children.length === 0) return renderItem(s);
+              const expanded = sessionExpandedParents.value.has(s.id);
+              return (
+                <div key={`tree-${s.id}`} class="sidebar-session-tree">
+                  <div class="sidebar-session-tree-row">
+                    <button
+                      class="sidebar-tree-toggle"
+                      onClick={(e) => { e.stopPropagation(); toggleExpandedParent(s.id); }}
+                      title={expanded ? 'Collapse' : 'Expand'}
+                    >
+                      {expanded ? '\u25be' : '\u25b8'}
+                    </button>
+                    <span class="sidebar-tree-count">{children.length}</span>
+                    {renderItem(s)}
+                  </div>
+                  {expanded && (
+                    <div class="sidebar-session-tree-children">
+                      {children.map(renderItem)}
+                    </div>
+                  )}
+                </div>
+              );
+            });
+          };
+
+          const renderSwarmGroups = () => {
+            const entries = [...swarmGroups.entries()];
+            if (entries.length === 0) return null;
+            return entries.map(([key, grp]) => {
+              const expanded = sessionExpandedParents.value.has(key);
+              const activeCount = grp.children.filter((c: any) => c.status === 'running').length;
+              return (
+                <div key={`sgrp-${key}`} class="sidebar-session-tree">
+                  <div class="sidebar-session-tree-row">
+                    <button
+                      class="sidebar-tree-toggle"
+                      onClick={(e) => { e.stopPropagation(); toggleExpandedParent(key); }}
+                      title={expanded ? 'Collapse' : 'Expand'}
+                    >
+                      {expanded ? '\u25be' : '\u25b8'}
+                    </button>
+                    <span class="sidebar-tree-count">{grp.children.length}</span>
+                    <span
+                      class="sidebar-swarm-group-label"
+                      style={{
+                        fontSize: 11,
+                        color: 'var(--pw-text-faint)',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        flex: 1,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const appId = grp.children[0]?.appId || selectedAppId.value;
+                        if (appId) navigate(`/app/${appId}/wiggum`);
+                      }}
+                    >
+                      {grp.label}
+                      {activeCount > 0 && <span style={{ color: '#4CAF50', marginLeft: 4, fontWeight: 400 }}>{activeCount} running</span>}
+                    </span>
+                  </div>
+                  {expanded && (
+                    <div class="sidebar-session-tree-children">
+                      {grp.children.map(renderItem)}
+                    </div>
+                  )}
+                </div>
+              );
+            });
+          };
+
+          if (sessionGroupByApp.value) {
+            // Group by app — include swarm groups within each app section
+            const appMap = new Map<string, any[]>();
+            const appSwarmMap = new Map<string, Map<string, { label: string; type: string; children: any[] }>>();
+            for (const s of topLevel) {
+              const key = s.appId || '__unlinked__';
+              const arr = appMap.get(key) || [];
+              arr.push(s);
+              appMap.set(key, arr);
+            }
+            // Distribute swarm groups to their app
+            for (const [sgKey, grp] of swarmGroups) {
+              const appKey = grp.children[0]?.appId || '__unlinked__';
+              let appSwarms = appSwarmMap.get(appKey);
+              if (!appSwarms) { appSwarms = new Map(); appSwarmMap.set(appKey, appSwarms); }
+              appSwarms.set(sgKey, grp);
+              // Ensure the app key exists even if it has no standalone sessions
+              if (!appMap.has(appKey)) appMap.set(appKey, []);
+            }
+
+            const appList = applications.value;
+            const appName = (id: string) => {
+              if (id === '__unlinked__') return 'Unlinked';
+              return appList.find((a: any) => a.id === id)?.name || id.slice(-8);
+            };
+            const sortedKeys = [...new Set([...appMap.keys(), ...appSwarmMap.keys()])].sort((a, b) => {
+              if (a === '__unlinked__') return 1;
+              if (b === '__unlinked__') return -1;
+              return appName(a).localeCompare(appName(b));
+            });
+            return sortedKeys.map((appKey) => {
+              const items = appMap.get(appKey) || [];
+              const appSwarms = appSwarmMap.get(appKey);
+              const totalCount = items.length + (appSwarms ? [...appSwarms.values()].reduce((sum, g) => sum + g.children.length, 0) : 0);
+              const collapsed = sessionCollapsedAppGroups.value.has(appKey);
+              return (
+                <div key={`appgrp-${appKey}`}>
+                  <div
+                    class="sidebar-section-label sidebar-app-group-label"
+                    onClick={() => toggleCollapsedAppGroup(appKey)}
+                    style={{ cursor: 'pointer', userSelect: 'none' }}
+                  >
+                    <span class="sidebar-tree-toggle" style={{ marginRight: 2 }}>
+                      {collapsed ? '\u25b8' : '\u25be'}
+                    </span>
+                    {appName(appKey)} ({totalCount})
+                    <button
+                      class="sidebar-new-terminal-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        quickDispatchAppKey.value = quickDispatchAppKey.value === appKey ? null : appKey;
+                      }}
+                      title="New session"
+                    >+</button>
+                  </div>
+                  {quickDispatchAppKey.value === appKey && (
+                    <QuickDispatchPopup appKey={appKey} appName={appName(appKey)} onClose={() => { quickDispatchAppKey.value = null; }} />
+                  )}
+                  {!collapsed && (
+                    <>
+                      {appSwarms && [...appSwarms.entries()].map(([key, grp]) => {
+                        const exp = sessionExpandedParents.value.has(key);
+                        const activeCount = grp.children.filter((c: any) => c.status === 'running').length;
+                        return (
+                          <div key={`sgrp-${key}`} class="sidebar-session-tree">
+                            <div class="sidebar-session-tree-row">
+                              <button class="sidebar-tree-toggle" onClick={(e) => { e.stopPropagation(); toggleExpandedParent(key); }}>
+                                {exp ? '\u25be' : '\u25b8'}
+                              </button>
+                              <span class="sidebar-tree-count">{grp.children.length}</span>
+                              <span style={{ fontSize: 11, color: 'var(--pw-text-faint)', fontWeight: 600, cursor: 'pointer', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const swarmAppId = grp.children[0]?.appId || appKey;
+                                  if (swarmAppId && swarmAppId !== '__unlinked__') navigate(`/app/${swarmAppId}/wiggum`);
+                                }}>
+                                {grp.label}
+                                {activeCount > 0 && <span style={{ color: '#4CAF50', marginLeft: 4, fontWeight: 400 }}>{activeCount} running</span>}
+                              </span>
+                            </div>
+                            {exp && <div class="sidebar-session-tree-children">{grp.children.map(renderItem)}</div>}
+                          </div>
+                        );
+                      })}
+                      {renderHierarchical(items)}
+                    </>
+                  )}
+                </div>
+              );
+            });
+          }
+          const ungroupedKey = selectedAppId.value || '__all__';
+          return (
+            <>
+              <div class="sidebar-section-label" style={{ display: 'flex', alignItems: 'center' }}>
+                Agent Sessions ({restAgents.length})
+                <button
+                  class="sidebar-new-terminal-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    quickDispatchAppKey.value = quickDispatchAppKey.value === ungroupedKey ? null : ungroupedKey;
+                  }}
+                  title="New session"
+                >+</button>
+              </div>
+              {quickDispatchAppKey.value === ungroupedKey && (
+                <QuickDispatchPopup appKey={selectedAppId.value || '__unlinked__'} appName={selectedAppId.value ? (applications.value.find((a: any) => a.id === selectedAppId.value)?.name || selectedAppId.value.slice(-8)) : undefined} onClose={() => { quickDispatchAppKey.value = null; }} />
+              )}
+              {renderSwarmGroups()}
+              {renderHierarchical(topLevel)}
+            </>
+          );
+        })()}
       </div>
     </div>
   );

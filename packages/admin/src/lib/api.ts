@@ -656,4 +656,81 @@ export const api = {
 
   getWiggumLog: (harnessConfigId: string, logFile: string) =>
     request<{ logFile: string; content: string }>(`/admin/wiggum/log?harnessConfigId=${encodeURIComponent(harnessConfigId)}&logFile=${encodeURIComponent(logFile)}`),
+
+  // FAFO Swarms
+  getSwarms: (appId?: string) => {
+    const params = appId ? `?appId=${encodeURIComponent(appId)}` : '';
+    return request<any[]>(`/admin/wiggum/swarms${params}`);
+  },
+
+  createSwarm: (data: Record<string, unknown>) =>
+    request<any>('/admin/wiggum/swarms', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  getSwarm: (id: string) =>
+    request<any>(`/admin/wiggum/swarms/${id}`),
+
+  updateSwarm: (id: string, data: Record<string, unknown>) =>
+    request<any>(`/admin/wiggum/swarms/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  deleteSwarm: (id: string) =>
+    request<{ ok: boolean }>(`/admin/wiggum/swarms/${id}`, { method: 'DELETE' }),
+
+  getSwarmKnowledge: (id: string) =>
+    request<{ knowledge: string }>(`/admin/wiggum/swarms/${id}/knowledge`),
+
+  triggerNextGeneration: (id: string, data?: Record<string, unknown>) =>
+    request<any>(`/admin/wiggum/swarms/${id}/next-generation`, {
+      method: 'POST',
+      body: JSON.stringify(data || {}),
+    }),
+
+  // Swarm Paths
+  getSwarmPaths: (swarmId: string) =>
+    request<any[]>(`/admin/wiggum/swarms/${swarmId}/paths`),
+
+  createSwarmPath: (swarmId: string, data: Record<string, unknown>) =>
+    request<any>(`/admin/wiggum/swarms/${swarmId}/paths`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  updateSwarmPath: (swarmId: string, pathId: string, data: Record<string, unknown>) =>
+    request<any>(`/admin/wiggum/swarms/${swarmId}/paths/${pathId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  deleteSwarmPath: (swarmId: string, pathId: string) =>
+    request<{ ok: boolean }>(`/admin/wiggum/swarms/${swarmId}/paths/${pathId}`, { method: 'DELETE' }),
+
+  // FAFO Feedback
+  getSwarmFeedback: (swarmId: string, generation?: number) => {
+    const params = generation != null ? `?generation=${generation}` : '';
+    return request<any[]>(`/admin/wiggum/swarms/${swarmId}/feedback${params}`);
+  },
+
+  submitSwarmFeedback: (swarmId: string, data: {
+    runId?: string;
+    generation?: number;
+    rating: number;
+    annotation?: string;
+    regionX?: number;
+    regionY?: number;
+    regionW?: number;
+    regionH?: number;
+    screenshotRef?: string;
+  }) =>
+    request<{ id: string }>(`/admin/wiggum/swarms/${swarmId}/feedback`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  deleteSwarmFeedback: (swarmId: string, feedbackId: string) =>
+    request<{ ok: boolean }>(`/admin/wiggum/swarms/${swarmId}/feedback/${feedbackId}`, { method: 'DELETE' }),
 };

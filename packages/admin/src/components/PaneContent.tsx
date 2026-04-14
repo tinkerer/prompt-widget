@@ -56,6 +56,8 @@ export function renderTabContent(
           <SessionsPage appId={selectedAppId.value} />
         ) : sid === 'view:live' ? (
           <LiveConnectionsPage appId={selectedAppId.value} />
+        ) : sid === 'view:wiggum' ? (
+          <WiggumPage />
         ) : sid === 'view:app-settings' ? (
           (() => { const aid = selectedAppId.value || applications.value[0]?.id; return aid ? <AppSettingsPage appId={aid} /> : <div style={{ padding: 16, color: 'var(--pw-text-muted)' }}>No apps configured</div>; })()
         ) : sid === 'view:controlbar' ? (

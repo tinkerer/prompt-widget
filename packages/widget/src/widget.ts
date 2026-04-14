@@ -41,23 +41,92 @@ function copyText(text: string): Promise<void> {
   return Promise.resolve();
 }
 
+// --- localStorage persistence for widget drafts ---
+
+const STORAGE_SCREENSHOTS_KEY = 'pw-widget-screenshots';
+const STORAGE_SELECTIONS_KEY = 'pw-widget-selections';
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result as string);
+    reader.readAsDataURL(blob);
+  });
+}
+
+function dataUrlToBlob(dataUrl: string): Blob {
+  const [header, base64] = dataUrl.split(',');
+  const mime = header.match(/:(.*?);/)?.[1] || 'image/png';
+  const bytes = atob(base64);
+  const arr = new Uint8Array(bytes.length);
+  for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+  return new Blob([arr], { type: mime });
+}
+
+async function persistScreenshots(blobs: Blob[]) {
+  try {
+    if (blobs.length === 0) {
+      localStorage.removeItem(STORAGE_SCREENSHOTS_KEY);
+      return;
+    }
+    const dataUrls = await Promise.all(blobs.map(blobToDataUrl));
+    localStorage.setItem(STORAGE_SCREENSHOTS_KEY, JSON.stringify(dataUrls));
+  } catch { /* storage full or unavailable */ }
+}
+
+function restoreScreenshotsFromStorage(): Blob[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_SCREENSHOTS_KEY);
+    if (!raw) return [];
+    const urls: string[] = JSON.parse(raw);
+    return urls.map(dataUrlToBlob);
+  } catch { return []; }
+}
+
+function persistSelections(elements: SelectedElementInfo[]) {
+  try {
+    if (elements.length === 0) {
+      localStorage.removeItem(STORAGE_SELECTIONS_KEY);
+      return;
+    }
+    localStorage.setItem(STORAGE_SELECTIONS_KEY, JSON.stringify(elements));
+  } catch {}
+}
+
+function restoreSelectionsFromStorage(): SelectedElementInfo[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_SELECTIONS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+function clearWidgetDraftStorage() {
+  try {
+    localStorage.removeItem('pw-widget-draft');
+    localStorage.removeItem(STORAGE_SCREENSHOTS_KEY);
+    localStorage.removeItem(STORAGE_SELECTIONS_KEY);
+  } catch {}
+}
+
 export class PromptWidgetElement {
   private shadow: ShadowRoot;
   private host: HTMLElement;
   private config: WidgetConfig;
   private isOpen = false;
   private identity: UserIdentity | null = null;
-  private pendingScreenshots: Blob[] = [];
+  private pendingScreenshots: Blob[] = restoreScreenshotsFromStorage();
   private eventHandlers: Map<string, Set<EventHandler>> = new Map();
   private sessionBridge: SessionBridge;
   private history: string[] = [];
   private historyIndex = -1;
   private currentDraft = '';
-  private selectedElements: SelectedElementInfo[] = [];
+  private selectedElements: SelectedElementInfo[] = restoreSelectionsFromStorage();
   private pickerCleanup: (() => void) | null = null;
   private overlayManager: OverlayPanelManager;
   private appId: string;
-  private savedDraft = '';
+  private savedDraft = (() => {
+    try { return localStorage.getItem('pw-widget-draft') || ''; } catch { return ''; }
+  })();
   private savedCollectors = new Set<string>();
   private pickerMultiSelect = false;
   private pickerExcludeWidget = true;
@@ -1065,7 +1134,10 @@ export class PromptWidgetElement {
 
     this.updateSendButtonTitle(sendBtn);
 
-    input.addEventListener('input', () => this.updateSendButtonTitle(sendBtn));
+    input.addEventListener('input', () => {
+      this.updateSendButtonTitle(sendBtn);
+      try { localStorage.setItem('pw-widget-draft', input.value); } catch {}
+    });
 
     input.addEventListener('keydown', (e: KeyboardEvent) => {
       if (e.key === 'Enter' && !e.shiftKey) {
@@ -1179,6 +1251,7 @@ export class PromptWidgetElement {
 
   private addScreenshot(blob: Blob) {
     this.pendingScreenshots.push(blob);
+    persistScreenshots(this.pendingScreenshots);
     this.renderScreenshotThumbs();
     this.updateSendButtonTitle();
   }
@@ -1210,6 +1283,7 @@ export class PromptWidgetElement {
       removeBtn.title = 'Remove screenshot';
       removeBtn.addEventListener('click', () => {
         this.pendingScreenshots.splice(i, 1);
+        persistScreenshots(this.pendingScreenshots);
         this.renderScreenshotThumbs();
         this.updateSendButtonTitle();
       });
@@ -1575,6 +1649,7 @@ export class PromptWidgetElement {
       if (infos.length > 0) {
         this.selectedElements = [...previousElements, ...infos];
       }
+      persistSelections(this.selectedElements);
       this.renderSelectedElementChips();
     }, this.host, {
       multiSelect: this.pickerMultiSelect,
@@ -1582,6 +1657,7 @@ export class PromptWidgetElement {
       includeChildren: this.pickerIncludeChildren,
       onSelectionChange: liveUpdate ? (infos) => {
         this.selectedElements = [...previousElements, ...infos];
+        persistSelections(this.selectedElements);
         this.renderSelectedElementChips();
       } : undefined,
     });
@@ -1616,6 +1692,7 @@ export class PromptWidgetElement {
       const idx = i;
       chip.querySelector('.pw-selected-element-remove')!.addEventListener('click', () => {
         this.selectedElements.splice(idx, 1);
+        persistSelections(this.selectedElements);
         this.renderSelectedElementChips();
       });
 
@@ -1648,6 +1725,7 @@ export class PromptWidgetElement {
         primary: true,
         handler: async (resultBlob) => {
           this.pendingScreenshots[index] = resultBlob;
+          persistScreenshots(this.pendingScreenshots);
           this.renderScreenshotThumbs();
           dismiss();
         },
@@ -1689,6 +1767,7 @@ export class PromptWidgetElement {
         this.selectedElements = [];
         input.value = '';
         this.savedDraft = '';
+        clearWidgetDraftStorage();
         this.appendTargetId = null;
         const appendedPaths: string[] = Array.isArray(appendResult?.screenshots)
           ? appendResult.screenshots.map((s: { path: string }) => s.path).filter(Boolean)
@@ -1726,6 +1805,7 @@ export class PromptWidgetElement {
       this.pendingScreenshots = [];
       this.selectedElements = [];
       input.value = '';
+      clearWidgetDraftStorage();
       this.exitTimeline();
 
       this.emit('submit', { type: 'manual', title: '', description });
@@ -1953,6 +2033,8 @@ export class PromptWidgetElement {
     this.appendTargetId = feedbackId;
     this.pendingScreenshots = [];
     this.selectedElements = [];
+    persistScreenshots([]);
+    persistSelections([]);
     if (!this.isOpen) this.open();
     else this.renderPanel();
   }
@@ -1972,7 +2054,12 @@ export class PromptWidgetElement {
     }
     // Save state before removing panel
     const input = this.shadow.querySelector('#pw-chat-input') as HTMLTextAreaElement;
-    if (input) this.savedDraft = input.value;
+    if (input) {
+      this.savedDraft = input.value;
+      try { localStorage.setItem('pw-widget-draft', input.value); } catch {}
+    }
+    persistScreenshots(this.pendingScreenshots);
+    persistSelections(this.selectedElements);
     const panel = this.shadow.querySelector('.pw-panel');
     if (panel) panel.remove();
   }

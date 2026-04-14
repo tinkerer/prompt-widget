@@ -1,6 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'preact/hooks';
 import { api } from '../lib/api.js';
 import { subscribeAdmin } from '../lib/admin-ws.js';
+import { SwarmDashboard } from '../components/SwarmDashboard.js';
+import { launchFAFOAssistant } from '../lib/agent-constants.js';
+import { selectedAppId } from '../lib/state.js';
+import { openSession } from '../lib/sessions.js';
+import { toggleCompanion } from '../lib/companion-state.js';
 
 interface WiggumIteration {
   iteration: number;
@@ -428,11 +433,23 @@ function RunDetail({ runId, onBack }: { runId: string; onBack: () => void }) {
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12 }}>
               <a
                 href={`#/sessions/${iter.sessionId}`}
+                onClick={(e: any) => { e.preventDefault(); openSession(iter.sessionId); }}
                 style={{ color: '#64B5F6', textDecoration: 'none' }}
-                title="Open session"
+                title="Open session terminal"
               >
                 {iter.sessionId.slice(0, 10)}...
               </a>
+              <button
+                onClick={() => { openSession(iter.sessionId); toggleCompanion(iter.sessionId, 'jsonl'); }}
+                style={{
+                  fontSize: 9, padding: '1px 4px', background: 'rgba(100,181,246,0.15)',
+                  border: '1px solid rgba(100,181,246,0.3)', borderRadius: 3,
+                  color: '#64B5F6', cursor: 'pointer',
+                }}
+                title="Open JSONL structured view"
+              >
+                JSONL
+              </button>
               <span style={{ color: '#888' }}>
                 exit={iter.exitCode ?? '?'}
               </span>
@@ -637,6 +654,7 @@ export function WiggumPage() {
   const [editingFile, setEditingFile] = useState<string | null>(null);
   const [viewingLog, setViewingLog] = useState<string | null>(null);
   const [showAllRuns, setShowAllRuns] = useState(false);
+  const [showFAFO, setShowFAFO] = useState(false);
 
   // Batch launch settings
   const [batchMaxIters, setBatchMaxIters] = useState(10);
@@ -768,78 +786,84 @@ export function WiggumPage() {
     );
   }
 
-  const selectedHarness = harnesses.find((h: any) => h.id === selectedHarnessId);
+  // ── Group wiggum runs by label/promptFile ──
+  const runGroups = new Map<string, WiggumRun[]>();
+  for (const r of runs) {
+    const key = r.agentLabel || r.promptFile || 'Ungrouped';
+    const arr = runGroups.get(key) || [];
+    arr.push(r);
+    runGroups.set(key, arr);
+  }
+  // Sort each group by createdAt desc
+  for (const arr of runGroups.values()) {
+    arr.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+  const sortedGroupKeys = [...runGroups.keys()].sort((a, b) => {
+    const aRuns = runGroups.get(a)!;
+    const bRuns = runGroups.get(b)!;
+    const aActive = aRuns.some(r => r.status === 'running' || r.status === 'paused');
+    const bActive = bRuns.some(r => r.status === 'running' || r.status === 'paused');
+    if (aActive !== bActive) return aActive ? -1 : 1;
+    return bRuns[0].createdAt.localeCompare(aRuns[0].createdAt);
+  });
+
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => {
+    // Auto-expand groups with active runs
+    const active = new Set<string>();
+    for (const [key, arr] of runGroups) {
+      if (arr.some(r => r.status === 'running' || r.status === 'paused')) active.add(key);
+    }
+    return active;
+  });
+
+  const toggleGroup = (key: string) => {
+    const next = new Set(expandedGroups);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    setExpandedGroups(next);
+  };
 
   return (
-    <div style={{ padding: 16 }}>
+    <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <h2 style={{ margin: 0, fontSize: 18, color: '#eee' }}>Wiggum Swarm</h2>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h2 style={{ margin: 0, fontSize: 18, color: 'var(--pw-text)' }}>FAFO / Wiggum</h2>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <button
+            class="btn btn-sm"
+            style={{ background: '#7c3aed', color: '#fff' }}
+            onClick={async () => {
+              try {
+                setError(null);
+                await launchFAFOAssistant({ appId: selectedAppId.value });
+              } catch (err: any) {
+                setError(err.message || 'Failed to launch assistant');
+              }
+            }}
+          >
+            Setup Assistant
+          </button>
           <select
             value={selectedHarnessId}
             onChange={e => setSelectedHarnessId((e.target as HTMLSelectElement).value)}
-            style={{ padding: '4px 8px', background: '#111', border: '1px solid #444', color: '#ccc', borderRadius: 4, fontSize: 13 }}
+            style={{ padding: '4px 8px', background: 'var(--pw-bg-raised)', border: '1px solid var(--pw-border)', color: 'var(--pw-text)', borderRadius: 4, fontSize: 12 }}
           >
-            <option value="">Select harness...</option>
+            <option value="">Harness...</option>
             {harnesses.map((h: any) => (
               <option key={h.id} value={h.id}>{h.name} ({h.status})</option>
             ))}
           </select>
+          <button class="btn btn-sm" onClick={loadRuns}>Refresh</button>
         </div>
-
-        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-          <button class="btn btn-sm" onClick={handleLaunchAll} disabled={!selectedHarnessId || prompts.length === 0}>
-            Launch All
-          </button>
-          <button class="btn btn-sm" onClick={() => handleBatchAction('stop')} disabled={activeRunIds.length === 0}>
-            Stop All
-          </button>
-          <button class="btn btn-sm" onClick={() => handleBatchAction('pause')} disabled={activeRunIds.length === 0}>
-            Pause All
-          </button>
-          <button class="btn btn-sm" onClick={() => handleBatchAction('resume')}>
-            Resume All
-          </button>
-          <button class="btn btn-sm" style={{ opacity: 0.7 }} onClick={() => setShowManualCreate(!showManualCreate)}>
-            + Manual Run
-          </button>
-          <button class="btn btn-sm" style={{ opacity: 0.7 }} onClick={() => setShowAllRuns(!showAllRuns)}>
-            {showAllRuns ? 'Grid View' : 'All Runs'}
-          </button>
-        </div>
-      </div>
-
-      {/* Batch settings row */}
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
-        <label style={{ fontSize: 12, color: '#888' }}>Max iters:</label>
-        <input
-          type="number"
-          value={batchMaxIters}
-          onInput={e => setBatchMaxIters(parseInt((e.target as HTMLInputElement).value) || 10)}
-          style={{ width: 60, padding: '3px 6px', background: '#111', border: '1px solid #444', color: '#ccc', borderRadius: 4, fontSize: 12 }}
-        />
-        <label style={{ fontSize: 12, color: '#888', marginLeft: 8 }}>Deploy cmd:</label>
-        <input
-          type="text"
-          value={batchDeploy}
-          onInput={e => setBatchDeploy((e.target as HTMLInputElement).value)}
-          placeholder="optional"
-          style={{ width: 200, padding: '3px 6px', background: '#111', border: '1px solid #444', color: '#ccc', borderRadius: 4, fontSize: 12 }}
-        />
-        <button class="btn btn-sm" style={{ opacity: 0.7, marginLeft: 8 }} onClick={loadPrompts}>
-          Refresh
-        </button>
       </div>
 
       {error && (
-        <div style={{ color: '#f44336', marginBottom: 8, fontSize: 13 }}>
+        <div style={{ color: '#f44336', fontSize: 13 }}>
           {error}
           <button style={{ marginLeft: 8, background: 'none', border: 'none', color: '#888', cursor: 'pointer' }} onClick={() => setError(null)}>dismiss</button>
         </div>
       )}
 
-      {/* Editors / Log viewer */}
+      {/* Editors / Log viewer overlays */}
       {editingFile && selectedHarnessId && (
         <PromptEditor harnessConfigId={selectedHarnessId} filename={editingFile} onClose={() => { setEditingFile(null); loadPrompts(); }} />
       )}
@@ -847,105 +871,148 @@ export function WiggumPage() {
         <LogViewer harnessConfigId={selectedHarnessId} logFile={viewingLog} onClose={() => setViewingLog(null)} />
       )}
 
-      {showManualCreate && <CreateRunForm onCreated={() => { setShowManualCreate(false); loadRuns(); }} defaultHarnessId={selectedHarnessId} />}
+      {/* ── FAFO Swarms Section ── */}
+      <SwarmDashboard />
 
-      {/* All Runs list view */}
-      {showAllRuns ? (
-        <div>
-          {harnessRuns.length === 0 && (
-            <div style={{ color: '#888', fontSize: 13, textAlign: 'center', padding: 32 }}>No runs for this harness.</div>
-          )}
-          {harnessRuns
-            .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-            .map(run => (
-            <div
-              key={run.id}
-              style={{
-                border: '1px solid #333',
-                borderRadius: 6,
-                padding: 10,
-                marginBottom: 6,
-                background: '#1a1a1a',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                cursor: 'pointer',
-              }}
-              onClick={() => setSelectedRunId(run.id)}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{
-                  padding: '2px 8px',
-                  borderRadius: 4,
-                  fontSize: 11,
-                  fontWeight: 600,
-                  background: STATUS_COLORS[run.status] || '#666',
-                  color: '#fff',
-                }}>
-                  {run.status.toUpperCase()}
-                </span>
-                {run.agentLabel && <span style={{ fontSize: 13, fontWeight: 600, color: '#ccc' }}>{run.agentLabel}</span>}
-                <span style={{ fontSize: 12, color: '#888' }}>{run.id.slice(0, 8)}</span>
-                <span style={{ fontSize: 11, color: '#666' }}>iter {run.currentIteration}/{run.maxIterations}</span>
-              </div>
-              <div style={{ display: 'flex', gap: 4 }} onClick={e => e.stopPropagation()}>
-                {run.status === 'running' && <button class="btn btn-sm" onClick={() => handleAction(run.id, 'pause')}>Pause</button>}
-                {run.status === 'paused' && <button class="btn btn-sm" onClick={() => handleAction(run.id, 'resume')}>Resume</button>}
-                {(run.status === 'running' || run.status === 'paused') && (
-                  <button class="btn btn-sm btn-danger" onClick={() => handleAction(run.id, 'stop')}>Stop</button>
-                )}
-                {(run.status === 'completed' || run.status === 'failed' || run.status === 'stopped') && (
-                  <button class="btn btn-sm btn-danger" onClick={() => handleAction(run.id, 'delete')}>Delete</button>
-                )}
-                <span style={{ fontSize: 11, color: '#888', alignSelf: 'center' }}>{timeAgo(run.createdAt)}</span>
-              </div>
-            </div>
-          ))}
+      {/* ── Wiggum Runs Section ── */}
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <h3 style={{ margin: 0, fontSize: 14, color: 'var(--pw-text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+            Wiggum Runs
+          </h3>
+          <span style={{ fontSize: 11, color: 'var(--pw-text-faint)' }}>
+            {runs.length} total
+            {runs.filter(r => r.status === 'running').length > 0 && ` \u00b7 ${runs.filter(r => r.status === 'running').length} running`}
+          </span>
         </div>
-      ) : (
-        /* ── Swarm Grid ── */
-        <>
-          {loading && <div style={{ color: '#888', fontSize: 13, padding: 16 }}>Discovering prompt files...</div>}
 
-          {!loading && !selectedHarnessId && (
-            <div style={{ color: '#888', fontSize: 13, textAlign: 'center', padding: 32 }}>
-              Select a harness to discover prompt files.
-            </div>
-          )}
-
-          {!loading && selectedHarnessId && selectedHarness?.status !== 'running' && (
-            <div style={{ color: '#FF9800', fontSize: 13, textAlign: 'center', padding: 32 }}>
-              Harness is not running. Start it first to discover prompt files.
-            </div>
-          )}
-
-          {!loading && prompts.length === 0 && selectedHarness?.status === 'running' && (
-            <div style={{ color: '#888', fontSize: 13, textAlign: 'center', padding: 32 }}>
-              No PROMPT_*.md files found in the container. Check the prompt directory.
-            </div>
-          )}
-
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-            gap: 12,
-          }}>
-            {prompts.map(p => (
-              <AgentCard
-                key={p.filename}
-                prompt={p}
-                run={getActiveRun(p.filename)}
-                harnessConfigId={selectedHarnessId}
-                onLaunch={handleLaunch}
-                onAction={handleAction}
-                onViewRun={setSelectedRunId}
-                onEdit={setEditingFile}
-                onViewLog={setViewingLog}
-              />
-            ))}
+        {sortedGroupKeys.length === 0 && (
+          <div style={{ color: 'var(--pw-text-faint)', fontSize: 13, textAlign: 'center', padding: 24 }}>
+            No wiggum runs yet.
           </div>
-        </>
-      )}
+        )}
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {sortedGroupKeys.map(groupKey => {
+            const groupRuns = runGroups.get(groupKey)!;
+            const expanded = expandedGroups.has(groupKey);
+            const activeCount = groupRuns.filter(r => r.status === 'running' || r.status === 'paused').length;
+            const doneCount = groupRuns.filter(r => r.status === 'completed').length;
+            const failedCount = groupRuns.filter(r => r.status === 'failed').length;
+            const latestRun = groupRuns[0];
+            const bestIter = Math.max(...groupRuns.map(r => r.currentIteration));
+            const maxIter = Math.max(...groupRuns.map(r => r.maxIterations));
+
+            return (
+              <div key={groupKey} style={{
+                background: 'var(--pw-bg-surface)',
+                borderRadius: 8,
+                border: `1px solid ${activeCount > 0 ? 'rgba(76,175,80,0.3)' : 'var(--pw-border)'}`,
+                overflow: 'hidden',
+              }}>
+                {/* Group header */}
+                <div
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
+                    cursor: 'pointer', userSelect: 'none',
+                  }}
+                  onClick={() => toggleGroup(groupKey)}
+                >
+                  <span style={{ fontSize: 11, color: 'var(--pw-text-faint)', width: 12 }}>
+                    {expanded ? '\u25be' : '\u25b8'}
+                  </span>
+                  <span style={{
+                    width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
+                    background: activeCount > 0 ? '#4CAF50' : doneCount > 0 ? '#2196F3' : failedCount > 0 ? '#f44336' : '#888',
+                  }} />
+                  <span style={{ fontWeight: 600, fontSize: 13, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {groupKey}
+                  </span>
+                  <span style={{ fontSize: 11, color: 'var(--pw-text-faint)', flexShrink: 0 }}>
+                    {groupRuns.length} run{groupRuns.length !== 1 ? 's' : ''}
+                  </span>
+                  <span style={{ fontSize: 11, color: 'var(--pw-text-faint)', flexShrink: 0 }}>
+                    iter {bestIter}/{maxIter}
+                  </span>
+                  {activeCount > 0 && (
+                    <span style={{ fontSize: 10, color: '#4CAF50', fontWeight: 600, flexShrink: 0 }}>
+                      {activeCount} active
+                    </span>
+                  )}
+                  <span style={{ fontSize: 10, color: 'var(--pw-text-faint)', flexShrink: 0 }}>
+                    {timeAgo(latestRun.createdAt)}
+                  </span>
+                  <button
+                    class="btn btn-sm"
+                    style={{ fontSize: 9, padding: '1px 6px', background: '#7c3aed', color: '#fff', flexShrink: 0 }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const runIds = groupRuns.map(r => r.id).join(', ');
+                      const ctx = `The user wants help with wiggum run group "${groupKey}".
+Runs: ${groupRuns.length} (${activeCount} active, ${doneCount} done, ${failedCount} failed)
+Best iteration: ${bestIter}/${maxIter}
+Run IDs: ${runIds}
+Latest run: ${latestRun.id} (${latestRun.status})
+
+Start by fetching the latest run detail: curl -s $AUTH 'http://localhost:3001/api/v1/admin/wiggum/${latestRun.id}'
+Then ask the user what they need help with — monitoring, adjusting, or creating a new run in this group.`;
+                      launchFAFOAssistant({ appId: selectedAppId.value, context: ctx }).catch(err => setError(err.message));
+                    }}
+                    title="Launch assistant for this run group"
+                  >
+                    Assist
+                  </button>
+                </div>
+
+                {/* Expanded: individual runs */}
+                {expanded && (
+                  <div style={{ borderTop: '1px solid var(--pw-border)', padding: '4px 0' }}>
+                    {groupRuns.map(run => (
+                      <div
+                        key={run.id}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 8,
+                          padding: '6px 12px 6px 34px', cursor: 'pointer',
+                          fontSize: 12,
+                        }}
+                        onClick={() => setSelectedRunId(run.id)}
+                      >
+                        <span style={{
+                          padding: '1px 6px', borderRadius: 3, fontSize: 10, fontWeight: 600,
+                          background: STATUS_COLORS[run.status] || '#666', color: '#fff', flexShrink: 0,
+                        }}>
+                          {run.status}
+                        </span>
+                        <span style={{ fontFamily: 'monospace', fontSize: 10, color: 'var(--pw-text-faint)', flexShrink: 0 }}>
+                          {run.id.slice(-8)}
+                        </span>
+                        <span style={{ color: 'var(--pw-text-muted)', fontSize: 11 }}>
+                          iter {run.currentIteration}/{run.maxIterations}
+                        </span>
+                        {run.iterations.length > 0 && run.iterations[run.iterations.length - 1]?.screenshotId && (
+                          <span style={{ fontSize: 10, color: 'var(--pw-text-faint)' }}>[screenshot]</span>
+                        )}
+                        <span style={{ flex: 1 }} />
+                        <div style={{ display: 'flex', gap: 4 }} onClick={e => e.stopPropagation()}>
+                          {run.status === 'running' && <button class="btn btn-sm" onClick={() => handleAction(run.id, 'pause')}>Pause</button>}
+                          {run.status === 'paused' && <button class="btn btn-sm" onClick={() => handleAction(run.id, 'resume')}>Resume</button>}
+                          {(run.status === 'running' || run.status === 'paused') && (
+                            <button class="btn btn-sm btn-danger" onClick={() => handleAction(run.id, 'stop')}>Stop</button>
+                          )}
+                          {(run.status === 'completed' || run.status === 'failed' || run.status === 'stopped') && (
+                            <button class="btn btn-sm btn-danger" onClick={() => handleAction(run.id, 'delete')}>Del</button>
+                          )}
+                        </div>
+                        <span style={{ fontSize: 10, color: 'var(--pw-text-faint)' }}>{timeAgo(run.createdAt)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }

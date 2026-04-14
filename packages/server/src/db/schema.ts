@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real } from 'drizzle-orm/sqlite-core';
 
 export const applications = sqliteTable('applications', {
   id: text('id').primaryKey(),
@@ -214,6 +214,50 @@ export const jsonlContinuations = sqliteTable('jsonl_continuations', {
   discoveredAt: text('discovered_at').notNull(),
 });
 
+export const wiggumSwarms = sqliteTable('wiggum_swarms', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  mode: text('mode').notNull().default('single'), // 'single' | 'multi-path'
+  promptFile: text('prompt_file'),
+  fitnessCommand: text('fitness_command'),
+  targetArtifact: text('target_artifact'),
+  artifactType: text('artifact_type').notNull().default('screenshot'),
+  fitnessMetric: text('fitness_metric').notNull().default('pixel-diff'), // 'pixel-diff' | 'ssim' | 'edge-diff' | 'custom'
+  knowledgeFile: text('knowledge_file'),
+  knowledgeContent: text('knowledge_content').notNull().default(''),
+  fanOut: integer('fan_out').notNull().default(6),
+  generationCount: integer('generation_count').notNull().default(0),
+  maxGenerations: integer('max_generations'),  // null = manual only; set to N to auto-advance up to gen N
+  harnessConfigId: text('harness_config_id').references(() => harnessConfigs.id, { onDelete: 'set null' }),
+  appId: text('app_id').references(() => applications.id, { onDelete: 'set null' }),
+  // Isolation config (JSON): { method: 'worktree'|'none', basePort?: number, baseBranch?: string }
+  isolation: text('isolation'),
+  status: text('status').notNull().default('pending'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+// Multi-path sub-elements within a swarm
+export const wiggumSwarmPaths = sqliteTable('wiggum_swarm_paths', {
+  id: text('id').primaryKey(),
+  swarmId: text('swarm_id').notNull().references(() => wiggumSwarms.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(), // e.g. 'port-shape', 'pill-connector'
+  prompt: text('prompt').notNull(), // per-path prompt for the child agent
+  files: text('files'), // JSON array of file paths this path focuses on
+  focusLines: text('focus_lines'), // e.g. '4706-4780'
+  // Per-path fitness: crop region [x, y, w, h], metric override
+  cropRegion: text('crop_region'), // JSON: [x, y, w, h]
+  fitnessMetric: text('fitness_metric'), // override swarm-level metric
+  fitnessCommand: text('fitness_command'), // override swarm-level command
+  worktreePort: integer('worktree_port'), // assigned port for this path's vite
+  worktreeBranch: text('worktree_branch'), // branch name for this path's worktree
+  worktreePath: text('worktree_path'), // filesystem path to worktree
+  status: text('status').notNull().default('pending'),
+  order: integer('order').notNull().default(0),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
 export const wiggumRuns = sqliteTable('wiggum_runs', {
   id: text('id').primaryKey(),
   agentEndpointId: text('agent_endpoint_id').references(() => agentEndpoints.id, { onDelete: 'set null' }),
@@ -233,6 +277,16 @@ export const wiggumRuns = sqliteTable('wiggum_runs', {
   promptFile: text('prompt_file'),
   logFile: text('log_file'),
   agentLabel: text('agent_label'),
+  swarmId: text('swarm_id').references(() => wiggumSwarms.id, { onDelete: 'set null' }),
+  pathId: text('path_id').references(() => wiggumSwarmPaths.id, { onDelete: 'set null' }),
+  generation: integer('generation'),
+  parentRunId: text('parent_run_id'),
+  fitnessScore: real('fitness_score'),
+  fitnessDetail: text('fitness_detail'),
+  knobs: text('knobs'),
+  finalArtifactPath: text('final_artifact_path'),
+  survived: integer('survived', { mode: 'boolean' }),
+  sessionId: text('session_id'),
   createdAt: text('created_at').notNull(),
   startedAt: text('started_at'),
   completedAt: text('completed_at'),
@@ -246,6 +300,21 @@ export const wiggumScreenshots = sqliteTable('wiggum_screenshots', {
   filename: text('filename').notNull(),
   mimeType: text('mime_type').notNull(),
   size: integer('size').notNull(),
+  createdAt: text('created_at').notNull(),
+});
+
+export const fafoFeedback = sqliteTable('fafo_feedback', {
+  id: text('id').primaryKey(),
+  swarmId: text('swarm_id').notNull().references(() => wiggumSwarms.id, { onDelete: 'cascade' }),
+  runId: text('run_id').references(() => wiggumRuns.id, { onDelete: 'set null' }),
+  generation: integer('generation'),
+  rating: integer('rating'), // -1 (bad), 0 (neutral), 1 (good)
+  annotation: text('annotation'),
+  regionX: integer('region_x'),
+  regionY: integer('region_y'),
+  regionW: integer('region_w'),
+  regionH: integer('region_h'),
+  screenshotRef: text('screenshot_ref'),
   createdAt: text('created_at').notNull(),
 });
 

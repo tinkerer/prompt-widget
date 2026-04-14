@@ -391,6 +391,65 @@ export function runMigrations() {
     // Column already exists
   }
 
+  // FAFO: wiggum swarms table + swarm columns on wiggum_runs
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS wiggum_swarms (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      prompt_file TEXT,
+      fitness_command TEXT,
+      target_artifact TEXT,
+      artifact_type TEXT NOT NULL DEFAULT 'screenshot',
+      knowledge_file TEXT,
+      knowledge_content TEXT NOT NULL DEFAULT '',
+      fan_out INTEGER NOT NULL DEFAULT 6,
+      generation_count INTEGER NOT NULL DEFAULT 0,
+      harness_config_id TEXT REFERENCES harness_configs(id) ON DELETE SET NULL,
+      app_id TEXT REFERENCES applications(id) ON DELETE SET NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+  // Multi-path sub-elements table
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS wiggum_swarm_paths (
+      id TEXT PRIMARY KEY,
+      swarm_id TEXT NOT NULL REFERENCES wiggum_swarms(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      files TEXT,
+      focus_lines TEXT,
+      crop_region TEXT,
+      fitness_metric TEXT,
+      fitness_command TEXT,
+      worktree_port INTEGER,
+      worktree_branch TEXT,
+      worktree_path TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      "order" INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+  const swarmCols = [
+    `ALTER TABLE wiggum_swarms ADD COLUMN mode TEXT NOT NULL DEFAULT 'single'`,
+    `ALTER TABLE wiggum_swarms ADD COLUMN fitness_metric TEXT NOT NULL DEFAULT 'pixel-diff'`,
+    `ALTER TABLE wiggum_swarms ADD COLUMN isolation TEXT`,
+    `ALTER TABLE wiggum_runs ADD COLUMN swarm_id TEXT REFERENCES wiggum_swarms(id) ON DELETE SET NULL`,
+    `ALTER TABLE wiggum_runs ADD COLUMN path_id TEXT REFERENCES wiggum_swarm_paths(id) ON DELETE SET NULL`,
+    `ALTER TABLE wiggum_runs ADD COLUMN generation INTEGER`,
+    `ALTER TABLE wiggum_runs ADD COLUMN parent_run_id TEXT`,
+    `ALTER TABLE wiggum_runs ADD COLUMN fitness_score REAL`,
+    `ALTER TABLE wiggum_runs ADD COLUMN knobs TEXT`,
+    `ALTER TABLE wiggum_runs ADD COLUMN final_artifact_path TEXT`,
+    `ALTER TABLE wiggum_runs ADD COLUMN survived INTEGER`,
+    `ALTER TABLE wiggum_runs ADD COLUMN session_id TEXT`,
+  ];
+  for (const sql of swarmCols) {
+    try { sqlite.exec(sql); } catch { /* column exists */ }
+  }
+
   // JSONL continuation tracking
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS jsonl_continuations (

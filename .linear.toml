@@ -1,0 +1,4 @@
+team_id = "WOR"
+workspace = "workbenchai"
+issue_sort = "priority"
+vcs = "git"

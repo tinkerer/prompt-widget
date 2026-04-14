@@ -144,6 +144,13 @@ export function SidebarNavView() {
                     )}
                   </a>
                   <a
+                    href={`#/app/${app.id}/wiggum`}
+                    class={route === `/app/${app.id}/wiggum` ? 'active' : ''}
+                    onClick={(e) => { e.preventDefault(); navigate(`/app/${app.id}/wiggum`); openPageView('view:wiggum'); }}
+                  >
+                    {'\u{1F9EC}'} FAFO / Wiggum
+                  </a>
+                  <a
                     href={`#/app/${app.id}/settings`}
                     class={route === `/app/${app.id}/settings` ? 'active' : ''}
                     onClick={(e) => { e.preventDefault(); navigate(`/app/${app.id}/settings`); openPageView('view:app-settings'); }}

@@ -98,6 +98,39 @@ prompt-widget-host{pointer-events:auto;}</style></head>
 </body></html>`);
 });
 
+// Serve static files from the filesystem (e.g. /tmp/foo.txt → /files/tmp/foo.txt)
+app.get('/files/*', async (c) => {
+  const filePath = c.req.path.replace('/files', '');
+  // Block path traversal
+  if (filePath.includes('..')) return c.text('Forbidden', 403);
+  const { createReadStream, stat } = await import('node:fs');
+  const { promisify } = await import('node:util');
+  const fsStat = promisify(stat);
+  try {
+    const s = await fsStat(filePath);
+    if (!s.isFile()) return c.text('Not a file', 400);
+    const ext = filePath.split('.').pop()?.toLowerCase() || '';
+    const mimeMap: Record<string, string> = {
+      html: 'text/html', htm: 'text/html', css: 'text/css', js: 'application/javascript',
+      json: 'application/json', txt: 'text/plain', md: 'text/plain',
+      png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+      svg: 'image/svg+xml', pdf: 'application/pdf', xml: 'application/xml',
+      csv: 'text/csv', log: 'text/plain', yaml: 'text/yaml', yml: 'text/yaml',
+      ts: 'text/plain', tsx: 'text/plain', py: 'text/plain', sh: 'text/plain',
+      c: 'text/plain', cpp: 'text/plain', h: 'text/plain', rs: 'text/plain',
+      go: 'text/plain', java: 'text/plain', rb: 'text/plain',
+    };
+    c.header('Content-Type', mimeMap[ext] || 'application/octet-stream');
+    c.header('Content-Length', String(s.size));
+    const { Readable } = await import('node:stream');
+    const nodeStream = createReadStream(filePath);
+    const webStream = Readable.toWeb(nodeStream) as ReadableStream;
+    return new Response(webStream, { headers: c.res.headers });
+  } catch {
+    return c.text('Not found', 404);
+  }
+});
+
 // Serve widget JS from the widget package build output
 app.use('/widget/*', serveStatic({ root: '../widget/dist/', rewriteRequestPath: (path) => path.replace('/widget', '') }));
 

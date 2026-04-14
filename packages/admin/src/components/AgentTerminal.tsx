@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { lastTerminalInput } from '../lib/sessions.js';
 import { copyText } from '../lib/clipboard.js';
+import { openUrlCompanion } from '../lib/companion-state.js';
 import type { InputState } from '../lib/sessions.js';
 
 const MAX_RECONNECT_ATTEMPTS = 10;
@@ -298,6 +299,17 @@ export function AgentTerminal({ sessionId, isActive, onExit, onInputStateChange 
       if (lnk) {
         const p = lnk.length > 40 ? lnk.slice(0, 40) + '\u2026' : lnk;
         items.push({ label: `Open ${p}`, action: () => window.open(lnk, '_blank') });
+      }
+
+      // Detect file paths and offer to open in a pane via /files/* route
+      const pathWord = w || '';
+      if (/^(\/|~\/)/.test(pathWord) && pathWord.length > 1) {
+        const filePath = pathWord.startsWith('~/') ? `/home/${pathWord.slice(2)}` : pathWord;
+        const fileUrl = `/files${filePath}`;
+        const pLabel = pathWord.length > 35 ? pathWord.slice(0, 35) + '\u2026' : pathWord;
+        items.push({ label: `Open "${pLabel}" in pane`, action: () => {
+          openUrlCompanion(`${location.protocol}//${location.host}${fileUrl}`);
+        }});
       }
 
       ctxMenu.innerHTML = '';

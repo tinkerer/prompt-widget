@@ -53,6 +53,8 @@ export function PageView() {
       page = <AggregatePage appId={parsed.appId} />;
     } else if (parsed.sub === 'live') {
       page = <LiveConnectionsPage appId={parsed.appId} />;
+    } else if (parsed.sub === 'wiggum') {
+      page = <WiggumPage />;
     } else if (parsed.sub === 'settings') {
       page = <AppSettingsPage appId={parsed.appId} />;
     } else {

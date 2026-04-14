@@ -257,7 +257,55 @@ export function sessionPassesFilters(s: any, tabSet: Set<string>): boolean {
   if (tabSet.has(s.id)) return true;
   const statusFilters = sessionStatusFilters.value;
   if (!statusFilters.has(s.status)) return false;
+  // App filter
+  const appFilter = sessionAppFilters.value;
+  if (appFilter.size > 0) {
+    const sAppId = s.appId || '__unlinked__';
+    if (!appFilter.has(sAppId)) return false;
+  }
   return true;
+}
+
+// --- App Filters ---
+
+export const sessionAppFilters = signal<Set<string>>(
+  new Set(loadJson<string[]>('pw-session-app-filters', []))
+);
+export const sessionGroupByApp = signal<boolean>(loadJson('pw-session-group-by-app', false));
+export const sessionExpandedParents = signal<Set<string>>(
+  new Set(loadJson<string[]>('pw-session-expanded-parents', []))
+);
+export const sessionCollapsedAppGroups = signal<Set<string>>(
+  new Set(loadJson<string[]>('pw-session-collapsed-app-groups', []))
+);
+
+export function toggleAppFilter(appIdVal: string) {
+  const next = new Set(sessionAppFilters.value);
+  if (next.has(appIdVal)) next.delete(appIdVal);
+  else next.add(appIdVal);
+  sessionAppFilters.value = next;
+  localStorage.setItem('pw-session-app-filters', JSON.stringify([...next]));
+}
+
+export function toggleGroupByApp() {
+  sessionGroupByApp.value = !sessionGroupByApp.value;
+  localStorage.setItem('pw-session-group-by-app', JSON.stringify(sessionGroupByApp.value));
+}
+
+export function toggleExpandedParent(parentId: string) {
+  const next = new Set(sessionExpandedParents.value);
+  if (next.has(parentId)) next.delete(parentId);
+  else next.add(parentId);
+  sessionExpandedParents.value = next;
+  localStorage.setItem('pw-session-expanded-parents', JSON.stringify([...next]));
+}
+
+export function toggleCollapsedAppGroup(appKey: string) {
+  const next = new Set(sessionCollapsedAppGroups.value);
+  if (next.has(appKey)) next.delete(appKey);
+  else next.add(appKey);
+  sessionCollapsedAppGroups.value = next;
+  localStorage.setItem('pw-session-collapsed-app-groups', JSON.stringify([...next]));
 }
 
 // --- Quick Dispatch ---

@@ -24,6 +24,18 @@ function computeJsonlPath(projectDir: string | null, claudeSessionId: string | n
   return computeJsonlPathFull(projectDir, claudeSessionId);
 }
 
+// Resolve the JSONL path, falling back to session cwd when the app's projectDir doesn't match.
+// Fafo runs use a temp directory as cwd, so the JSONL file lives under that path, not the app's projectDir.
+function resolveJsonlPath(appProjectDir: string | null, sessionCwd: string | null, claudeSessionId: string | null): string | null {
+  const primary = computeJsonlPath(appProjectDir || process.cwd(), claudeSessionId);
+  if (primary && existsSync(primary)) return primary;
+  if (sessionCwd && sessionCwd !== (appProjectDir || process.cwd())) {
+    const fallback = computeJsonlPath(sessionCwd, claudeSessionId);
+    if (fallback && existsSync(fallback)) return fallback;
+  }
+  return primary; // return primary even if missing, so callers get a meaningful error path
+}
+
 export const agentSessionRoutes = new Hono();
 
 // Transfer status route — must be before /:id to avoid being caught by the param
@@ -86,8 +98,7 @@ agentSessionRoutes.post('/search-content', async (c) => {
   const queryLower = query?.toLowerCase();
 
   for (const row of rows) {
-    const projectDir = row.appProjectDir || process.cwd();
-    const jsonlPath = computeJsonlPath(projectDir, row.session.claudeSessionId);
+    const jsonlPath = resolveJsonlPath(row.appProjectDir, row.session.cwd, row.session.claudeSessionId);
     if (!jsonlPath || !existsSync(jsonlPath)) continue;
 
     const allLines: string[] = [];
@@ -194,8 +205,7 @@ agentSessionRoutes.get('/error-summary', async (c) => {
   }> = [];
 
   for (const row of rows) {
-    const projectDir = row.appProjectDir || process.cwd();
-    const jsonlPath = computeJsonlPath(projectDir, row.session.claudeSessionId);
+    const jsonlPath = resolveJsonlPath(row.appProjectDir, row.session.cwd, row.session.claudeSessionId);
     if (!jsonlPath || !existsSync(jsonlPath)) continue;
 
     const allLines: string[] = [];
@@ -316,6 +326,30 @@ type SessionRow = ReturnType<typeof sessionBaseQuery>['_']['result'][number];
 
 async function enrichSessions(rows: SessionRow[]) {
   const liveStates = await getSessionLiveStates();
+
+  // Build session→swarm/run lookup from wiggumRuns
+  const allRunsForLookup = db.select({
+    id: schema.wiggumRuns.id,
+    sessionId: schema.wiggumRuns.sessionId,
+    swarmId: schema.wiggumRuns.swarmId,
+    iterations: schema.wiggumRuns.iterations,
+  }).from(schema.wiggumRuns).all();
+  const runBySessionId = new Map<string, { runId: string; swarmId: string | null }>();
+  for (const r of allRunsForLookup) {
+    if (r.sessionId) runBySessionId.set(r.sessionId, { runId: r.id, swarmId: r.swarmId });
+    // Also check iterations JSON for legacy wiggum runs
+    try {
+      const iters = JSON.parse(r.iterations || '[]');
+      for (const iter of iters) {
+        if (iter.sessionId && !runBySessionId.has(iter.sessionId)) {
+          runBySessionId.set(iter.sessionId, { runId: r.id, swarmId: r.swarmId });
+        }
+      }
+    } catch { /* ignore */ }
+  }
+  const allSwarms = db.select({ id: schema.wiggumSwarms.id, name: schema.wiggumSwarms.name }).from(schema.wiggumSwarms).all();
+  const swarmNameMap = new Map(allSwarms.map(s => [s.id, s.name]));
+
   const allMachines = db.select().from(schema.machines).all();
   const machineMap = new Map(allMachines.map(m => [m.id, m]));
   const allHarnessConfigs = db.select().from(schema.harnessConfigs).all();
@@ -388,7 +422,7 @@ async function enrichSessions(rows: SessionRow[]) {
       paneTitle: live?.paneTitle || null,
       paneCommand: live?.paneCommand || null,
       panePath: live?.panePath || null,
-      jsonlPath: computeJsonlPath(r.appProjectDir || process.cwd(), r.claudeSessionId),
+      jsonlPath: resolveJsonlPath(r.appProjectDir, r.cwd, r.claudeSessionId),
       launcherName,
       launcherHostname,
       machineName,
@@ -396,6 +430,16 @@ async function enrichSessions(rows: SessionRow[]) {
       isRemote,
       isHarness,
       harnessAppPort,
+      // Swarm/wiggum run linkage
+      ...((() => {
+        const runInfo = runBySessionId.get(r.id);
+        if (!runInfo) return {};
+        return {
+          wiggumRunId: runInfo.runId,
+          swarmId: runInfo.swarmId || null,
+          swarmName: runInfo.swarmId ? (swarmNameMap.get(runInfo.swarmId) || null) : null,
+        };
+      })()),
     };
   });
 }
@@ -613,6 +657,7 @@ agentSessionRoutes.get('/:id/jsonl-files', async (c) => {
   const row = db
     .select({
       claudeSessionId: schema.agentSessions.claudeSessionId,
+      cwd: schema.agentSessions.cwd,
       appProjectDir: schema.applications.projectDir,
     })
     .from(schema.agentSessions)
@@ -625,7 +670,7 @@ agentSessionRoutes.get('/:id/jsonl-files', async (c) => {
     return c.json({ error: 'Session not found' }, 404);
   }
 
-  const jsonlPath = computeJsonlPath(row.appProjectDir || process.cwd(), row.claudeSessionId);
+  const jsonlPath = resolveJsonlPath(row.appProjectDir, row.cwd, row.claudeSessionId);
   if (!jsonlPath) {
     return c.json({ error: 'No JSONL path available' }, 400);
   }
@@ -651,6 +696,7 @@ agentSessionRoutes.get('/:id/jsonl', async (c) => {
   const row = db
     .select({
       claudeSessionId: schema.agentSessions.claudeSessionId,
+      cwd: schema.agentSessions.cwd,
       appProjectDir: schema.applications.projectDir,
     })
     .from(schema.agentSessions)
@@ -663,7 +709,7 @@ agentSessionRoutes.get('/:id/jsonl', async (c) => {
     return c.json({ error: 'Session not found' }, 404);
   }
 
-  const jsonlPath = computeJsonlPath(row.appProjectDir || process.cwd(), row.claudeSessionId);
+  const jsonlPath = resolveJsonlPath(row.appProjectDir, row.cwd, row.claudeSessionId);
   if (!jsonlPath) {
     return c.json({ error: 'No JSONL path available' }, 400);
   }
@@ -704,6 +750,7 @@ agentSessionRoutes.post('/:id/tail-jsonl', async (c) => {
   const row = db
     .select({
       claudeSessionId: schema.agentSessions.claudeSessionId,
+      cwd: schema.agentSessions.cwd,
       appProjectDir: schema.applications.projectDir,
     })
     .from(schema.agentSessions)
@@ -716,7 +763,7 @@ agentSessionRoutes.post('/:id/tail-jsonl', async (c) => {
     return c.json({ error: 'Session not found' }, 404);
   }
 
-  const jsonlPath = computeJsonlPath(row.appProjectDir || process.cwd(), row.claudeSessionId);
+  const jsonlPath = resolveJsonlPath(row.appProjectDir, row.cwd, row.claudeSessionId);
   if (!jsonlPath) {
     return c.json({ error: 'No JSONL path available (missing projectDir or claudeSessionId)' }, 400);
   }
@@ -784,23 +831,26 @@ agentSessionRoutes.get('/:id/export-context', async (c) => {
     return c.json({ error: 'Session not found' }, 404);
   }
 
-  const projectDir = row.appProjectDir || process.cwd();
   const claudeSessionId = row.session.claudeSessionId;
-  if (!projectDir || !claudeSessionId) {
-    return c.json({ error: 'Missing projectDir or claudeSessionId' }, 400);
+  if (!claudeSessionId) {
+    return c.json({ error: 'Missing claudeSessionId' }, 400);
   }
 
-  const jsonlPath = computeJsonlPath(projectDir, claudeSessionId);
+  const jsonlPath = resolveJsonlPath(row.appProjectDir, row.session.cwd, claudeSessionId);
   if (!jsonlPath || !existsSync(jsonlPath)) {
     return c.json({ error: 'JSONL file not found' }, 404);
   }
 
-  const pkg = exportSessionFiles(projectDir, claudeSessionId);
-  const sanitized = projectDir.replaceAll('/', '-').replaceAll('.', '-');
+  // Derive the effective projectDir from the resolved jsonlPath
+  const effectiveProjectDir = computeJsonlPath(row.appProjectDir || process.cwd(), claudeSessionId) === jsonlPath
+    ? (row.appProjectDir || process.cwd())
+    : (row.session.cwd || row.appProjectDir || process.cwd());
+  const pkg = exportSessionFiles(effectiveProjectDir, claudeSessionId);
+  const sanitized = effectiveProjectDir.replaceAll('/', '-').replaceAll('.', '-');
 
   return c.json({
     claudeSessionId,
-    projectDir,
+    projectDir: effectiveProjectDir,
     sanitizedProjectDir: sanitized,
     jsonlFiles: pkg.jsonlFiles,
     artifactFiles: pkg.artifactFiles,

@@ -13,6 +13,7 @@ import {
   broadcastToLauncherSessionAdmins,
   cleanupOrphanedSessions,
 } from './agent-sessions.js';
+import { startFAFOPoller } from './fafo-controller.js';
 import {
   registerLauncher,
   unregisterLauncher,
@@ -100,6 +101,9 @@ function ensureLocalMachine(): string {
 }
 
 const localMachineId = ensureLocalMachine();
+
+// Start FAFO auto-advance poller (checks every 15s for completed generations)
+startFAFOPoller(15_000);
 
 const server = serve({ fetch: app.fetch, port: PORT }, (info) => {
   const url = `http://localhost:${info.port}`;
