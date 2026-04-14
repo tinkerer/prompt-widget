@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'preact/hooks';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'preact/hooks';
 import { marked } from 'marked';
 import { api } from '../lib/api.js';
 import { launchFAFOAssistant } from '../lib/agent-constants.js';
@@ -437,6 +437,21 @@ Help the user with: monitoring progress, analyzing scores, triggering next gener
           >
             Assist
           </button>
+          {detail.mode === 'multi-path' && detail.targetArtifact && (
+            <button
+              class="btn btn-sm"
+              style={{ background: '#e65100', color: '#fff' }}
+              onClick={async () => {
+                try {
+                  const result = await api.decomposeSwarm(detail.id);
+                  if (result.sessionId) openSession(result.sessionId);
+                } catch { /* ignore */ }
+              }}
+              title="Auto-analyze target image and suggest worker paths"
+            >
+              Decompose
+            </button>
+          )}
           <button class="btn btn-sm" onClick={onToggleKnowledge}>
             {knowledgeOpen ? 'Hide' : 'Show'} Knowledge
           </button>
@@ -483,6 +498,9 @@ Help the user with: monitoring progress, analyzing scores, triggering next gener
             })}
           </div>
         )}
+
+        {/* Convergence chart */}
+        {genStats.length > 1 && <ConvergenceChart genStats={genStats} />}
 
         {/* Generation strips */}
         <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -580,6 +598,160 @@ Help the user with: monitoring progress, analyzing scores, triggering next gener
   );
 }
 
+// ─── Convergence Chart (SVG sparkline) ──────────────
+
+function ConvergenceChart({ genStats }: { genStats: { gen: number; best: number | null; median: number | null }[] }) {
+  const data = genStats.filter(g => g.best != null) as { gen: number; best: number; median: number | null }[];
+  if (data.length < 2) return null;
+
+  const W = 400, H = 80, PAD = 24;
+  const minScore = Math.min(...data.map(d => d.best));
+  const maxScore = Math.max(...data.map(d => d.best), ...data.filter(d => d.median != null).map(d => d.median!));
+  const range = maxScore - minScore || 0.01;
+
+  const x = (i: number) => PAD + (i / (data.length - 1)) * (W - PAD * 2);
+  const y = (v: number) => PAD + ((v - minScore) / range) * (H - PAD * 2);
+
+  const bestLine = data.map((d, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(d.best).toFixed(1)}`).join(' ');
+  const medianLine = data.filter(d => d.median != null).length > 1
+    ? data.map((d, i) => d.median != null ? `${i === 0 || data[i - 1]?.median == null ? 'M' : 'L'}${x(i).toFixed(1)},${y(d.median!).toFixed(1)}` : '').filter(Boolean).join(' ')
+    : '';
+
+  return (
+    <div style={{
+      background: 'var(--pw-bg-surface)', borderRadius: 8, border: '1px solid var(--pw-border)',
+      padding: '8px 12px', marginBottom: 8,
+    }}>
+      <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--pw-text-muted)', marginBottom: 4 }}>
+        Fitness Convergence (lower = better)
+        <span style={{ marginLeft: 12, fontWeight: 400, fontSize: 10 }}>
+          <span style={{ color: '#4CAF50' }}>--- best</span>
+          {medianLine && <span style={{ color: '#FF9800', marginLeft: 8 }}>--- median</span>}
+        </span>
+      </div>
+      <svg width={W} height={H} style={{ display: 'block' }}>
+        {/* Grid lines */}
+        {[0, 0.25, 0.5, 0.75, 1].map(frac => {
+          const yy = PAD + frac * (H - PAD * 2);
+          const val = minScore + frac * range;
+          return (
+            <g key={frac}>
+              <line x1={PAD} y1={yy} x2={W - PAD} y2={yy} stroke="rgba(128,128,128,0.15)" strokeWidth={1} />
+              <text x={2} y={yy + 3} fill="var(--pw-text-faint)" fontSize={8}>{val.toFixed(2)}</text>
+            </g>
+          );
+        })}
+        {/* Gen labels */}
+        {data.map((d, i) => (
+          <text key={d.gen} x={x(i)} y={H - 2} fill="var(--pw-text-faint)" fontSize={8} textAnchor="middle">
+            {d.gen}
+          </text>
+        ))}
+        {/* Best line */}
+        <path d={bestLine} fill="none" stroke="#4CAF50" strokeWidth={2} />
+        {data.map((d, i) => (
+          <circle key={d.gen} cx={x(i)} cy={y(d.best)} r={3} fill="#4CAF50">
+            <title>Gen {d.gen}: best={d.best.toFixed(3)}</title>
+          </circle>
+        ))}
+        {/* Median line */}
+        {medianLine && <path d={medianLine} fill="none" stroke="#FF9800" strokeWidth={1.5} strokeDasharray="4,2" />}
+      </svg>
+    </div>
+  );
+}
+
+// ─── Image Annotation Overlay ───────────────────────
+// Click and drag on an image to select a region, then annotate it.
+
+function ImageAnnotator({
+  src,
+  onRegionSelect,
+}: {
+  src: string;
+  onRegionSelect: (region: { x: number; y: number; w: number; h: number }) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [dragging, setDragging] = useState(false);
+  const [start, setStart] = useState<{ x: number; y: number } | null>(null);
+  const [current, setCurrent] = useState<{ x: number; y: number } | null>(null);
+  const [imgSize, setImgSize] = useState<{ w: number; h: number; natW: number; natH: number } | null>(null);
+
+  const getRelPos = (e: MouseEvent) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect || !imgSize) return null;
+    const px = (e.clientX - rect.left) / rect.width;
+    const py = (e.clientY - rect.top) / rect.height;
+    // Convert to natural image coordinates
+    return { x: Math.round(px * imgSize.natW), y: Math.round(py * imgSize.natH) };
+  };
+
+  const onMouseDown = (e: MouseEvent) => {
+    e.preventDefault();
+    const pos = getRelPos(e);
+    if (pos) { setStart(pos); setCurrent(pos); setDragging(true); }
+  };
+
+  const onMouseMove = (e: MouseEvent) => {
+    if (!dragging) return;
+    const pos = getRelPos(e);
+    if (pos) setCurrent(pos);
+  };
+
+  const onMouseUp = () => {
+    if (dragging && start && current) {
+      const x = Math.min(start.x, current.x);
+      const y = Math.min(start.y, current.y);
+      const w = Math.abs(current.x - start.x);
+      const h = Math.abs(current.y - start.y);
+      if (w > 5 && h > 5) {
+        onRegionSelect({ x, y, w, h });
+      }
+    }
+    setDragging(false);
+    setStart(null);
+    setCurrent(null);
+  };
+
+  // Compute selection rect in percentage for overlay
+  const selRect = start && current && imgSize ? (() => {
+    const x1 = Math.min(start.x, current.x) / imgSize.natW * 100;
+    const y1 = Math.min(start.y, current.y) / imgSize.natH * 100;
+    const w = Math.abs(current.x - start.x) / imgSize.natW * 100;
+    const h = Math.abs(current.y - start.y) / imgSize.natH * 100;
+    return { left: `${x1}%`, top: `${y1}%`, width: `${w}%`, height: `${h}%` };
+  })() : null;
+
+  return (
+    <div
+      ref={containerRef}
+      style={{ position: 'relative', cursor: 'crosshair', userSelect: 'none', lineHeight: 0 }}
+      onMouseDown={onMouseDown}
+      onMouseMove={onMouseMove}
+      onMouseUp={onMouseUp}
+      onMouseLeave={onMouseUp}
+    >
+      <img
+        src={src}
+        style={{ width: '100%', height: 'auto', borderRadius: 4, display: 'block' }}
+        onLoad={(e) => {
+          const img = e.currentTarget as HTMLImageElement;
+          setImgSize({ w: img.width, h: img.height, natW: img.naturalWidth, natH: img.naturalHeight });
+        }}
+        draggable={false}
+      />
+      {selRect && (
+        <div style={{
+          position: 'absolute', ...selRect,
+          border: '2px solid #f44336',
+          background: 'rgba(244,67,54,0.15)',
+          pointerEvents: 'none',
+        }} />
+      )}
+    </div>
+  );
+}
+
 // ─── Run Cell (single child in generation strip) ──────
 
 function RunCell({ run, detail }: { run: SwarmRun; detail: SwarmDetail }) {
@@ -587,8 +759,19 @@ function RunCell({ run, detail }: { run: SwarmRun; detail: SwarmDetail }) {
   const [feedbackRating, setFeedbackRating] = useState<number | null>(null);
   const [feedbackText, setFeedbackText] = useState('');
   const [showFeedback, setShowFeedback] = useState(false);
+  const [compareMode, setCompareMode] = useState(false);
+  const [selectedScreenshot, setSelectedScreenshot] = useState(0);
+  const [annotationRegion, setAnnotationRegion] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const isDimmed = run.survived === false;
   const isSurvivor = run.survived === true;
+
+  const targetUrl = `/api/v1/admin/wiggum/swarms/${detail.id}/target`;
+  const latestScreenshot = run.screenshots.length > 0
+    ? run.screenshots[Math.min(selectedScreenshot, run.screenshots.length - 1)]
+    : null;
+  const screenshotUrl = latestScreenshot
+    ? (latestScreenshot.url || `/api/v1/admin/wiggum/${run.id}/screenshots/${latestScreenshot.id}`)
+    : null;
 
   const submitFeedback = async (rating: number) => {
     try {
@@ -597,17 +780,37 @@ function RunCell({ run, detail }: { run: SwarmRun; detail: SwarmDetail }) {
         generation: run.generation ?? undefined,
         rating,
         annotation: feedbackText || undefined,
+        ...(annotationRegion ? {
+          regionX: annotationRegion.x,
+          regionY: annotationRegion.y,
+          regionW: annotationRegion.w,
+          regionH: annotationRegion.h,
+        } : {}),
+        screenshotRef: latestScreenshot?.filename || latestScreenshot?.id || undefined,
       });
       setFeedbackRating(rating);
       setShowFeedback(false);
       setFeedbackText('');
+      setAnnotationRegion(null);
     } catch { /* ignore */ }
   };
+
+  // Parse fitness detail for sub-score display
+  const fitnessDetail = useMemo(() => {
+    try { return run.fitnessDetail ? JSON.parse(run.fitnessDetail) : null; }
+    catch { return null; }
+  }, [run.fitnessDetail]);
+
+  // Path name for this run
+  const pathName = useMemo(() => {
+    if (!run.pathId) return null;
+    return detail.paths.find(p => p.id === run.pathId)?.name || null;
+  }, [run.pathId, detail.paths]);
 
   return (
     <div
       style={{
-        width: expanded ? '100%' : 80,
+        width: expanded ? '100%' : 90,
         minHeight: 60,
         background: isDimmed ? 'rgba(100,100,100,0.15)' : isSurvivor ? 'rgba(76,175,80,0.1)' : 'var(--pw-bg-raised)',
         borderRadius: 6,
@@ -617,9 +820,10 @@ function RunCell({ run, detail }: { run: SwarmRun; detail: SwarmDetail }) {
         opacity: isDimmed ? 0.5 : 1,
         transition: 'all 0.2s',
       }}
-      onClick={() => setExpanded(!expanded)}
+      onClick={() => { if (!expanded) setExpanded(true); }}
       title={`${run.id.slice(-8)} | ${run.status} | score: ${run.fitnessScore ?? '?'}`}
     >
+      {/* Compact header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4 }}>
         <span style={{
           width: 6, height: 6, borderRadius: '50%',
@@ -627,36 +831,51 @@ function RunCell({ run, detail }: { run: SwarmRun; detail: SwarmDetail }) {
           flexShrink: 0,
         }} />
         <span style={{ fontSize: 9, fontFamily: 'monospace', color: 'var(--pw-text-faint)' }}>
-          {run.id.slice(-6)}
+          {pathName ? pathName : run.id.slice(-6)}
         </span>
         {isSurvivor && <span style={{ fontSize: 8, color: '#4CAF50' }}>&#x2713;</span>}
+        {expanded && (
+          <button
+            onClick={(e) => { e.stopPropagation(); setExpanded(false); }}
+            style={{
+              marginLeft: 'auto', fontSize: 10, cursor: 'pointer', padding: '1px 5px',
+              background: 'transparent', border: '1px solid var(--pw-border)', borderRadius: 3,
+              color: 'var(--pw-text-muted)',
+            }}
+          >
+            Collapse
+          </button>
+        )}
       </div>
 
+      {/* Fitness score + sub-scores */}
       {run.fitnessScore != null && (
-        <div
-          style={{ fontSize: 14, fontWeight: 700, textAlign: 'center', color: 'var(--pw-text)' }}
-          title={(() => {
-            try {
-              const d = run.fitnessDetail ? JSON.parse(run.fitnessDetail) : null;
-              if (d) return `SSIM: ${d.ssim?.toFixed(3)} | Edge: ${d.edge_iou?.toFixed(3)} | Hist: ${d.hist_corr?.toFixed(3)} | Pixel: ${d.pixel_mean?.toFixed(1)}`;
-            } catch { /* ignore */ }
-            return `composite: ${run.fitnessScore.toFixed(3)}`;
-          })()}
-        >
-          {run.fitnessScore.toFixed(3)}
+        <div style={{ textAlign: expanded ? 'left' : 'center', marginBottom: expanded ? 8 : 0 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--pw-text)' }}>
+            {run.fitnessScore.toFixed(3)}
+          </div>
+          {expanded && fitnessDetail && (
+            <div style={{ display: 'flex', gap: 8, fontSize: 10, color: 'var(--pw-text-muted)', marginTop: 2 }}>
+              {fitnessDetail.ssim != null && <span>SSIM: {fitnessDetail.ssim.toFixed(3)}</span>}
+              {fitnessDetail.edge_iou != null && <span>Edge: {fitnessDetail.edge_iou.toFixed(3)}</span>}
+              {fitnessDetail.hist_corr != null && <span>Hist: {fitnessDetail.hist_corr.toFixed(3)}</span>}
+              {fitnessDetail.pixel_mean != null && <span>Px: {fitnessDetail.pixel_mean.toFixed(1)}</span>}
+            </div>
+          )}
         </div>
       )}
 
-      <div style={{ fontSize: 9, color: 'var(--pw-text-faint)', textAlign: 'center' }}>
-        {run.currentIteration}/{run.maxIterations}
-      </div>
+      {!expanded && (
+        <div style={{ fontSize: 9, color: 'var(--pw-text-faint)', textAlign: 'center' }}>
+          {run.currentIteration}/{run.maxIterations}
+        </div>
+      )}
 
-      {/* Expanded: show filmstrip + session links */}
+      {/* Expanded view */}
       {expanded && (
-        <div style={{ marginTop: 8, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+        <div style={{ marginTop: 4 }} onClick={(e) => e.stopPropagation()}>
           {/* Session links */}
           {(() => {
-            // Collect all session IDs: direct sessionId + iteration sessionIds
             const sids: string[] = [];
             if (run.sessionId) sids.push(run.sessionId);
             for (const iter of run.iterations) {
@@ -664,96 +883,69 @@ function RunCell({ run, detail }: { run: SwarmRun; detail: SwarmDetail }) {
             }
             if (sids.length === 0) return null;
             return (
-              <div style={{ width: '100%', display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 4 }}>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
                 {sids.map((sid, i) => (
                   <div key={sid} style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
                     <a
                       href={`#/sessions/${sid}`}
-                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); openSession(sid); }}
+                      onClick={(e) => { e.preventDefault(); openSession(sid); }}
                       style={{ fontSize: 10, color: '#64B5F6', textDecoration: 'none', fontFamily: 'monospace' }}
-                      title="Open session terminal"
                     >
                       {sids.length > 1 ? `#${i}` : ''} {sid.slice(-8)}
                     </a>
                     <button
-                      onClick={(e) => { e.stopPropagation(); openSession(sid); toggleCompanion(sid, 'jsonl'); }}
+                      onClick={() => { openSession(sid); toggleCompanion(sid, 'jsonl'); }}
                       style={{
                         fontSize: 9, padding: '1px 4px', background: 'rgba(100,181,246,0.15)',
                         border: '1px solid rgba(100,181,246,0.3)', borderRadius: 3,
                         color: '#64B5F6', cursor: 'pointer',
                       }}
-                      title="Open JSONL structured view"
                     >
                       JSONL
                     </button>
                   </div>
                 ))}
+                <span style={{ fontSize: 10, color: 'var(--pw-text-faint)' }}>
+                  iter: {run.currentIteration}/{run.maxIterations}
+                </span>
               </div>
             );
           })()}
-          {run.screenshots.map((ss: any) => (
-            <img
-              key={ss.id}
-              src={ss.url || `/api/v1/admin/wiggum/${run.id}/screenshots/${ss.id}`}
-              style={{
-                width: 120,
-                height: 80,
-                objectFit: 'cover',
-                borderRadius: 4,
-                border: '1px solid var(--pw-border)',
-              }}
-              loading="lazy"
-              title={ss.filename || ss.id}
-            />
-          ))}
-          {run.screenshots.length === 0 && (
-            <span style={{ fontSize: 10, color: '#888' }}>No screenshots</span>
-          )}
-          {run.knobs && (
-            <div style={{ fontSize: 9, color: '#888', width: '100%' }}>
-              knobs: {run.knobs}
-            </div>
-          )}
 
-          {/* Feedback controls */}
-          <div style={{ width: '100%', display: 'flex', gap: 6, alignItems: 'center', marginTop: 6, borderTop: '1px solid var(--pw-border)', paddingTop: 6 }}>
+          {/* Side-by-side comparison toggle */}
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 6 }}>
             <button
-              onClick={(e) => { e.stopPropagation(); submitFeedback(1); }}
+              onClick={() => setCompareMode(!compareMode)}
               style={{
-                fontSize: 14, cursor: 'pointer', padding: '2px 8px', borderRadius: 4,
-                background: feedbackRating === 1 ? 'rgba(76,175,80,0.3)' : 'transparent',
-                border: '1px solid rgba(76,175,80,0.4)', color: '#4CAF50',
-              }}
-              title="Good result"
-            >
-              +
-            </button>
-            <button
-              onClick={(e) => { e.stopPropagation(); submitFeedback(-1); }}
-              style={{
-                fontSize: 14, cursor: 'pointer', padding: '2px 8px', borderRadius: 4,
-                background: feedbackRating === -1 ? 'rgba(244,67,54,0.3)' : 'transparent',
-                border: '1px solid rgba(244,67,54,0.4)', color: '#f44336',
-              }}
-              title="Bad result"
-            >
-              -
-            </button>
-            <button
-              onClick={(e) => { e.stopPropagation(); setShowFeedback(!showFeedback); }}
-              style={{
-                fontSize: 10, cursor: 'pointer', padding: '2px 8px', borderRadius: 4,
-                background: 'transparent', border: '1px solid var(--pw-border)', color: 'var(--pw-text-muted)',
+                fontSize: 10, padding: '2px 8px', borderRadius: 4, cursor: 'pointer',
+                background: compareMode ? 'rgba(124,58,237,0.2)' : 'transparent',
+                border: `1px solid ${compareMode ? '#7c3aed' : 'var(--pw-border)'}`,
+                color: compareMode ? '#7c3aed' : 'var(--pw-text-muted)',
               }}
             >
-              Annotate
+              {compareMode ? 'Hide Comparison' : 'Compare with Target'}
             </button>
-            {feedbackRating != null && (
-              <span style={{ fontSize: 10, color: feedbackRating === 1 ? '#4CAF50' : '#f44336' }}>
-                {feedbackRating === 1 ? 'Marked good' : 'Marked bad'}
-              </span>
+            {run.screenshots.length > 1 && (
+              <div style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+                <button
+                  onClick={() => setSelectedScreenshot(Math.max(0, selectedScreenshot - 1))}
+                  disabled={selectedScreenshot === 0}
+                  style={{ fontSize: 10, padding: '1px 5px', cursor: 'pointer', border: '1px solid var(--pw-border)', borderRadius: 3, background: 'transparent', color: 'var(--pw-text)' }}
+                >
+                  &lt;
+                </button>
+                <span style={{ fontSize: 10, color: 'var(--pw-text-muted)', minWidth: 40, textAlign: 'center' }}>
+                  {selectedScreenshot + 1}/{run.screenshots.length}
+                </span>
+                <button
+                  onClick={() => setSelectedScreenshot(Math.min(run.screenshots.length - 1, selectedScreenshot + 1))}
+                  disabled={selectedScreenshot >= run.screenshots.length - 1}
+                  style={{ fontSize: 10, padding: '1px 5px', cursor: 'pointer', border: '1px solid var(--pw-border)', borderRadius: 3, background: 'transparent', color: 'var(--pw-text)' }}
+                >
+                  &gt;
+                </button>
+              </div>
             )}
-
             {/* Live preview link */}
             {(() => {
               try {
@@ -764,10 +956,9 @@ function RunCell({ run, detail }: { run: SwarmRun; detail: SwarmDetail }) {
                       href={`http://localhost:${knobs.port}`}
                       target="_blank"
                       rel="noreferrer"
-                      onClick={(e) => e.stopPropagation()}
                       style={{ fontSize: 10, color: '#64B5F6', marginLeft: 'auto' }}
                     >
-                      Live Preview :{knobs.port}
+                      Preview :{knobs.port}
                     </a>
                   );
                 }
@@ -776,12 +967,146 @@ function RunCell({ run, detail }: { run: SwarmRun; detail: SwarmDetail }) {
             })()}
           </div>
 
+          {/* Side-by-side: Target vs Result */}
+          {compareMode && (
+            <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--pw-text-muted)', marginBottom: 4, textTransform: 'uppercase' }}>
+                  Target
+                </div>
+                <img
+                  src={targetUrl}
+                  style={{ width: '100%', height: 'auto', borderRadius: 4, border: '2px solid rgba(124,58,237,0.4)' }}
+                  loading="lazy"
+                />
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--pw-text-muted)', marginBottom: 4, textTransform: 'uppercase' }}>
+                  Result {latestScreenshot?.filename && `(${latestScreenshot.filename})`}
+                </div>
+                {screenshotUrl ? (
+                  <ImageAnnotator
+                    src={screenshotUrl}
+                    onRegionSelect={(region) => {
+                      setAnnotationRegion(region);
+                      setShowFeedback(true);
+                    }}
+                  />
+                ) : (
+                  <div style={{ padding: 20, textAlign: 'center', color: '#888', fontSize: 11, background: 'var(--pw-bg-raised)', borderRadius: 4 }}>
+                    No screenshots yet
+                  </div>
+                )}
+                {annotationRegion && (
+                  <div style={{ fontSize: 9, color: '#f44336', marginTop: 2 }}>
+                    Region selected: [{annotationRegion.x}, {annotationRegion.y}, {annotationRegion.w}, {annotationRegion.h}]
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Screenshot filmstrip (when not in compare mode) */}
+          {!compareMode && run.screenshots.length > 0 && (
+            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 8 }}>
+              {run.screenshots.map((ss: any, i: number) => (
+                <img
+                  key={ss.id}
+                  src={ss.url || `/api/v1/admin/wiggum/${run.id}/screenshots/${ss.id}`}
+                  style={{
+                    width: 100, height: 66, objectFit: 'cover', borderRadius: 4,
+                    border: `2px solid ${i === selectedScreenshot ? '#7c3aed' : 'var(--pw-border)'}`,
+                    cursor: 'pointer', opacity: i === selectedScreenshot ? 1 : 0.6,
+                  }}
+                  loading="lazy"
+                  title={ss.filename || ss.id}
+                  onClick={() => setSelectedScreenshot(i)}
+                />
+              ))}
+            </div>
+          )}
+
+          {!compareMode && run.screenshots.length === 0 && (
+            <span style={{ fontSize: 10, color: '#888', display: 'block', marginBottom: 8 }}>No screenshots</span>
+          )}
+
+          {run.knobs && (
+            <div style={{ fontSize: 9, color: '#888', marginBottom: 6 }}>
+              knobs: {run.knobs}
+            </div>
+          )}
+
+          {/* Feedback controls */}
+          <div style={{
+            display: 'flex', gap: 6, alignItems: 'center',
+            borderTop: '1px solid var(--pw-border)', paddingTop: 6,
+          }}>
+            <button
+              onClick={() => submitFeedback(1)}
+              style={{
+                fontSize: 14, cursor: 'pointer', padding: '2px 8px', borderRadius: 4,
+                background: feedbackRating === 1 ? 'rgba(76,175,80,0.3)' : 'transparent',
+                border: '1px solid rgba(76,175,80,0.4)', color: '#4CAF50',
+              }}
+              title="Good result"
+            >
+              +
+            </button>
+            <button
+              onClick={() => submitFeedback(-1)}
+              style={{
+                fontSize: 14, cursor: 'pointer', padding: '2px 8px', borderRadius: 4,
+                background: feedbackRating === -1 ? 'rgba(244,67,54,0.3)' : 'transparent',
+                border: '1px solid rgba(244,67,54,0.4)', color: '#f44336',
+              }}
+              title="Bad result"
+            >
+              -
+            </button>
+            <button
+              onClick={() => setShowFeedback(!showFeedback)}
+              style={{
+                fontSize: 10, cursor: 'pointer', padding: '2px 8px', borderRadius: 4,
+                background: showFeedback ? 'rgba(124,58,237,0.15)' : 'transparent',
+                border: `1px solid ${showFeedback ? '#7c3aed' : 'var(--pw-border)'}`,
+                color: showFeedback ? '#7c3aed' : 'var(--pw-text-muted)',
+              }}
+            >
+              Annotate
+            </button>
+            {feedbackRating != null && (
+              <span style={{ fontSize: 10, color: feedbackRating === 1 ? '#4CAF50' : '#f44336' }}>
+                {feedbackRating === 1 ? 'Marked good' : 'Marked bad'}
+              </span>
+            )}
+          </div>
+
+          {/* Annotation form */}
           {showFeedback && (
-            <div style={{ width: '100%', marginTop: 4 }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ marginTop: 6 }}>
+              {annotationRegion && (
+                <div style={{
+                  fontSize: 10, padding: '4px 8px', marginBottom: 4, borderRadius: 4,
+                  background: 'rgba(244,67,54,0.1)', border: '1px solid rgba(244,67,54,0.3)', color: '#f44336',
+                }}>
+                  Region: [{annotationRegion.x}, {annotationRegion.y}] {annotationRegion.w}x{annotationRegion.h}px
+                  <button
+                    onClick={() => setAnnotationRegion(null)}
+                    style={{ marginLeft: 8, fontSize: 9, cursor: 'pointer', background: 'transparent', border: 'none', color: '#f44336', textDecoration: 'underline' }}
+                  >
+                    clear
+                  </button>
+                </div>
+              )}
+              {!annotationRegion && compareMode && (
+                <div style={{ fontSize: 10, color: 'var(--pw-text-faint)', marginBottom: 4 }}>
+                  Tip: Click and drag on the result image to select a region
+                </div>
+              )}
               <textarea
                 value={feedbackText}
                 onInput={(e) => setFeedbackText((e.target as HTMLTextAreaElement).value)}
-                placeholder="What's wrong or right about this result? (e.g., 'horn curves too wide', 'port color is correct')"
+                placeholder="What's wrong or right? (e.g., 'horn curves too wide', 'port color is correct')"
                 style={{
                   width: '100%', minHeight: 50, padding: 6, fontSize: 11, borderRadius: 4,
                   border: '1px solid var(--pw-border)', background: 'var(--pw-bg-raised)', color: 'var(--pw-text)',
@@ -789,26 +1114,14 @@ function RunCell({ run, detail }: { run: SwarmRun; detail: SwarmDetail }) {
                 }}
               />
               <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
-                <button
-                  class="btn btn-sm"
-                  style={{ fontSize: 10, background: '#4CAF50', color: '#fff' }}
-                  onClick={() => submitFeedback(1)}
-                >
-                  Submit as Good
+                <button class="btn btn-sm" style={{ fontSize: 10, background: '#4CAF50', color: '#fff' }} onClick={() => submitFeedback(1)}>
+                  Good
                 </button>
-                <button
-                  class="btn btn-sm"
-                  style={{ fontSize: 10, background: '#f44336', color: '#fff' }}
-                  onClick={() => submitFeedback(-1)}
-                >
-                  Submit as Bad
+                <button class="btn btn-sm" style={{ fontSize: 10, background: '#f44336', color: '#fff' }} onClick={() => submitFeedback(-1)}>
+                  Bad
                 </button>
-                <button
-                  class="btn btn-sm"
-                  style={{ fontSize: 10 }}
-                  onClick={() => submitFeedback(0)}
-                >
-                  Submit Neutral
+                <button class="btn btn-sm" style={{ fontSize: 10 }} onClick={() => submitFeedback(0)}>
+                  Neutral
                 </button>
               </div>
             </div>

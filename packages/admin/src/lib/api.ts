@@ -733,4 +733,16 @@ export const api = {
 
   deleteSwarmFeedback: (swarmId: string, feedbackId: string) =>
     request<{ ok: boolean }>(`/admin/wiggum/swarms/${swarmId}/feedback/${feedbackId}`, { method: 'DELETE' }),
+
+  // Auto-decomposition
+  decomposeSwarm: (swarmId: string, context?: string) =>
+    request<{ sessionId: string; message: string }>(`/admin/wiggum/swarms/${swarmId}/decompose`, {
+      method: 'POST',
+      body: JSON.stringify({ context }),
+    }),
+
+  // Worker diff
+  getWorkerDiff: (swarmId: string, gen: number, pathName: string) =>
+    fetch(`/api/v1/admin/wiggum/swarms/${swarmId}/gen/${gen}/path/${pathName}/diff`)
+      .then(r => r.ok ? r.text() : ''),
 };

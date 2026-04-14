@@ -204,7 +204,7 @@ function PaneHeader({
   const feedbackPath = sess?.feedbackId
     ? appId ? `/app/${appId}/feedback/${sess.feedbackId}` : `/feedback/${sess.feedbackId}`
     : null;
-  const viewMode = realSessionId ? getViewMode(realSessionId, sess?.permissionProfile) : 'terminal';
+  const viewMode = realSessionId ? getViewMode(realSessionId) : 'terminal';
   const isExited = realSessionId ? exited.has(realSessionId) : false;
 
   return (
@@ -416,7 +416,7 @@ function PaneHeader({
       <span style="flex:1" />
       {sessionId && !isCompanionTab && (
         <>
-          {(sess?.permissionProfile === 'auto' || sess?.permissionProfile === 'yolo') && (
+          {sess?.jsonlPath && (
             <select
               class="view-mode-select"
               value={viewMode}

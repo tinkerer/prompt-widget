@@ -82,7 +82,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
   const sessionMap = sessionMapComputed.value;
   const session = sessionMap.get(activeId);
   const isExited = activeId ? exitedSessions.value.has(activeId) : false;
-  const viewMode = activeId ? getViewMode(activeId, session?.permissionProfile) : 'terminal';
+  const viewMode = activeId ? getViewMode(activeId) : 'terminal';
   const docked = panel.docked;
   const wrapperRef = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
@@ -302,7 +302,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
         )}
         <span style="flex:1" />
         <div class="popout-header-actions">
-          {activeId && (session?.permissionProfile === 'auto' || session?.permissionProfile === 'yolo') && (
+          {activeId && session?.jsonlPath && (
             <select
               class="view-mode-select"
               value={viewMode}
@@ -463,7 +463,7 @@ function PanelView({ panel }: { panel: PopoutPanelState }) {
         )}
         <span style="flex:1" />
         <div class="popout-header-actions">
-          {activeId && (session?.permissionProfile === 'auto' || session?.permissionProfile === 'yolo') && (
+          {activeId && session?.jsonlPath && (
             <select
               class="view-mode-select"
               value={viewMode}

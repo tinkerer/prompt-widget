@@ -16,7 +16,7 @@ export function StandaloneSessionPage({ sessionId }: { sessionId: string }) {
   const sessions = allSessions.value;
   const sess = sessions.find((s: any) => s.id === sessionId);
   const isExited = exitedSessions.value.has(sessionId);
-  const mode = getViewMode(sessionId, sess?.permissionProfile) || viewMode.value;
+  const mode = getViewMode(sessionId) || viewMode.value;
 
   return (
     <div style={{ width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--pw-bg)', color: 'var(--pw-text)' }}>
@@ -24,7 +24,7 @@ export function StandaloneSessionPage({ sessionId }: { sessionId: string }) {
         <span style={{ fontWeight: 600 }}>pw-{sessionId.slice(-6)}</span>
         {isExited && <span style={{ color: 'var(--pw-text-muted)' }}>(exited)</span>}
         <span style="flex:1" />
-        {(sess?.permissionProfile === 'auto' || sess?.permissionProfile === 'yolo') && (
+        {sess?.jsonlPath && (
           <select
             class="view-mode-select"
             value={mode}

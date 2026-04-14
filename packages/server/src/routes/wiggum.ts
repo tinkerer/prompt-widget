@@ -14,6 +14,7 @@ import {
 } from '../wiggum-controller.js';
 import { getLauncher, listLaunchers, sendAndWait } from '../launcher-registry.js';
 import { startFAFOGeneration, cleanupWorktrees } from '../fafo-controller.js';
+import { dispatchAgentSession } from '../dispatch.js';
 import type { ExecInHarness, ExecInHarnessResult } from '@prompt-widget/shared';
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR || 'uploads';
@@ -758,6 +759,160 @@ app.get('/:id/screenshots/:sid', async (c) => {
     return new Response(stream as any, { headers: { 'Content-Type': screenshot.mimeType } });
   } catch {
     return c.json({ error: 'File not found' }, 404);
+  }
+});
+
+// ─── Auto-decomposition: analyze target image to suggest paths ────
+
+app.post('/swarms/:id/decompose', async (c) => {
+  const swarmId = c.req.param('id');
+  const swarm = db.select().from(schema.wiggumSwarms).where(eq(schema.wiggumSwarms.id, swarmId)).get();
+  if (!swarm) return c.json({ error: 'Swarm not found' }, 404);
+  if (!swarm.targetArtifact || !existsSync(swarm.targetArtifact)) {
+    return c.json({ error: 'No target artifact set or file missing' }, 400);
+  }
+
+  const body = await c.req.json().catch(() => ({})) as Record<string, any>;
+
+  // Get existing paths for context
+  const existingPaths = db.select().from(schema.wiggumSwarmPaths)
+    .where(eq(schema.wiggumSwarmPaths.swarmId, swarmId))
+    .all()
+    .sort((a, b) => a.order - b.order);
+
+  // Get knowledge for context
+  const knowledge = swarm.knowledgeContent || '';
+
+  // Build approach log context if available
+  let approachLog = '';
+  try {
+    const swarmShortId = swarm.id.slice(-8);
+    const entries = execSync(`ls -d /tmp/fafo-runs/swarm-${swarmShortId}-gen*-* 2>/dev/null | sort | tail -1`, {
+      encoding: 'utf-8', timeout: 5_000,
+    }).trim();
+    if (entries) {
+      try { approachLog = readFileSync(`${entries}/wiki/approach-log.md`, 'utf-8'); } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+
+  const decompositionPrompt = `You are a FAFO decomposition agent. Analyze the target image and the current state of this swarm to produce an optimal set of worker paths for the next generation.
+
+## Target Image
+Read the target image at: ${swarm.targetArtifact}
+
+## Current Swarm State
+- Name: ${swarm.name}
+- Mode: ${swarm.mode}
+- Generations completed: ${swarm.generationCount}
+- Current fitness metric: ${swarm.fitnessMetric}
+${existingPaths.length > 0 ? `
+## Existing Paths
+${existingPaths.map(p => `- ${p.name}: ${p.prompt?.slice(0, 200) || '(no prompt)'}${p.cropRegion ? ` [crop: ${p.cropRegion}]` : ''}`).join('\n')}
+` : ''}
+${knowledge ? `## Accumulated Knowledge (${knowledge.length} chars)\n${knowledge.slice(0, 2000)}` : ''}
+${approachLog ? `## Approach Log\n${approachLog.slice(0, 2000)}` : ''}
+${body.context ? `## Additional Context\n${body.context}` : ''}
+
+## Your Task
+
+Analyze the target image and decompose it into independent sub-problems. For each sub-problem, output a JSON object describing a worker path.
+
+Consider:
+1. What distinct visual elements/regions exist in the target?
+2. Which elements are independent enough to be worked on in parallel?
+3. What specific code changes each worker should focus on?
+4. What crop regions to use for per-element fitness scoring?
+
+Write your analysis to stdout as a JSON array:
+\`\`\`json
+[
+  {
+    "name": "short-kebab-name",
+    "prompt": "Detailed instructions for this worker...",
+    "files": ["src/components/SomeFile.tsx"],
+    "focusLines": "100-200",
+    "cropRegion": [x, y, w, h],
+    "rationale": "Why this decomposition makes sense"
+  },
+  ...
+]
+\`\`\`
+
+Rules:
+- 3-8 paths maximum
+- Names must be short, unique, kebab-case
+- Each path should target a specific visual element or region
+- Include crop regions when possible for focused fitness scoring
+- Prompts should be specific and actionable
+- If existing paths are working well, keep them (possibly with refined prompts)
+- If existing paths are NOT converging, try DIFFERENT decompositions
+`;
+
+  // Dispatch as an agent session
+  try {
+    const agents = db.select().from(schema.agentEndpoints).all();
+    const appAgent = swarm.appId ? agents.find(a => a.isDefault && a.appId === swarm.appId) : null;
+    const globalAgent = agents.find(a => a.isDefault && !a.appId);
+    const agent = appAgent || globalAgent || agents[0];
+    if (!agent) return c.json({ error: 'No agent endpoints configured' }, 500);
+
+    const now = new Date().toISOString();
+    const fbId = ulid();
+    db.insert(schema.feedbackItems).values({
+      id: fbId, type: 'manual', status: 'new',
+      title: `FAFO Decomposition: ${swarm.name}`,
+      description: `Auto-decomposition of target image into worker paths`,
+      appId: swarm.appId || null,
+      createdAt: now, updatedAt: now,
+    }).run();
+
+    const { sessionId } = await dispatchAgentSession({
+      feedbackId: fbId,
+      agentEndpointId: agent.id,
+      prompt: decompositionPrompt,
+      cwd: process.cwd(),
+      permissionProfile: 'yolo',
+    });
+
+    return c.json({
+      sessionId,
+      message: `Decomposition agent dispatched. Monitor session ${sessionId} for results. The agent will output a JSON array of suggested paths.`,
+    });
+  } catch (err: any) {
+    return c.json({ error: `Failed to dispatch decomposition agent: ${err.message}` }, 500);
+  }
+});
+
+// ─── Serve git diff for a worker run ──────────────────
+
+app.get('/swarms/:id/gen/:gen/path/:pathName/diff', (c) => {
+  const swarm = db.select().from(schema.wiggumSwarms).where(eq(schema.wiggumSwarms.id, c.req.param('id'))).get();
+  if (!swarm) return c.json({ error: 'Not found' }, 404);
+  const gen = c.req.param('gen');
+  const pathName = c.req.param('pathName');
+  if (pathName.includes('..') || pathName.includes('/')) return c.json({ error: 'Invalid path' }, 400);
+
+  const swarmShortId = swarm.id.slice(-8);
+  try {
+    const entries = execSync(`ls -d /tmp/fafo-runs/swarm-${swarmShortId}-gen${gen}-* 2>/dev/null || true`, { encoding: 'utf-8' })
+      .trim().split('\n').filter(Boolean);
+    if (entries.length === 0) return c.json({ error: 'Generation dir not found' }, 404);
+    const genDir = entries[entries.length - 1];
+    const diffPath = `${genDir}/child-${pathName}/changes.diff`;
+    if (!existsSync(diffPath)) {
+      // Try generating from worktree
+      const workDir = `${genDir}/child-${pathName}/work`;
+      if (existsSync(workDir)) {
+        try {
+          const diff = execSync(`cd "${workDir}" && git diff HEAD 2>/dev/null || true`, { encoding: 'utf-8', timeout: 10_000 });
+          return c.text(diff);
+        } catch { /* ignore */ }
+      }
+      return c.json({ error: 'No diff available' }, 404);
+    }
+    return c.text(readFileSync(diffPath, 'utf-8'));
+  } catch {
+    return c.json({ error: 'Not found' }, 404);
   }
 });
 

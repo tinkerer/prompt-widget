@@ -431,19 +431,30 @@ echo "saved $OUT"
       }
 
       // ── Determine wiki files relevant to this path ──
+      // Dynamic routing: parse task-assignments.md for path-specific tasks,
+      // then include wiki files referenced in those assignments.
       const wikiDir = `${runRoot}/wiki`;
       const wikiFilesForPath: string[] = [];
-      const pathNameLower = path.name.toLowerCase();
-      if (pathNameLower.includes('horn') || pathNameLower.includes('pill')) {
-        wikiFilesForPath.push(`${wikiDir}/coordinates.md`, `${wikiDir}/style-params.md`);
-      } else if (pathNameLower.includes('port') || pathNameLower.includes('text')) {
-        wikiFilesForPath.push(`${wikiDir}/style-params.md`, `${wikiDir}/what-works.md`);
-      } else if (pathNameLower.includes('entry') || pathNameLower.includes('wire')) {
-        wikiFilesForPath.push(`${wikiDir}/coordinates.md`, `${wikiDir}/what-works.md`);
-      } else {
-        // Default: give all wiki files
-        wikiFilesForPath.push(`${wikiDir}/what-works.md`, `${wikiDir}/coordinates.md`, `${wikiDir}/style-params.md`);
+      const allWikiFiles = ['what-works.md', 'what-fails.md', 'coordinates.md', 'style-params.md', 'open-questions.md'];
+
+      try {
+        const taskAssignments = readFileSync(`${wikiDir}/task-assignments.md`, 'utf-8');
+        const pathNameLower = path.name.toLowerCase();
+        // Check if this path has a directed task assignment
+        const hasAssignment = taskAssignments.toLowerCase().includes(pathNameLower);
+        if (hasAssignment) {
+          // Path has specific tasks — give all relevant wiki files
+          wikiFilesForPath.push(...allWikiFiles.map(f => `${wikiDir}/${f}`));
+        } else {
+          // No specific assignment — give core wiki files
+          wikiFilesForPath.push(`${wikiDir}/what-works.md`, `${wikiDir}/what-fails.md`);
+        }
+      } catch {
+        // No task assignments yet — give all wiki files
+        wikiFilesForPath.push(...allWikiFiles.map(f => `${wikiDir}/${f}`));
       }
+      // Always include approach-log so workers don't repeat past attempts
+      wikiFilesForPath.push(`${wikiDir}/approach-log.md`);
 
       // Build prompt from path config + knowledge
       let files: string[] = [];
@@ -480,7 +491,12 @@ echo "saved $OUT"
         `- Target image: ${runRoot}/target.png (Read this to see what we're matching)`,
         `- Baseline diff score: ${baselineScore} (lower = closer to target)`,
         '',
-        `Start by comparing these two images visually. DO NOT take your own screenshot first — use the baseline.`,
+        `## CRITICAL: Visual comparison is more important than scores`,
+        `Read BOTH images with the Read tool and DESCRIBE IN WORDS what is different between them.`,
+        `List every visual difference: shape, position, size, color, stroke width, alignment, elements present/missing.`,
+        `The fitness score is a rough guide — it can be misleading due to viewport/crop differences.`,
+        `Your PRIMARY goal is to make the rendering LOOK like the target. Trust your visual analysis over the score number.`,
+        `Start by comparing the baseline and target images visually. DO NOT take your own screenshot first — use the baseline.`,
         '',
         `## Your specific task`,
         path.prompt,
@@ -518,6 +534,7 @@ echo "saved $OUT"
         `## Output`,
         `Write status.json with these fields: {"diff_score": <composite>, "ssim": <ssim>, "edge_iou": <edge_iou>, "hist_corr": <hist_corr>}`,
         `Write summary.md in ${childDir}/ describing what you tried and what worked/failed.`,
+        `Save your code changes: cd ${workDir} && git diff > ${childDir}/changes.diff`,
         `Update wiki files: ${runRoot}/wiki/what-works.md and ${runRoot}/wiki/what-fails.md with your learnings.`,
       ];
       const fullPrompt = promptParts.filter(Boolean).join('\n');
@@ -746,7 +763,7 @@ async function runAggregatorAgent(swarmId: string, runRoot: string): Promise<str
   const workerResults: string[] = [];
   for (const childDir of childDirs) {
     const name = childDir.split('/').pop()?.replace('child-', '') || 'unknown';
-    let summary = '', statusJson = '', checkpoints = '';
+    let summary = '', statusJson = '', checkpoints = '', codeDiff = '';
 
     try { summary = readFileSync(`${childDir}/summary.md`, 'utf-8'); } catch { summary = '(no summary)'; }
     try { statusJson = readFileSync(`${childDir}/status.json`, 'utf-8'); } catch { statusJson = '(no status)'; }
@@ -759,7 +776,28 @@ async function runAggregatorAgent(swarmId: string, runRoot: string): Promise<str
       if (cpData.length > 0) checkpoints = `\nCheckpoints:\n${cpData.join('\n')}`;
     } catch { /* ignore */ }
 
-    workerResults.push(`### Worker: ${name}\nStatus: ${statusJson}\nSummary:\n${summary}${checkpoints}\n`);
+    // Collect git diff (code changes)
+    try {
+      const diffPath = `${childDir}/changes.diff`;
+      if (existsSync(diffPath)) {
+        const raw = readFileSync(diffPath, 'utf-8');
+        codeDiff = raw.length > 4000 ? `\nCode changes (truncated):\n\`\`\`diff\n${raw.slice(0, 4000)}\n...(truncated)\n\`\`\`` : `\nCode changes:\n\`\`\`diff\n${raw}\n\`\`\``;
+      } else {
+        // Try generating diff from worktree
+        const workDir = `${childDir}/work`;
+        if (existsSync(workDir)) {
+          try {
+            const diff = execSync(`cd "${workDir}" && git diff HEAD 2>/dev/null || true`, { encoding: 'utf-8', timeout: 10_000 }).trim();
+            if (diff) {
+              writeFileSync(diffPath, diff);
+              codeDiff = diff.length > 4000 ? `\nCode changes (truncated):\n\`\`\`diff\n${diff.slice(0, 4000)}\n...(truncated)\n\`\`\`` : `\nCode changes:\n\`\`\`diff\n${diff}\n\`\`\``;
+            }
+          } catch { /* ignore */ }
+        }
+      }
+    } catch { /* ignore */ }
+
+    workerResults.push(`### Worker: ${name}\nStatus: ${statusJson}\nSummary:\n${summary}${checkpoints}${codeDiff}\n`);
   }
 
   // Collect human feedback for this generation

@@ -7,7 +7,7 @@ import { eq, desc } from 'drizzle-orm';
 import { db, schema } from './db/index.js';
 import type { PermissionProfile, SequencedOutput, SessionOutputData } from '@prompt-widget/shared';
 import { MessageBuffer } from './message-buffer.js';
-import { safeDir } from './tmux-pty.js';
+import { safeDir, isTmuxAvailable, spawnInTmux, reattachTmux, tmuxSessionExists, captureTmuxPane } from './tmux-pty.js';
 
 const PORT = parseInt(process.env.SESSION_SERVICE_PORT || '3002', 10);
 
@@ -311,16 +311,30 @@ function spawnSession(params: {
     resumeSessionId,
   );
 
-  console.log(`[session-service] Spawning session ${sessionId}: profile=${permissionProfile}, cwd=${cwd}`);
+  console.log(`[session-service] Spawning session ${sessionId}: profile=${permissionProfile}, cwd=${cwd}, tmux=${isTmuxAvailable()}`);
 
-  const { CLAUDECODE, ...cleanedEnv } = process.env as Record<string, string>;
-  const ptyProcess = pty.spawn(command, args, {
-    name: 'xterm-256color',
-    cols: 120,
-    rows: 40,
-    cwd: safeDir(cwd),
-    env: { ...cleanedEnv, TERM: 'xterm-256color' },
-  });
+  let ptyProcess: pty.IPty;
+
+  if (isTmuxAvailable()) {
+    const result = spawnInTmux({
+      sessionId,
+      command,
+      args,
+      cwd,
+      cols: 120,
+      rows: 40,
+    });
+    ptyProcess = result.ptyProcess;
+  } else {
+    const { CLAUDECODE, ...cleanedEnv } = process.env as Record<string, string>;
+    ptyProcess = pty.spawn(command, args, {
+      name: 'xterm-256color',
+      cols: 120,
+      rows: 40,
+      cwd: safeDir(cwd),
+      env: { ...cleanedEnv, TERM: 'xterm-256color' },
+    });
+  }
 
   const proc: AgentProcess = {
     sessionId,
@@ -511,8 +525,42 @@ function writeToSession(sessionId: string, data: string): void {
   }
 }
 
-function tryRecoverSession(_session: typeof schema.agentSessions.$inferSelect): boolean {
-  return false;
+function tryRecoverSession(session: typeof schema.agentSessions.$inferSelect): boolean {
+  if (!isTmuxAvailable()) return false;
+  if (!tmuxSessionExists(session.id)) return false;
+
+  console.log(`[session-service] Recovering tmux session for ${session.id}`);
+
+  try {
+    const ptyProcess = reattachTmux({ sessionId: session.id, cols: 120, rows: 40 });
+    const captured = captureTmuxPane(session.id);
+
+    const proc: AgentProcess = {
+      sessionId: session.id,
+      permissionProfile: session.permissionProfile as PermissionProfile,
+      ptyProcess,
+      outputBuffer: captured,
+      totalBytes: captured.length,
+      outputSeq: session.lastOutputSeq ?? 0,
+      lastInputAckSeq: session.lastInputSeq ?? 0,
+      adminSockets: new Set(),
+      status: 'running',
+      flushTimer: setInterval(() => flushOutput(session.id), FLUSH_INTERVAL),
+      inputState: 'active' as InputState,
+      hasStarted: true,
+      lastTitle: '',
+      waitingDebounce: null,
+      lastStateBroadcast: 0,
+    };
+
+    activeSessions.set(session.id, proc);
+    wireOnData(proc, ptyProcess);
+    wireOnExit(proc, ptyProcess);
+    return true;
+  } catch (err) {
+    console.error(`[session-service] Failed to recover session ${session.id}:`, err);
+    return false;
+  }
 }
 
 function markSessionStale(sessionId: string): void {
@@ -605,11 +653,35 @@ function detachAdminSocket(sessionId: string, ws: WebSocket): void {
 // ---------- Session recovery ----------
 
 function recoverSessions(): void {
-  // No tmux recovery — mark all DB 'running' sessions as failed on startup
-  db.update(schema.agentSessions)
-    .set({ status: 'failed', completedAt: new Date().toISOString() })
+  if (!isTmuxAvailable()) {
+    // No tmux — mark all DB 'running' sessions as failed
+    db.update(schema.agentSessions)
+      .set({ status: 'failed', completedAt: new Date().toISOString() })
+      .where(eq(schema.agentSessions.status, 'running'))
+      .run();
+    return;
+  }
+
+  // Try to recover each running session from its tmux session
+  const running = db.select().from(schema.agentSessions)
     .where(eq(schema.agentSessions.status, 'running'))
-    .run();
+    .all();
+
+  let recovered = 0;
+  for (const session of running) {
+    if (tryRecoverSession(session)) {
+      recovered++;
+    } else {
+      db.update(schema.agentSessions)
+        .set({ status: 'failed', completedAt: new Date().toISOString() })
+        .where(eq(schema.agentSessions.id, session.id))
+        .run();
+    }
+  }
+
+  if (running.length > 0) {
+    console.log(`[session-service] Recovery: ${recovered}/${running.length} sessions recovered from tmux`);
+  }
 }
 
 // ---------- HTTP API ----------

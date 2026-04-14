@@ -90,10 +90,8 @@ export function nudgeResize() {
 
 export const viewModes = signal<Record<string, ViewMode>>({});
 
-export function getViewMode(sessionId: string, permissionProfile?: string): ViewMode {
-  if (viewModes.value[sessionId]) return viewModes.value[sessionId];
-  if (permissionProfile === 'auto' || permissionProfile === 'yolo') return 'structured';
-  return 'terminal';
+export function getViewMode(sessionId: string): ViewMode {
+  return viewModes.value[sessionId] || 'terminal';
 }
 
 export function setViewMode(sessionId: string, mode: ViewMode) {
