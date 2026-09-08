@@ -1,6 +1,6 @@
 import WebSocket from 'ws';
 import * as os from 'node:os';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs';
 import * as path from 'node:path';
 import * as pty from 'node-pty';
 import { execSync } from 'node:child_process';
@@ -914,6 +914,10 @@ function handleServerMessage(msg: ServerToLauncherMessage): void {
       try {
         const filename = path.basename(msg.filename || 'file');
         const destPath = path.join(os.tmpdir(), filename);
+        // Replace rather than write through. When a launcher shares a host with
+        // the API server, the destination is already the server's symlink into
+        // its uploads dir, and writing through it would edit the stored original.
+        try { unlinkSync(destPath); } catch { /* nothing there */ }
         writeFileSync(destPath, Buffer.from(msg.contentBase64, 'base64'));
         const result: WriteSessionFileResult = { type: 'write_file_result', sessionId: msg.sessionId, ok: true, path: destPath };
         sendToServer(result);

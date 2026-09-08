@@ -30,7 +30,7 @@ import { extractArtifactPaths, exportSessionFiles } from './jsonl-utils.js';
 import { launchSpriteSession } from './sprite-sessions.js';
 import { createWorktreeIsolate, type Isolate } from './isolates.js';
 import { beginUsage } from './metering.js';
-import { resolveUploadPath } from './tmp-links.js';
+import { resolveUploadPath, uploadAbsPath } from './tmp-links.js';
 
 export function hydrateFeedback(row: typeof schema.feedbackItems.$inferSelect, tags: string[], screenshots: (typeof schema.feedbackScreenshots.$inferSelect)[], audioFiles: (typeof schema.feedbackAudio.$inferSelect)[] = []): FeedbackItem {
   let titleHistory: FeedbackItem['titleHistory'] = [];
@@ -185,6 +185,25 @@ function scheduleAutoContinueForYoloResume(sessionId: string, launcherId: string
   }, AUTO_CONTINUE_INITIAL_DELAY_MS);
 }
 
+/** An attachment as the prompt refers to it: the name we can read back out of
+ * UPLOAD_DIR, and the path currently baked into the prompt text. */
+export interface PromptAttachment {
+  filename: string;
+  localPath: string;
+}
+
+/**
+ * The attachment paths a rendered prompt will refer to. Single source of truth
+ * for prompt rendering and for the remote copy below, so the files shipped to a
+ * launcher are exactly the ones the prompt names.
+ */
+export function feedbackAttachments(fb: FeedbackItem): PromptAttachment[] {
+  return (fb.screenshots || []).map((s) => ({
+    filename: s.filename,
+    localPath: resolveUploadPath(s.filename),
+  }));
+}
+
 export function renderPromptTemplate(
   template: string,
   fb: FeedbackItem,
@@ -216,7 +235,7 @@ export function renderPromptTemplate(
   // /tmp sweep — and falls back to the absolute uploads path if it can't, so we
   // never hand an agent a /tmp path that isn't there. For remote launchers
   // neither path resolves, but the filename is still recognisable.
-  const screenshotPaths = (fb.screenshots || []).map((s) => resolveUploadPath(s.filename));
+  const screenshotPaths = feedbackAttachments(fb).map((a) => a.localPath);
   let screenshotText = '';
   if (screenshotPaths.length) {
     screenshotText = screenshotPaths
@@ -472,10 +491,7 @@ export async function dispatchFeedbackToAgent(params: {
       permissionProfile,
       allowedTools: agent.allowedTools || (app as any)?.defaultAllowedTools || null,
       launcherId: launcherId || undefined,
-      attachmentFiles: screenshots.map((s) => ({
-        filename: s.filename,
-        absPath: resolve(process.env.UPLOAD_DIR || 'uploads', s.filename),
-      })),
+      attachmentFiles: feedbackAttachments(hydratedFeedback),
       ownerUserId: params.ownerUserId ?? feedback.ownerUserId ?? null,
       orgId: params.orgId ?? feedback.orgId ?? null,
     });
@@ -654,8 +670,8 @@ export async function dispatchAgentSession(params: {
   launcherId?: string | null;
   ownerUserId?: string | null;
   orgId?: string | null;
-  /** Files referenced by /tmp paths in the prompt and needed on the agent host. */
-  attachmentFiles?: Array<{ filename: string; absPath: string }>;
+  /** Files the prompt refers to; copied to the agent host on remote dispatch. */
+  attachmentFiles?: PromptAttachment[];
 }): Promise<{ sessionId: string }> {
   const sessionId = ulid();
   const now = new Date().toISOString();
@@ -842,16 +858,29 @@ export async function dispatchAgentSession(params: {
       // launcher has a different /tmp, so materialize each referenced file on
       // that host before starting the agent. This uses the same transport as
       // files pasted into an already-running session.
+      let prompt = params.prompt;
       for (const attachment of params.attachmentFiles ?? []) {
-        const contentBase64 = readFileSync(attachment.absPath).toString('base64');
-        const result = await sendAndWait(launcher.id, {
-          type: 'write_file' as const,
-          sessionId: ulid(),
-          filename: attachment.filename,
-          contentBase64,
-        }, 'write_file_result', 30_000) as { ok?: boolean; path?: string; error?: string };
-        if (!result.ok) {
-          throw new Error(`Failed to copy attachment ${attachment.filename} to launcher: ${result.error || 'unknown error'}`);
+        try {
+          const contentBase64 = readFileSync(uploadAbsPath(attachment.filename)).toString('base64');
+          const result = await sendAndWait(launcher.id, {
+            type: 'write_file' as const,
+            sessionId: ulid(),
+            filename: attachment.filename,
+            contentBase64,
+          }, 'write_file_result', 30_000) as { ok?: boolean; path?: string; error?: string };
+          if (!result.ok) {
+            throw new Error(result.error || 'unknown error');
+          }
+          // Point the prompt at the copy. Normally a no-op — both sides use
+          // /tmp/<filename> — but it matters when resolveUploadPath fell back to
+          // an absolute uploads path because the local symlink couldn't be made.
+          if (result.path && result.path !== attachment.localPath) {
+            prompt = prompt.split(attachment.localPath).join(result.path);
+          }
+        } catch (err: any) {
+          // A dead image path still beats no session: the agent can report that
+          // it couldn't read the file, which is more useful than a failed dispatch.
+          console.warn(`[dispatch] Failed to copy attachment ${attachment.filename} to launcher ${launcher.id}: ${err.message}`);
         }
       }
 
@@ -859,7 +888,7 @@ export async function dispatchAgentSession(params: {
       const msg: LaunchSession = {
         type: 'launch_session',
         sessionId,
-        prompt: params.prompt,
+        prompt,
         cwd: params.cwd,
           runtime,
         permissionProfile: params.permissionProfile,
